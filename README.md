@@ -32,15 +32,47 @@ sheet_mcp와 동일: **문서 → 에이전트 구현 → 검증** (`docs/WORKFL
 
 ```bash
 npm install
-npm run check          # typecheck + lint + test — 공통 게이트 (T0 완료 후 유효)
-npm run dev            # MCP 서버 stdio 실행 — T9 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
-npm run agent:reorder  # 재주문 에이전트 1회 실행 — T8 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
-npm run smoke          # 수동 스모크 — T11 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
+cp .env.example .env  # 값 채우기 — 아래 "운영 배포 절차" 참고
+npm run check          # typecheck + lint + test — 공통 게이트
+npm run migrate         # (최초 1회, 사람 실행) DATABASE_URL에 스키마 적용
+npm run smoke           # (사람 실행) 실 Loyverse+DB로 sync→조회 3종→에이전트 dry-run 확인
+npm run dev             # MCP 서버 stdio 실행 (Claude Code: claude mcp add, DESIGN §9)
+npm run agent:reorder   # 재주문 에이전트 1회 실행 (기본 SEND_MODE=dry_run)
+```
+
+## 운영 배포 절차 (사람이 직접 — 5단계)
+
+1. `.env` 채우기 — `DATABASE_URL`, `LOYVERSE_API_TOKEN`, `BUSINESS_TIMEZONE`, `RESEND_API_KEY`/`MAIL_FROM`/`REPORT_RECIPIENT`, `ANTHROPIC_API_KEY`.
+2. `npm run migrate` — 프로덕션 DB에 스키마 적용(사람만 실행, CLAUDE.md 가드레일 5).
+3. `npm run smoke` — dry-run으로 sync·조회 도구·에이전트가 실제로 붙는지 확인(항상 dry-run, 발송 없음).
+4. `claude mcp add retail-mcp --scope project -- npx tsx src/server.ts` — Claude Code에 연결(`.mcp.json` 커밋됨), `/mcp`로 확인.
+5. 최초 실발송은 `.env`의 `SEND_MODE=live`로 바꾼 뒤 `npm run agent:reorder -- --sync --confirm`을 사람이 직접 1회 실행 — 그 이후에만 cron/launchd에 `--sync`만 등록해 자동화한다(아래 예시).
+
+## 최초 live 발송 전 사람 체크리스트
+
+- **타임존**: `.env`의 `BUSINESS_TIMEZONE`이 실제 매장 타임존인지 확인한다 — 판매 창·재주문 계산·이메일 표시가 전부 이 값 기준이다(DB 저장은 항상 UTC).
+- **권한 분리**: 조회 도구(sell_through 등 5종)는 읽기 전용 DB 역할로 돌리고, `sync_now`는 기본 비활성(`SYNC_TOOL_ENABLED=false`)으로 둔다 — 활성화할 땐 별도 쓰기 자격 증명/프로세스로 라우팅한다(DESIGN §11.4).
+- **stale 확인**: `sync_status` 도구나 스모크 출력에서 `data_last_synced_at`이 최근인지, `warnings`에 stale 경고가 없는지 확인한다(기본 임계값 24시간, `STALE_THRESHOLD_HOURS`).
+- **최초 발송**: `npm run agent:reorder -- --sync --confirm`을 **사람이 직접** 1회 실행해 실제 수신자에게 정상 도착하는지 확인한 뒤에만 스케줄러에 등록한다(스모크는 이 단계를 포함하지 않는다).
+
+## cron / launchd 등록 예시
+
+매주 월요일 07:00(SPEC §5 대표 시나리오)에 동기화 + 재주문 제안을 실행하는 한 줄 등록 예시(둘 다 `SEND_MODE=live`로 바꾼 뒤 등록 — `--confirm` 없이는 절대 발송하지 않는다):
+
+```bash
+# crontab -e
+0 7 * * 1 cd /path/to/retail-mcp && npm run agent:reorder -- --sync --confirm >> logs/reorder.log 2>&1
+```
+
+macOS `launchd`는 plist가 필요하다 — `~/Library/LaunchAgents/com.retail-mcp.reorder.plist`의 `ProgramArguments`에 아래 한 줄만 바꿔 넣고 `launchctl load ~/Library/LaunchAgents/com.retail-mcp.reorder.plist`로 등록한다:
+
+```bash
+npm --prefix /path/to/retail-mcp run agent:reorder -- --sync --confirm
 ```
 
 ## 상태
 
-- 2026-09-02: T0~T2 완료. `npm run dev`/`agent:reorder`/`smoke`는 아직 자리표시자 — 실행하면 어느 태스크에서 구현되는지 안내하고 종료 코드 1을 반환한다.
+- 2026-09-02: T0~T11(v0.1 전체) 완료. `npm run dev`/`agent:reorder`/`smoke`/`migrate` 모두 실구현이다.
 
 ## 구현 전 확인사항
 
