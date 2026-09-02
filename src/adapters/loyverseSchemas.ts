@@ -5,6 +5,7 @@
  * FixtureLoyverseClient(mocks)와 T3 실어댑터(adapters/loyverseClient)가 공유한다.
  */
 import { z } from "zod";
+import type { LvInventoryLevel, LvItem, LvReceipt, LvStore } from "../core/types.js";
 
 export const LvStoreSchema = z
   .object({
@@ -90,3 +91,49 @@ export const LvInventoryResponseSchema = z
     cursor: z.string().nullable().optional(),
   })
   .passthrough();
+
+// ── zod로 검증한 원시 응답 → 내부 Lv* 타입 매퍼 ───────────────────────────
+// FixtureLoyverseClient(mocks)와 실어댑터(loyverseClient)가 함께 쓴다 — 파싱 후
+// 우리가 실제로 쓰는 필드만 좁혀서 하위 계층에 넘긴다.
+
+export function toLvStore(raw: z.infer<typeof LvStoreSchema>): LvStore {
+  return { id: raw.id, name: raw.name };
+}
+
+export function toLvItem(raw: z.infer<typeof LvItemSchema>): LvItem {
+  return {
+    id: raw.id,
+    item_name: raw.item_name,
+    category_id: raw.category_id,
+    variants: raw.variants.map((v) => ({ variant_id: v.variant_id, sku: v.sku })),
+  };
+}
+
+export function toLvReceipt(raw: z.infer<typeof LvReceiptSchema>): LvReceipt {
+  return {
+    receipt_number: raw.receipt_number,
+    store_id: raw.store_id,
+    receipt_type: raw.receipt_type,
+    refund_for: raw.refund_for,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+    receipt_date: raw.receipt_date,
+    cancelled_at: raw.cancelled_at,
+    line_items: raw.line_items.map((li) => ({
+      variant_id: li.variant_id,
+      item_id: li.item_id,
+      quantity: li.quantity,
+      gross_total_money: li.gross_total_money,
+      total_discount: li.total_discount,
+    })),
+  };
+}
+
+export function toLvInventoryLevel(raw: z.infer<typeof LvInventoryLevelSchema>): LvInventoryLevel {
+  return {
+    variant_id: raw.variant_id,
+    store_id: raw.store_id,
+    in_stock: raw.in_stock,
+    updated_at: raw.updated_at,
+  };
+}
