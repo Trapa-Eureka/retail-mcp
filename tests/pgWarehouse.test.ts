@@ -414,6 +414,93 @@ describe("pgWarehouse (PGlite)", () => {
       );
       expect(rows[0]?.status).toBe("no_suggestions");
     });
+
+    it("이미 sent인 run_id로 다시 sending을 예약하면 실패한다(이중 발송 방지)", async () => {
+      const base = {
+        runId: "run-3",
+        sentAt: new Date("2026-09-01T07:00:00Z"),
+        recipient: "owner@example.com",
+        subject: "재주문 제안",
+        suggestionCount: 2,
+        messageId: null,
+        dryRun: false,
+        errorCode: null,
+      };
+      await warehouse.logAgentSend({ ...base, status: "sending" });
+      await warehouse.logAgentSend({ ...base, status: "sent", messageId: "msg-1" });
+
+      // 같은 run_id로 재발송을 시도하면(예: 재시도 스크립트 실수) 예약(INSERT)이 부분 유니크
+      // 인덱스를 위반해 거부돼야 한다 — 이미 sent인 행을 sending으로 되돌리면 안 된다.
+      await expect(warehouse.logAgentSend({ ...base, status: "sending" })).rejects.toThrow(
+        /이미 발송 중이거나 발송 완료된 실행/,
+      );
+
+      const { rows } = await db.query<{ status: string; message_id: string }>(
+        "select status, message_id from agent_send_log where run_id = 'run-3'",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("sent");
+      expect(rows[0]?.message_id).toBe("msg-1");
+    });
+
+    it("sending 예약 없이 sent/failed로 갱신하면 원인이 담긴 에러를 던진다", async () => {
+      await expect(
+        warehouse.logAgentSend({
+          runId: "run-4",
+          sentAt: new Date("2026-09-01T07:00:00Z"),
+          status: "sent",
+          recipient: "owner@example.com",
+          subject: "재주문 제안",
+          suggestionCount: 1,
+          messageId: "msg-x",
+          dryRun: false,
+          errorCode: null,
+        }),
+      ).rejects.toThrow(/sending 예약 행이 없어/);
+    });
+
+    it("실패(failed) 후에는 같은 run_id로 새 sending 예약이 다시 가능하다(재시도)", async () => {
+      const base = {
+        runId: "run-5",
+        sentAt: new Date("2026-09-01T07:00:00Z"),
+        recipient: "owner@example.com",
+        subject: "재주문 제안",
+        suggestionCount: 1,
+        messageId: null,
+        dryRun: false,
+      };
+      await warehouse.logAgentSend({ ...base, status: "sending", errorCode: null });
+      await warehouse.logAgentSend({ ...base, status: "failed", errorCode: "SendError" });
+
+      await expect(
+        warehouse.logAgentSend({ ...base, status: "sending", errorCode: null }),
+      ).resolves.toBeUndefined();
+
+      const { rows } = await db.query<{ count: string }>(
+        "select count(*)::text as count from agent_send_log where run_id = 'run-5' and status = 'sending'",
+      );
+      expect(rows[0]?.count).toBe("1");
+    });
+  });
+
+  describe("queryStores", () => {
+    it("필터 없이 호출하면 모든 매장을 id 순으로 반환한다", async () => {
+      const stores = await warehouse.queryStores();
+      expect(stores).toEqual([
+        { id: "store_main", name: "본점" },
+        { id: "store_makati", name: "마카티점" },
+      ]);
+    });
+
+    it("storeId를 주면 그 매장만 반환한다", async () => {
+      expect(await warehouse.queryStores("store_makati")).toEqual([
+        { id: "store_makati", name: "마카티점" },
+      ]);
+    });
+
+    it("존재하지 않는 storeId면 빈 배열을 반환한다", async () => {
+      expect(await warehouse.queryStores("store_nope")).toEqual([]);
+    });
   });
 
   describe("읽기 전용 역할 분리", () => {

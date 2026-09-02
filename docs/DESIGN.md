@@ -103,6 +103,7 @@ export interface Warehouse {
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;       // 고정 파라미터라이즈드 SQL
   queryStock(q: StockQuery): Promise<StockRow[]>;
+  queryStores(storeId?: string): Promise<StoreRow[]>;         // 매장명 조회(T8 추가) — 리포트/필터검증용
   logAgentSend(e: AgentSendEntry): Promise<void>;
 }
 export interface NotificationProvider {  // sheet_mcp와 동일 시그니처 (이식)
@@ -209,6 +210,7 @@ retail-mcp/
 
 - `agent_send_log`는 발송 성공만이 아니라 `no_suggestions`, `dry_run`, `sending`, `sent`, `failed` 결과를 구분할 수 있어야 한다. 실제 마이그레이션에 `status`, `error_code`, `run_id`를 추가하고, 미발송 상태에서는 `recipient`/`subject`를 nullable로 두거나 별도 `agent_run_log`를 사용한다.
 - 이중 발송 방지는 **예약 패턴**으로 한다: T8은 `provider.send()`를 호출하기 전에 반드시 `status='sending'` 행을 먼저 커밋한다. `run_id`당 `sending`/`sent`는 최대 1건만 허용하는 부분 unique 인덱스가 이 INSERT를 원자적 잠금으로 만든다 — insert가 unique violation으로 실패하면 이미 발송 중이거나 완료된 것이므로 재발송하지 않는다. 성공하면 같은 행을 `sent`로, 실패하면 `failed`로 갱신한다(`failed`는 인덱스 대상이 아니므로 재시도가 새 `sending` 행을 다시 예약할 수 있다). 프로세스 크래시로 `sending`에 멈춘 오래된 행을 어떻게 회수할지는 T8에서 정책을 정한다(예: 일정 시간 경과 후 `failed`로 전이).
+  - **구현 정정(T8)**: `pgWarehouse.logAgentSend`는 `status='sending'`을 **항상 새 INSERT로만** 시도하고(유니크 위반 시 원인이 담긴 에러로 재던짐), `status='sent'/'failed'`는 같은 `run_id`의 `status='sending'` 행을 찾아 그 행만 갱신한다. 애초 구현은 `run_id`로 기존 행 유무만 보고 있으면 무조건 UPDATE했는데, 그러면 이미 `sent`인 `run_id`로 다시 `logAgentSend('sending')`을 불러도 그 행을 조용히 `sending`으로 되돌려 재발송을 허용하는 결함이 있었다 — 부분 unique 인덱스의 보호를 실제로는 발동시키지 못했다. 실행 주기 안에서는 매 실행이 새 `run_id`(기본 `randomUUID()`)를 쓰므로 이 결함은 정상 운영에서 잘 드러나지 않지만, 재시도 스크립트가 `run_id`를 명시적으로 재사용하면 이중 발송이 가능했다. 정책 결정: **회수는 자동화하지 않는다** — 프로세스 크래시로 `sending`에 멈춘 행은 운영자가 DB에서 직접 확인 후 `failed`로 전이시킨다(Warehouse 인터페이스에 `agent_send_log` 조회 메서드가 없어 에이전트 자체는 오래된 `sending` 행을 조회할 수 없다). `sending` 없이 `sent`/`failed`를 기록하려는 호출은 그 자체로 오류로 취급해 던진다.
 
 ### 11.6 응답 공통 메타데이터
 

@@ -273,20 +273,27 @@ async function queryStockOn(session: DbSession, q: StockQuery): Promise<StockRow
   }));
 }
 
+async function queryStoresOn(session: DbSession, storeId?: string): Promise<StoreRow[]> {
+  const { rows } = await session.query<{ id: string; name: string }>(
+    "select id, name from stores where ($1::text is null or id = $1) order by id",
+    [storeId ?? null],
+  );
+  return rows.map((r) => ({ id: r.id, name: r.name }));
+}
+
 /**
- * run_id로 기존 행을 찾아 있으면 갱신, 없으면 새로 넣는다 — status='sending'으로 예약한 행을
- * 나중에 'sent'/'failed'로 "같은 행" 갱신하는 예약 패턴을 지원한다(DESIGN §11.5).
- * 이 함수 자체는 별도 BEGIN/COMMIT을 열지 않는다 — `transaction()` 안에서 호출되면 그 트랜잭션에
- * 자연스럽게 참여하고, 단독 호출되면 SELECT와 INSERT/UPDATE 사이에 아주 짧은 경합 창이 있을 수
- * 있다(v0.1 기준 T8의 호출 패턴에서는 문제되지 않음 — 진짜 동시 재시도 보호는 unique 인덱스가 한다).
+ * 이중 발송 방지 예약 패턴(DESIGN §11.5): status='sending'은 **항상 새 INSERT로만** 시도한다.
+ * `agent_send_log_run_id_active_idx`(run_id당 sending/sent 최대 1건)가 이 INSERT를 원자적
+ * 잠금으로 만든다 — 같은 run_id로 이미 sending/sent 행이 있으면 unique violation으로 실패하고,
+ * 그걸 원인이 담긴 에러로 다시 던져 재발송을 막는다. status='sent'/'failed'는 이번 실행이 방금
+ * 예약한 그 sending 행을 run_id+status='sending'으로 찾아 "같은 행"을 갱신한다 — 그래서
+ * status만 보고 아무 기존 행이나 덮어쓰지 않는다(이미 sent인 행을 sending으로 되돌리는 결함을
+ * 피한다). status='no_suggestions'/'dry_run'은 발송이 없으므로 예약 대상이 아니며, 실행마다
+ * 감사 로그로 새 행을 남긴다.
  */
 async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<void> {
-  const { rows } = await session.query<{ id: string }>(
-    "select id from agent_send_log where run_id = $1 order by id desc limit 1",
-    [e.runId],
-  );
-  const existingId = rows[0]?.id;
-  const values = [
+  const insertParams = [
+    e.runId,
     e.sentAt.toISOString(),
     e.status,
     e.recipient,
@@ -296,21 +303,45 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
     e.dryRun,
     e.errorCode,
   ];
-  if (existingId === undefined) {
-    await session.query(
-      `insert into agent_send_log
-         (run_id, sent_at, status, recipient, subject, suggestion_count, message_id, dry_run, error_code)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [e.runId, ...values],
+
+  if (e.status === "sent" || e.status === "failed") {
+    const { rows } = await session.query<{ id: string }>(
+      "select id from agent_send_log where run_id = $1 and status = 'sending' order by id desc limit 1",
+      [e.runId],
     );
-  } else {
+    const sendingId = rows[0]?.id;
+    if (sendingId === undefined) {
+      throw new Error(
+        `run_id="${e.runId}"에 대한 sending 예약 행이 없어 status='${e.status}'로 갱신할 수 ` +
+          "없습니다. logAgentSend()를 status='sending'으로 먼저 호출했는지 확인하세요.",
+      );
+    }
     await session.query(
       `update agent_send_log set
          sent_at = $2, status = $3, recipient = $4, subject = $5,
          suggestion_count = $6, message_id = $7, dry_run = $8, error_code = $9
        where id = $1`,
-      [existingId, ...values],
+      [sendingId, ...insertParams.slice(1)],
     );
+    return;
+  }
+
+  try {
+    await session.query(
+      `insert into agent_send_log
+         (run_id, sent_at, status, recipient, subject, suggestion_count, message_id, dry_run, error_code)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      insertParams,
+    );
+  } catch (err) {
+    if (e.status === "sending") {
+      throw new Error(
+        `run_id="${e.runId}"는 이미 발송 중이거나 발송 완료된 실행입니다 — 중복 발송을 막기 위해 ` +
+          "새 예약을 거부합니다. 같은 run_id로 재시도하지 마세요.",
+        { cause: err },
+      );
+    }
+    throw err;
   }
 }
 
@@ -330,6 +361,7 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     setCursor: (resource, watermark, at) => setCursorOn(session, resource, watermark, at),
     querySalesAgg: (q) => querySalesAggOn(session, q),
     queryStock: (q) => queryStockOn(session, q),
+    queryStores: (storeId) => queryStoresOn(session, storeId),
     logAgentSend: (e) => logAgentSendOn(session, e),
   };
 }
@@ -368,6 +400,7 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
       withSession(provider, (session) => setCursorOn(session, resource, watermark, at)),
     querySalesAgg: (q) => withSession(provider, (session) => querySalesAggOn(session, q)),
     queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
+    queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
   };
 }
