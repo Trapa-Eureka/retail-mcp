@@ -6,19 +6,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  LoyverseClient,
-  LvInventoryLevel,
-  LvItem,
-  LvReceipt,
-  LvStore,
-  Page,
-} from "../core/types.js";
+import type { LoyverseClient, LvReceipt, Page } from "../core/types.js";
 import {
   LvInventoryResponseSchema,
   LvItemsResponseSchema,
   LvReceiptsResponseSchema,
   LvStoresResponseSchema,
+  toLvInventoryLevel,
+  toLvItem,
+  toLvReceipt,
+  toLvStore,
 } from "../adapters/loyverseSchemas.js";
 
 const DEFAULT_FIXTURES_DIR = path.resolve(
@@ -127,33 +124,11 @@ export async function createFixtureLoyverseClient(
     await readJson(path.join(dir, "inventory.json")),
   );
 
-  const stores: LvStore[] = storesRaw.stores.map((s) => ({ id: s.id, name: s.name }));
-
-  const items: LvItem[] = itemsRaw.items.map((i) => ({
-    id: i.id,
-    item_name: i.item_name,
-    category_id: i.category_id,
-    variants: i.variants.map((v) => ({ variant_id: v.variant_id, sku: v.sku })),
-  }));
+  const stores = storesRaw.stores.map(toLvStore);
+  const items = itemsRaw.items.map(toLvItem);
 
   const allReceipts: LvReceipt[] = receiptsRaw.receipts
-    .map((r) => ({
-      receipt_number: r.receipt_number,
-      store_id: r.store_id,
-      receipt_type: r.receipt_type,
-      refund_for: r.refund_for,
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-      receipt_date: r.receipt_date,
-      cancelled_at: r.cancelled_at,
-      line_items: r.line_items.map((li) => ({
-        variant_id: li.variant_id,
-        item_id: li.item_id,
-        quantity: li.quantity,
-        gross_total_money: li.gross_total_money,
-        total_discount: li.total_discount,
-      })),
-    }))
+    .map(toLvReceipt)
     // 실제 API처럼 watermark 기준(updated_at) 정렬을 보장한다 — receipt_date가 아니다.
     // 동률은 receipt_number로 안정적으로 재조회할 수 있게 한다(DESIGN §11.1).
     .sort(
@@ -162,12 +137,7 @@ export async function createFixtureLoyverseClient(
         a.receipt_number.localeCompare(b.receipt_number),
     );
 
-  const inventory: LvInventoryLevel[] = inventoryRaw.inventory_levels.map((l) => ({
-    variant_id: l.variant_id,
-    store_id: l.store_id,
-    in_stock: l.in_stock,
-    updated_at: l.updated_at,
-  }));
+  const inventory = inventoryRaw.inventory_levels.map(toLvInventoryLevel);
 
   return {
     listStores() {
