@@ -203,6 +203,11 @@ export interface Warehouse {
   /** 고정 파라미터라이즈드 SQL만 사용한다. */
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
   queryStock(q: StockQuery): Promise<StockRow[]>;
+  /**
+   * 매장 목록/이름 조회(T8에서 추가) — 재주문 리포트의 지점별 표 제목(storeName)과
+   * 존재하지 않는 store_id 필터 검증(T9 MCP 도구 공용)에 쓴다. storeId를 주면 그 매장만.
+   */
+  queryStores(storeId?: string): Promise<StoreRow[]>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
 }
 

@@ -7,7 +7,7 @@
 - 완료 기준은 전부 기계 판정 가능해야 한다. 완료 시 상태 `DONE(날짜)` 갱신 + 커밋(`T{n}: 요약`).
 - 병렬 레인: T1 완료 후 **A(T2→T3), B(T4), C(T5), D(T6)** 는 서로 다른 worktree 에이전트로 동시 진행 가능.
 
-의존 그래프: `T0 → T1 → {A: T2→T3, B: T4, C: T5, D: T6} → T7(T2,T4) → T8(T4,T5) → T9(T7,T8, T6) → T10(T9) → T11`
+의존 그래프: `T0 → T1 → {A: T2→T3, B: T4, C: T5, D: T6} → T7(T2,T4) → T8(T4,T5,T6) → T9(T7,T8, T6) → T10(T9) → T11`
 
 ---
 
@@ -43,7 +43,7 @@
 - 목표: `etl/sync.ts` — DESIGN §5 순서·커서·멱등·부분 실패 재개.
 - 완료 기준: [ ] **TESTING §4 ETL 4항목 전부** 통과 [ ] check 통과
 
-### T8 — 재주문 에이전트 · 상태: TODO · 의존: T4, T5, T6
+### T8 — 재주문 에이전트 · 상태: DONE(2026-09-02) · 의존: T4, T5, T6
 - 목표: `agent/reorder.ts` — DESIGN §7 흐름, 이중 게이트(`SEND_MODE` + `--confirm`), LLM 실패 시 표만 발송.
 - 완료 기준: [ ] **TESTING §4 에이전트 5항목 전부** 통과 [ ] check 통과
 
@@ -77,7 +77,7 @@
 | T4 | `Warehouse.transaction(fn)`을 실제 BEGIN/COMMIT/ROLLBACK으로 구현 — 리소스 단위 트랜잭션, watermark 원자 커밋, decimal 처리 및 읽기/쓰기 역할 분리 테스트 |
 | T5 | 음수 순판매·음수 재고 정규화와 경고, 사업장 타임존의 반개방 기간 경계 테스트 |
 | T7 | 페이지 토큰과 watermark 분리, 동률 경계 재조회, 빈 inventory 응답 거부, 리소스별 결과 반환. `updated_at_min` 기준 watermark 사용, `cancelled_at` 있는 영수증 제외, REFUND 라인의 부호 반전을 ETL에서 명시적으로 수행 (docs/003 적대적 검수) |
-| T8 | `provider.send()` 호출 **전에** `status='sending'` 행을 먼저 커밋하는 예약 패턴으로 중복 발송 방지(스키마는 T1에서 확정), 실행 상태별 로그 테스트, `sending`에 멈춘 오래된 행의 회수 정책 |
+| T8 | `provider.send()` 호출 **전에** `status='sending'` 행을 먼저 커밋하는 예약 패턴으로 중복 발송 방지(스키마는 T1에서 확정), 실행 상태별 로그 테스트, `sending`에 멈춘 오래된 행의 회수 정책 — **완료**: `pgWarehouse.logAgentSend`가 `sending`은 항상 새 INSERT(유니크 위반 시 재발송 거부 에러)로, `sent`/`failed`는 그 `sending` 행만 UPDATE하도록 정정(DESIGN §11.5 구현 정정 참조 — 기존 select-then-upsert는 이미 `sent`인 run_id도 재발송을 허용하는 결함이 있었음). 오래된 `sending` 회수는 자동화하지 않고 운영자 수동 확인으로 정책 확정(Warehouse에 조회 메서드가 없어 에이전트가 스스로 판단 불가). `Warehouse.queryStores(storeId?)` 추가(매장명 조회, `reorder_suggestions`/MCP 필터 검증과 공용) — `buildReorderReport()`를 `src/agent/reorder.ts`에 T9 재사용용으로 분리 export |
 | T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트. `sync_now`는 `etl/sync.ts`의 `syncAll()`을 advisory lock으로 감싸 동시 호출 시 하나만 실행되게 한다(DESIGN §11.4) — T7의 `syncAll()` 자체는 동시 호출 가드가 없다(단일 호출의 리소스별 원자성·재개만 보장) |
 | T10 | `TESTING.md` §7 전체 회귀 가드와 core 커버리지 90% 리포트 |
 | T11 | README에 타임존·권한 분리·stale 확인 및 최초 live 발송 전 체크 절차 반영 |
