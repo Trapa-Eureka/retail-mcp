@@ -10,6 +10,7 @@ import type {
   SalesAgg,
   SalesAggQuery,
   SalesLineRow,
+  SalesPeriodAggRow,
   StockQuery,
   StockRow,
   StoreRow,
@@ -191,6 +192,32 @@ async function appendInventorySnapshotOn(
   );
 }
 
+async function upsertSalesPeriodAggOn(
+  session: DbSession,
+  rows: SalesPeriodAggRow[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) {
+    params.push(
+      r.storeId,
+      r.variantId,
+      r.periodStart.toISOString(),
+      r.periodEnd.toISOString(),
+      r.soldQty,
+    );
+  }
+  await session.query(
+    `insert into sales_period_agg (store_id, variant_id, period_start, period_end, sold_qty)
+     values ${buildValuesPlaceholders(rows.length, 5)}
+     on conflict (store_id, variant_id) do update set
+       period_start = excluded.period_start,
+       period_end = excluded.period_end,
+       sold_qty = excluded.sold_qty`,
+    params,
+  );
+}
+
 async function getCursorOn(session: DbSession, resource: string): Promise<string | null> {
   const { rows } = await session.query<{ cursor: string | null }>(
     "select cursor from sync_state where resource = $1",
@@ -247,6 +274,43 @@ async function querySalesAggOn(session: DbSession, q: SalesAggQuery): Promise<Sa
        and ($3::text is null or sl.store_id = $3)
        and ($4::text is null or p.category = $4)
      group by sl.store_id, sl.variant_id, p.name, p.category`,
+    [q.periodStart.toISOString(), q.periodEnd.toISOString(), q.storeId ?? null, q.category ?? null],
+  );
+  return rows.map((r) => ({
+    storeId: r.store_id,
+    variantId: r.variant_id,
+    name: r.name,
+    category: r.category,
+    soldQtyRaw: r.sold_qty_raw,
+  }));
+}
+
+/**
+ * sales_period_agg는 (store,variant)당 한 행 — 그 행의 period_start/period_end가 곧 "가장
+ * 최근 스캔이 CSV에서 읽은 기간"이다(재집계가 아니라 저장된 합계를 그대로 반환). 질의 기간과
+ * 저장된 기간이 겹치는 행만 반환한다 — 완전히 다른(겹치지 않는) 기간을 물어봤는데 오래된
+ * 스캔 값을 마치 그 기간 데이터인 것처럼 조용히 돌려주지 않기 위해서다. windowDays 등 호출자
+ * 쪽 기간 가정과 저장된 기간 길이가 다를 수 있다는 점은 이 함수가 책임지지 않는다(TASKS T17).
+ */
+async function querySalesPeriodAggOn(session: DbSession, q: SalesAggQuery): Promise<SalesAgg[]> {
+  const { rows } = await session.query<{
+    store_id: string;
+    variant_id: string;
+    name: string;
+    category: string | null;
+    sold_qty_raw: string;
+  }>(
+    `select
+       spa.store_id as store_id,
+       spa.variant_id as variant_id,
+       p.name as name,
+       p.category as category,
+       spa.sold_qty::text as sold_qty_raw
+     from sales_period_agg spa
+     join products p on p.variant_id = spa.variant_id
+     where spa.period_start < $2 and spa.period_end > $1
+       and ($3::text is null or spa.store_id = $3)
+       and ($4::text is null or p.category = $4)`,
     [q.periodStart.toISOString(), q.periodEnd.toISOString(), q.storeId ?? null, q.category ?? null],
   );
   return rows.map((r) => ({
@@ -372,10 +436,12 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     upsertInventory: (rows) => upsertInventoryOn(session, rows),
     appendInventorySnapshot: (runId, at, rows) =>
       appendInventorySnapshotOn(session, runId, at, rows),
+    upsertSalesPeriodAgg: (rows) => upsertSalesPeriodAggOn(session, rows),
     getCursor: (resource) => getCursorOn(session, resource),
     setCursor: (resource, watermark, at) => setCursorOn(session, resource, watermark, at),
     getSyncState: () => getSyncStateOn(session),
     querySalesAgg: (q) => querySalesAggOn(session, q),
+    querySalesPeriodAgg: (q) => querySalesPeriodAggOn(session, q),
     queryStock: (q) => queryStockOn(session, q),
     queryStores: (storeId) => queryStoresOn(session, storeId),
     logAgentSend: (e) => logAgentSendOn(session, e),
@@ -411,11 +477,15 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     upsertInventory: (rows) => withSession(provider, (session) => upsertInventoryOn(session, rows)),
     appendInventorySnapshot: (runId, at, rows) =>
       withSession(provider, (session) => appendInventorySnapshotOn(session, runId, at, rows)),
+    upsertSalesPeriodAgg: (rows) =>
+      withSession(provider, (session) => upsertSalesPeriodAggOn(session, rows)),
     getCursor: (resource) => withSession(provider, (session) => getCursorOn(session, resource)),
     setCursor: (resource, watermark, at) =>
       withSession(provider, (session) => setCursorOn(session, resource, watermark, at)),
     getSyncState: () => withSession(provider, (session) => getSyncStateOn(session)),
     querySalesAgg: (q) => withSession(provider, (session) => querySalesAggOn(session, q)),
+    querySalesPeriodAgg: (q) =>
+      withSession(provider, (session) => querySalesPeriodAggOn(session, q)),
     queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
     queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),

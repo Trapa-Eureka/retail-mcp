@@ -5,6 +5,11 @@
  * 리소스 하나의 모든 페이지 처리 + upsert + watermark 갱신은 Warehouse.transaction()으로
  * 하나의 트랜잭션에 묶는다 — 중간 페이지 실패 시 그 리소스의 데이터와 watermark가 함께
  * 롤백되고, 이전 watermark부터 안전하게 재시도된다. 조립 계층이라 LLM 개입 없음 — 전 과정 결정론.
+ *
+ * 이 파일은 **Loyverse 전용 경로**다(TASKS T12) — `LoyverseClient`의 영수증 단위 증분 동기화
+ * 모델을 그대로 전제한다. CSV/Excel 채널은 `syncAll()`을 재사용하지 않고 별도 오케스트레이션
+ * (`folderScan.ts`, TASKS T18)에서 `Warehouse`에 직접 쓴다 — 폴더 스캔은 "현재 파일 전체를
+ * 매번 다시 읽는 스냅샷" 모델이라 여기의 watermark/커서 기반 증분 동기화와 맞지 않는다.
  */
 import { randomUUID } from "node:crypto";
 import type {
