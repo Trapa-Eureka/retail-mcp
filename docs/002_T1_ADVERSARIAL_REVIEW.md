@@ -77,10 +77,12 @@
 
 ## 재검수 완료 기준
 
-- [ ] snapshot orphan insert 거부
-- [ ] 리소스 data + watermark 원자 커밋/rollback 테스트
-- [ ] 동시 migration 실행이 직렬화됨
-- [ ] 실패 시 동일 client에서 rollback 후 정상 쿼리 가능
-- [ ] migration checksum 불일치 감지
-- [ ] 발송 전 crash 및 동시 재시도에서 중복 발송 0건을 만들 수 있는 계약 확정
-- [ ] `npm run check` 통과
+- [x] snapshot orphan insert 거부 — `inventory_snapshots.store_id`/`variant_id`에 FK 복원, 테스트 추가
+- [x] 리소스 data + watermark 원자 커밋/rollback 테스트 — `Warehouse.transaction(fn)` 계약을 `core/types.ts` + `DESIGN.md` §4/§11.1에 추가. **주의: 이 계약은 T1(인터페이스) 수준에서만 확정됐다. 실제 BEGIN/COMMIT/ROLLBACK 구현과 그 rollback 동작 검증은 T4(pgWarehouse)에서 완료된다 — T1에는 구현체가 없다.**
+- [x] 동시 migration 실행이 직렬화됨 — `withAdvisoryLock`으로 `pg_advisory_lock`/`unlock`을 감싸고 단일 `client`(pool이 아님)에서 전체 실행. 단, PGlite는 단일 세션이라 진짜 다른 두 프로세스 간 경합은 여기서 증명할 수 없다 — lock 획득→실행→해제 순서(에러 시에도 해제)만 fake client로 단위 검증했고, 실제 동시 프로세스 직렬화는 `npm run migrate`를 실제 Postgres에 대해 실행하는 T11 스모크에서 확인해야 한다.
+- [x] 실패 시 동일 client에서 rollback 후 정상 쿼리 가능 — PGlite로 재현: 마이그레이션 중간 실패 → 명시적 ROLLBACK → 같은 executor로 후속 쿼리 정상 동작 테스트
+- [x] migration checksum 불일치 감지 — `schema_migrations.checksum`(sha256) 추가, 불일치 시 원인+수정법이 담긴 에러로 중단
+- [x] 발송 전 crash 및 동시 재시도에서 중복 발송 0건을 만들 수 있는 계약 확정 — `agent_send_log`에 `sending` 상태 추가, `run_id`당 `sending`/`sent` 최대 1건 부분 unique 인덱스로 예약 패턴 구현. **주의: 스키마 수준 계약이며, T8이 실제로 `provider.send()` 전에 `sending` insert를 먼저 커밋해야 효력이 있다 — T8 완료 기준에 반영 필요.**
+- [x] `npm run check` 통과 (23 tests passed)
+
+해결 커밋: `fix-t1` 브랜치 (2026-09-02). 위 굵은 글씨로 표시한 두 항목(Warehouse 트랜잭션 실제 구현, 발송 예약 패턴 실사용)은 각각 T4·T8에서 마저 검증해야 완전히 종결된다.

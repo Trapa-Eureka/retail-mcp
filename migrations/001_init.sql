@@ -48,8 +48,8 @@ create table inventory_levels (
 create table inventory_snapshots (
   run_id text not null,
   snapped_at timestamptz not null,
-  store_id text not null,
-  variant_id text not null,
+  store_id text not null references stores (id),
+  variant_id text not null references products (variant_id),
   in_stock numeric not null,
   primary key (run_id, store_id, variant_id)
 );
@@ -66,14 +66,20 @@ create table sync_state (
 );
 
 -- 에이전트 실행/발송 로그.
--- status로 no_suggestions/dry_run/sent/failed를 구분한다 (DESIGN §11.5).
--- run_id는 멱등 키 — 부분 unique 인덱스로 동일 run_id의 'sent' 상태는 최대 1건만 허용해
--- provider 성공 후 로그 기록 실패 같은 상황에서도 이중 발송 재시도를 막는다.
+-- status로 no_suggestions/dry_run/sending/sent/failed를 구분한다 (DESIGN §11.5).
+--
+-- 이중 발송 방지는 예약(reservation) 패턴으로 강제한다: T8은 provider.send()를 호출하기
+-- 전에 반드시 status='sending' 행을 먼저 커밋한다. run_id당 sending/sent는 최대 1건만
+-- 허용하는 부분 unique 인덱스가 있어, 이 INSERT 자체가 원자적 잠금 역할을 한다 — insert가
+-- unique violation으로 실패하면 이미 발송 중이거나 발송 완료된 것이므로 재발송하지 않는다.
+-- 성공하면 같은 행을 'sent'로, 실패하면 'failed'로 UPDATE한다('failed'는 unique 인덱스
+-- 대상이 아니므로 재시도로 새 'sending' 행을 다시 예약할 수 있다).
+-- 'sending' 상태로 멈춘 채 오래된 행(예: 프로세스 크래시)에 대한 처리 정책은 T8에서 정한다.
 create table agent_send_log (
   id bigserial primary key,
   run_id text not null,
   sent_at timestamptz not null,
-  status text not null check (status in ('no_suggestions', 'dry_run', 'sent', 'failed')),
+  status text not null check (status in ('no_suggestions', 'dry_run', 'sending', 'sent', 'failed')),
   recipient text, -- 미발송 상태(no_suggestions 등)에서는 null 허용
   subject text,
   suggestion_count int not null,
@@ -81,4 +87,6 @@ create table agent_send_log (
   dry_run boolean not null,
   error_code text
 );
-create unique index agent_send_log_run_id_sent_idx on agent_send_log (run_id) where status = 'sent';
+create unique index agent_send_log_run_id_active_idx
+  on agent_send_log (run_id)
+  where status in ('sending', 'sent');

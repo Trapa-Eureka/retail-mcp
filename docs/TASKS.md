@@ -72,12 +72,12 @@
 | 태스크 | 추가 필수 항목 |
 |---|---|
 | T0 | `BUSINESS_TIMEZONE=Asia/Manila`, `SYNC_TOOL_ENABLED=false`, 외부 요청 timeout/retry 환경값을 `.env.example`에 문서화 |
-| T1 | `sync_state`의 watermark 의미 명시, 스냅샷 `run_id` 충돌 방지, 실행 상태(`no_suggestions/dry_run/sent/failed`)와 멱등 `run_id`를 표현하는 마이그레이션 반영 |
-| T3 | 429 `Retry-After`, 요청 타임아웃, 재시도 상한 및 민감정보 없는 오류 테스트 |
-| T4 | 리소스 단위 트랜잭션, watermark 원자 커밋, advisory lock, decimal 처리 및 읽기/쓰기 역할 분리 테스트 |
+| T1 | `sync_state`의 watermark 의미 명시, 스냅샷 `run_id` 충돌 방지 + FK, 실행 상태(`no_suggestions/dry_run/sending/sent/failed`)와 멱등 `run_id`를 표현하는 마이그레이션 반영, migration checksum, advisory lock 기반 동시 실행 직렬화 (docs/002 적대적 검수로 확정) |
+| T3 | 429 `Retry-After`, 요청 타임아웃, 재시도 상한 및 민감정보 없는 오류 테스트. Loyverse 공식 필드(`updated_at`/`created_at`/`cancelled_at`/`receipt_type`/`refund_for`) 보존 (docs/003 적대적 검수) |
+| T4 | `Warehouse.transaction(fn)`을 실제 BEGIN/COMMIT/ROLLBACK으로 구현 — 리소스 단위 트랜잭션, watermark 원자 커밋, decimal 처리 및 읽기/쓰기 역할 분리 테스트 |
 | T5 | 음수 순판매·음수 재고 정규화와 경고, 사업장 타임존의 반개방 기간 경계 테스트 |
-| T7 | 페이지 토큰과 watermark 분리, 동률 경계 재조회, 빈 inventory 응답 거부, 리소스별 결과 반환 |
-| T8 | `run_id` 기반 live 중복 발송 방지와 실행 상태별 로그 테스트 |
+| T7 | 페이지 토큰과 watermark 분리, 동률 경계 재조회, 빈 inventory 응답 거부, 리소스별 결과 반환. `updated_at_min` 기준 watermark 사용, `cancelled_at` 있는 영수증 제외, REFUND 라인의 부호 반전을 ETL에서 명시적으로 수행 (docs/003 적대적 검수) |
+| T8 | `provider.send()` 호출 **전에** `status='sending'` 행을 먼저 커밋하는 예약 패턴으로 중복 발송 방지(스키마는 T1에서 확정), 실행 상태별 로그 테스트, `sending`에 멈춘 오래된 행의 회수 정책 |
 | T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트 |
 | T10 | `TESTING.md` §7 전체 회귀 가드와 core 커버리지 90% 리포트 |
 | T11 | README에 타임존·권한 분리·stale 확인 및 최초 live 발송 전 체크 절차 반영 |
