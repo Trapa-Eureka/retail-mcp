@@ -69,15 +69,18 @@
 
 `docs/DESIGN.md`는 아직 v0.2 절이 없다 — v0.1 태스크와 달리 사전에 완성된 설계 문서가 없으므로, 아래 각 태스크는 `docs/SPEC.md` §12를 진실의 원천으로 삼아 구현하면서 필요한 인터페이스·스키마를 `docs/DESIGN.md`에 새 절로 추가한다(T15 스키마, T14 웨어하우스 팩토리, T13 락 순서로 먼저 문서화되는 게 자연스럽다).
 
-의존 그래프: `{T12, T13→T14, T15→{T16(T12도 의존), T17, T19}} → T18(T14,T16,T17,T19,T6) → T20(T18,T16) → T21(T14,T20) → T22(T21)`
+의존 그래프: `T12 → {T13→T14, T15→{T16, T17, T19}} → T18(T14,T16,T17,T19,T6) → T20(T18,T16) → T21(T14,T20) → T22(T21)`
 
-병렬 레인: **A(T12), B(T13→T14), C(T15→{T16(A 완료도 필요),T17,T19})**는 처음부터 서로 다른 worktree 에이전트로 동시 진행 가능(T13은 T12와 무관한 독립 유틸리티). T18은 A·B·C가 전부 끝난 뒤 시작, 이후는 순차.
+T12는 완료(DONE)됐다 — 착수 중 스코프가 "리네임"에서 "데이터소스 경계 정리 + `sales_period_agg` 스키마"로 재정의됐고, T16/T17이 그 신규 타입(`SalesPeriodAggRow`)에 의존하게 되면서 T12가 두 레인의 공통 전제가 됐다(원래는 T13이 T12와 무관한 독립 유틸리티였으나, T12의 산출물 자체가 달라져 계보상 앞에 둔다 — T13 자체 작업 내용은 T12와 여전히 무관).
+
+병렬 레인: **B(T13→T14), C(T15→{T16,T17,T19})**는 서로 다른 worktree 에이전트로 동시 진행 가능. T18은 B·C가 전부 끝난 뒤 시작, 이후는 순차.
 
 ---
 
-### T12 (레인 A) — 데이터소스 인터페이스 일반화 · 상태: TODO
-- 목표: `core/types.ts`의 `LoyverseClient` 인터페이스(및 관련 타입)를 소스 중립적 이름(예: `InventorySource`)으로 리네임 — 계약은 그대로, 동작 변경 없는 순수 리팩터. `etl/sync.ts`, `src/mcp/tools.ts`, `src/agent/reorder.ts`, `src/adapters/loyverseClient.ts`, `src/mocks/fixtureLoyverseClient.ts`, 관련 테스트 전부 참조 갱신.
-- 완료 기준: [ ] 리네임 후 기존 182개 테스트 전부 그대로 통과 [ ] "LoyverseClient"라는 이름이 Loyverse 고유 어댑터(`loyverseClient.ts` 등) 밖에 남아있지 않음 [ ] check 통과
+### T12 (레인 A) — 데이터소스 경계 정리 + 기간합계 판매 스키마 · 상태: DONE(2026-09-03)
+- 목표(착수 중 재정의): 당초 "`LoyverseClient`를 소스 중립 이름으로 리네임"으로 적었으나, 착수해보니 이 인터페이스는 이름만이 아니라 **반환 타입 자체**가 Loyverse 고유 구조였다(`LvReceipt`의 `receipt_number`/`cancelled_at`/`receipt_type` 등) — CSV 파일에는 영수증이 없어 리네임만으로는 CSV가 이 인터페이스를 구현할 수 없다. `sales_lines`(영수증 라인 단위, `receipt_id`+`line_no` PK)도 CSV의 "기간 합계 판매수량" 하나뿐인 데이터를 담기에 맞지 않았다. 그래서 리네임 대신: (1) `LoyverseClient`/`etl/sync.ts`는 **Loyverse 전용 경로로 문서화만 하고 리네임하지 않는다**(정직한 이름이 오히려 명확함), (2) CSV의 기간합계 판매를 위한 **신규 테이블 `sales_period_agg`**(마이그레이션 002) + 신규 행 타입 `SalesPeriodAggRow` + `Warehouse.upsertSalesPeriodAgg`/`querySalesPeriodAgg` 추가. `querySalesPeriodAgg`는 `querySalesAgg`와 동일한 `SalesAgg[]` 형태를 반환하므로 `core/metrics.ts`의 `computeSellThrough`/`computeReorderMetrics`는 **변경 없이** 그대로 소비한다.
+- 완료 기준: [x] `sales_period_agg` 마이그레이션(002) + upsert 멱등·query 필터(매장/기간 겹침) 테스트, 기존 182개 회귀 없이 총 186개 통과 [x] `LoyverseClient`/`etl/sync.ts`에 "Loyverse 전용 경로, CSV는 구현하지 않음"을 명시하는 문서 주석 [x] check 통과
+- **후속 영향(T15~T18 완료 기준에 반영)**: T16(파서)은 "T12에서 리네임한 인터페이스 구현" 대신 도메인 행 타입(`StoreRow`/`ProductRow`/`InventoryRow`/`SalesPeriodAggRow`)으로 직접 변환하는 함수를 만든다. T17(셀스루/임계치 분기)은 `querySalesPeriodAgg` 각 행의 실제 기간 길이(`period_start`~`period_end`)를 `computeReorderMetrics`의 `windowDays`에 반영해야 한다 — CSV 기간 길이가 v0.1 기본값(28일)과 다를 수 있다는 걸 T12에서 발견했다.
 
 ### T13 (레인 B) — 파일 락 유틸리티 · 상태: TODO
 - 목표: `src/adapters/fileLock.ts` — PID+타임스탬프 락 파일로 디렉터리 단위 배타 접근을 보장하는 acquire/release. 살아있는 프로세스 감지(예: signal 0 kill 시도)로 죽은 프로세스가 남긴 stale lock을 자동 회수. 실패 시 원인+조치 포함 에러(CLAUDE.md 컨벤션).
@@ -91,16 +94,16 @@
 - 목표: SPEC §12 "컬럼 구성" 고정 템플릿을 `core/`에 zod 스키마로 정의(필수: 매장명/상품명/SKU/재고수량, 선택: 판매수량+기간/단가+통화/저재고임계치). 판매이력 있음/없음 모드를 판정하는 순수 함수 포함.
 - 완료 기준: [ ] 필수 컬럼 누락 시 zod 파싱 실패 + 원인 명시 [ ] 판매수량은 있는데 기간이 없는 등 불일치 케이스 거부 [ ] 판매이력 모드 판정 골든 케이스 테스트 [ ] check 통과
 
-### T16 (레인 C) — CSV/Excel 파서 어댑터 · 상태: TODO · 의존: T12(레인 A), T15
-- 목표: `src/adapters/csvExcelParser.ts` — CSV/XLSX 파일을 읽어 인코딩 자동감지(UTF-8/CP949/EUC-KR 등, 신뢰도 낮으면 무음 처리 대신 명시적 에러/경고 반환), T15 스키마로 검증, T12에서 리네임한 소스 인터페이스 구현체 생성. 네트워크 호출 없음.
-- 완료 기준: [ ] UTF-8/CP949/EUC-KR 픽스처 파일 각각 정상 파싱 [ ] 신뢰도 낮은 인코딩은 명시적 에러/경고로 표시(무음 mojibake 금지) [ ] CSV·XLSX 양쪽 픽스처 테스트 [ ] check 통과
+### T16 (레인 C) — CSV/Excel 파서 어댑터 · 상태: TODO · 의존: T12, T15
+- 목표: `src/adapters/csvExcelParser.ts` — CSV/XLSX 파일을 읽어 인코딩 자동감지(UTF-8/CP949/EUC-KR 등, 신뢰도 낮으면 무음 처리 대신 명시적 에러/경고 반환), T15 스키마로 검증, 도메인 행 타입(`StoreRow`/`ProductRow`/`InventoryRow`/`SalesPeriodAggRow`, T12)으로 변환하는 함수 생성. `LoyverseClient`는 구현하지 않는다(T12 결정 — CSV에는 영수증 단위 데이터가 없다). 네트워크 호출 없음.
+- 완료 기준: [ ] UTF-8/CP949/EUC-KR 픽스처 파일 각각 정상 파싱 [ ] 신뢰도 낮은 인코딩은 명시적 에러/경고로 표시(무음 mojibake 금지) [ ] CSV·XLSX 양쪽 픽스처 테스트 [ ] 변환 결과가 `Warehouse.upsertStores`/`upsertProducts`/`upsertInventory`/`upsertSalesPeriodAgg`에 바로 넘길 수 있는 타입과 일치 [ ] check 통과
 
-### T17 (레인 C) — 셀스루/임계치 분기 로직 · 상태: TODO · 의존: T15
-- 목표: `core/metrics.ts` 확장 — 판매이력 없는 품목은 셀스루 계산을 건너뛰고 "판매 이력 없음"으로 표시 + `재고수량 < 임계치`(품목별 override 우선, 없으면 전역 기본값) 단순 판정으로 대체(SPEC §12). 한 결과 집합 안에 두 모드가 섞일 수 있음을 반영.
-- 완료 기준: [ ] 판매이력 있는 품목은 기존 §2 근사식 그대로(기존 골든 케이스 회귀 없음) [ ] 판매이력 없는 품목은 셀스루가 null/모드 플래그로 표시되고 조용히 0 처리되지 않음 [ ] 임계치 판정 골든 케이스(품목별 override·전역 기본값 각각) [ ] check 통과
+### T17 (레인 C) — 셀스루/임계치 분기 로직 · 상태: TODO · 의존: T15, T12
+- 목표: 판매이력 없는 품목(해당 store/variant의 `querySalesPeriodAgg` 결과 없음)은 셀스루 계산을 건너뛰고 "판매 이력 없음"으로 표시 + `재고수량 < 임계치`(품목별 override 우선, 없으면 전역 기본값) 단순 판정으로 대체(SPEC §12). 판매이력 있는 품목은 `querySalesPeriodAgg` 결과를 `computeReorderMetrics`에 넘기되, **`windowDays`를 CSV가 보고한 실제 기간 길이(`period_end`-`period_start`)로 계산**한다 — v0.1 기본값 28일을 그대로 쓰면 CSV 기간 길이가 다를 때 `avgDailySales`가 왜곡된다(T12에서 발견). 한 결과 집합 안에 두 모드가 섞일 수 있음을 반영. `core/metrics.ts`의 `computeSellThrough`/`computeReorderMetrics` 자체는 이미 소스 중립적(`SalesAgg[]` 입력)이라 변경하지 않는다.
+- 완료 기준: [ ] 판매이력 있는 품목은 기존 §2 근사식 그대로(기존 골든 케이스 회귀 없음) [ ] 판매이력 없는 품목은 셀스루가 null/모드 플래그로 표시되고 조용히 0 처리되지 않음 [ ] 임계치 판정 골든 케이스(품목별 override·전역 기본값 각각) [ ] CSV 기간 길이가 28일이 아닌 골든 케이스(예: 35일)에서 avgDailySales가 실제 기간으로 정확히 나뉘는지 테스트 [ ] check 통과
 
 ### T18 — 폴더 스캔 스크립트 (지점 모드) · 상태: TODO · 의존: T14, T16, T17, T19, T6
-- 목표: `src/agent/folderScan.ts` — cron 1회 실행 진입점. 감시 폴더의 최신 파일을 T16으로 파싱 → T14 웨어하우스에 upsert → T17 판정 결과로 저재고 알림(기존 `NotificationProvider` 재사용) → T19로 스냅샷 파일 갱신까지 한 스크립트가 순서대로 수행. `agent/reorder.ts`와 같은 "얇은 오케스트레이션만" 원칙.
+- 목표: `src/agent/folderScan.ts` — cron 1회 실행 진입점. 감시 폴더의 최신 파일을 T16으로 파싱 → T16이 변환한 행을 `Warehouse.upsertStores`/`upsertProducts`/`upsertInventory`/`upsertSalesPeriodAgg`(T12)로 직접 upsert(`LoyverseClient`/`syncAll()`을 거치지 않는다, T12 결정) → T17 판정 결과로 저재고 알림(기존 `NotificationProvider` 재사용) → T19로 스냅샷 파일 갱신까지 한 스크립트가 순서대로 수행. `agent/reorder.ts`와 같은 "얇은 오케스트레이션만" 원칙.
 - 완료 기준: [ ] 픽스처 CSV/XLSX 1회 스캔 → 적재 → 저재고 알림 발송 여부까지 e2e(발송은 Mock) [ ] 파싱 실패 시 부분 적재 없이 명확한 에러로 중단 [ ] 두 번 연속 실행해도 upsert 멱등 [ ] check 통과
 
 ### T19 (레인 C) — 스냅샷 export · 상태: TODO · 의존: T15

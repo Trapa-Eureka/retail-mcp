@@ -2,7 +2,13 @@ import type { PGlite } from "@electric-sql/pglite";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createTestWarehouse } from "../src/mocks/pglite.js";
 import { createPgWarehouse, createPgliteConnectionProvider } from "../src/adapters/pgWarehouse.js";
-import type { InventoryRow, SalesLineRow, StoreRow, Warehouse } from "../src/core/types.js";
+import type {
+  InventoryRow,
+  SalesLineRow,
+  SalesPeriodAggRow,
+  StoreRow,
+  Warehouse,
+} from "../src/core/types.js";
 
 const STORE_MAIN: StoreRow = { id: "store_main", name: "본점" };
 const STORE_MAKATI: StoreRow = { id: "store_makati", name: "마카티점" };
@@ -110,6 +116,91 @@ describe("pgWarehouse (PGlite)", () => {
           },
         ]),
       ).rejects.toThrow();
+    });
+
+    it("upsertSalesPeriodAgg를 같은 (store,variant)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+      const row: SalesPeriodAggRow = {
+        storeId: "store_main",
+        variantId: "var_cola",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+        soldQty: "60",
+      };
+      await warehouse.upsertSalesPeriodAgg([row]);
+      await warehouse.upsertSalesPeriodAgg([{ ...row, soldQty: "99" }]);
+
+      const { rows } = await db.query<{ count: string; sold_qty: string }>(
+        "select count(*)::text as count, max(sold_qty) as sold_qty from sales_period_agg where store_id = 'store_main' and variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.count).toBe("1");
+      expect(rows[0]?.sold_qty).toBe("99");
+    });
+  });
+
+  describe("sales_period_agg (CSV/Excel 기간합계, TASKS T12)", () => {
+    beforeEach(async () => {
+      // CSV 스캔이 매장당 한 기간(2026-08-01 ~ 2026-08-29)으로 올린 기간합계.
+      const rows: SalesPeriodAggRow[] = [
+        {
+          storeId: "store_main",
+          variantId: "var_cola",
+          periodStart: new Date("2026-08-01T00:00:00Z"),
+          periodEnd: new Date("2026-08-29T00:00:00Z"),
+          soldQty: "56",
+        },
+        {
+          storeId: "store_main",
+          variantId: "var_chips",
+          periodStart: new Date("2026-08-01T00:00:00Z"),
+          periodEnd: new Date("2026-08-29T00:00:00Z"),
+          soldQty: "12",
+        },
+        {
+          storeId: "store_makati",
+          variantId: "var_cola",
+          periodStart: new Date("2026-08-01T00:00:00Z"),
+          periodEnd: new Date("2026-08-29T00:00:00Z"),
+          soldQty: "8",
+        },
+      ];
+      await warehouse.upsertSalesPeriodAgg(rows);
+    });
+
+    it("querySalesAgg와 동일한 SalesAgg 형태로 반환한다(core/metrics.ts가 그대로 소비 가능)", async () => {
+      const result = await warehouse.querySalesPeriodAgg({
+        storeId: "store_main",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+      });
+      const cola = result.find((r) => r.variantId === "var_cola");
+      expect(cola).toEqual({
+        storeId: "store_main",
+        variantId: "var_cola",
+        name: "코카콜라 500ml",
+        category: "음료",
+        soldQtyRaw: "56",
+      });
+    });
+
+    it("매장 필터가 적용된다", async () => {
+      const result = await warehouse.querySalesPeriodAgg({
+        storeId: "store_main",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+      });
+      expect(result.every((r) => r.storeId === "store_main")).toBe(true);
+      expect(result.some((r) => r.variantId === "var_cola" && r.storeId === "store_makati")).toBe(
+        false,
+      );
+    });
+
+    it("질의 기간이 저장된 기간과 전혀 겹치지 않으면 제외한다", async () => {
+      const result = await warehouse.querySalesPeriodAgg({
+        storeId: "store_main",
+        periodStart: new Date("2026-01-01T00:00:00Z"),
+        periodEnd: new Date("2026-02-01T00:00:00Z"),
+      });
+      expect(result).toHaveLength(0);
     });
   });
 

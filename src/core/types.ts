@@ -78,6 +78,17 @@ export interface Page<T> {
   cursor: string | null;
 }
 
+/**
+ * Loyverse REST API 전용 경계 — 이름뿐 아니라 반환 타입(LvReceipt의 receipt_number/
+ * cancelled_at/receipt_type 등)까지 Loyverse 고유 구조다. `etl/sync.ts`의 영수증 단위
+ * 증분 동기화(watermark = 마지막 영수증 updated_at) 모델 전체가 이 계약을 전제한다.
+ *
+ * CSV/Excel 채널(TASKS T12 이후)은 이 인터페이스를 구현하지 않는다 — CSV 파일에는 영수증이
+ * 없고 "기간 합계 판매수량" 하나만 있어 이 계약에 억지로 맞지 않는다. 대신 CSV 경로
+ * (`folderScan.ts`, TASKS T18)는 `Warehouse`에 직접 쓴다(SalesPeriodAggRow 등 도메인
+ * 행 타입으로). `LoyverseClient`를 소스 중립적 이름으로 일반화하지 않은 것은 의도적이다 —
+ * Loyverse 고유 구조를 정직하게 반영하는 이름이 오히려 명확하다.
+ */
 export interface LoyverseClient {
   listStores(): Promise<LvStore[]>;
   listItems(cursor?: string): Promise<Page<LvItem>>;
@@ -123,6 +134,21 @@ export interface InventoryRow {
   /** 원시 현재고. 음수는 데이터 품질 경고 대상 — 계산 시 0으로 clamp(SPEC §9), 저장은 원시값. */
   inStock: Numeric;
   updatedAt: Date;
+}
+
+/**
+ * CSV/Excel 채널의 기간합계 판매 데이터(SPEC §12, TASKS T12). Loyverse의 SalesLineRow(영수증
+ * 라인 단위)와 달리 "이 기간 동안 총 N개 팔렸다"는 집계값 하나뿐이다 — CSV 파일에는 영수증이
+ * 없다. sales_lines에 가짜 영수증으로 끼워 넣지 않고 별도로 저장한다.
+ */
+export interface SalesPeriodAggRow {
+  storeId: string;
+  variantId: string;
+  /** 이 판매수량이 어느 기간의 합인지 — 반개방 구간이 아니라 CSV가 준 값 그대로(포함 경계). */
+  periodStart: Date;
+  periodEnd: Date;
+  /** 기간 내 판매수량 합계. CSV는 환불을 별도 표현하지 않으므로 음수 불가. */
+  soldQty: Numeric;
 }
 
 export interface SalesAggQuery {
@@ -214,6 +240,12 @@ export interface Warehouse {
   upsertSalesLines(rows: SalesLineRow[]): Promise<void>;
   upsertInventory(rows: InventoryRow[]): Promise<void>;
   appendInventorySnapshot(runId: string, at: Date, rows: InventoryRow[]): Promise<void>;
+  /**
+   * CSV/Excel 채널의 기간합계 판매 upsert(SPEC §12, TASKS T12) — PK(store_id, variant_id),
+   * 매 스캔마다 최신값으로 교체한다(inventory_levels와 같은 모델, 이력 누적 아님).
+   * sales_lines(영수증 라인 단위)와는 별도 테이블이다.
+   */
+  upsertSalesPeriodAgg(rows: SalesPeriodAggRow[]): Promise<void>;
   /** sync_state.cursor(=watermark) 조회. API 페이지 토큰이 아니다. */
   getCursor(resource: string): Promise<string | null>;
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;
@@ -221,6 +253,12 @@ export interface Warehouse {
   getSyncState(): Promise<SyncStateRow[]>;
   /** 고정 파라미터라이즈드 SQL만 사용한다. */
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
+  /**
+   * sales_period_agg를 querySalesAgg와 같은 SalesAgg 반환 형태로 조회한다(TASKS T12) —
+   * core/metrics.ts의 computeSellThrough/computeReorderMetrics는 SalesAgg[]만 받으므로
+   * 소스가 sales_lines 집계든 CSV 기간합계든 core 계층 변경 없이 그대로 재사용된다.
+   */
+  querySalesPeriodAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
   queryStock(q: StockQuery): Promise<StockRow[]>;
   /**
    * 매장 목록/이름 조회(T8에서 추가) — 재주문 리포트의 지점별 표 제목(storeName)과

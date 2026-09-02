@@ -13,6 +13,7 @@ const EXPECTED_TABLES = [
   "inventory_snapshots",
   "products",
   "sales_lines",
+  "sales_period_agg",
   "schema_migrations",
   "stores",
   "sync_state",
@@ -27,11 +28,11 @@ describe("마이그레이션 러너", () => {
     executor = createPgliteExecutor(db);
   });
 
-  it("001_init 적용 후 전 테이블이 존재한다", async () => {
+  it("전 마이그레이션 적용 후 전 테이블이 존재한다", async () => {
     const migrations = await loadMigrations();
     const result = await runMigrations(executor, migrations);
 
-    expect(result.applied).toEqual(["001_init"]);
+    expect(result.applied).toEqual(["001_init", "002_sales_period_agg"]);
     expect(result.skipped).toEqual([]);
 
     const { rows } = await executor.query<{ table_name: string }>(
@@ -47,17 +48,17 @@ describe("마이그레이션 러너", () => {
     const migrations = await loadMigrations();
 
     const first = await runMigrations(executor, migrations);
-    expect(first.applied).toEqual(["001_init"]);
+    expect(first.applied).toEqual(["001_init", "002_sales_period_agg"]);
 
     const second = await runMigrations(executor, migrations);
     expect(second.applied).toEqual([]);
-    expect(second.skipped).toEqual(["001_init"]);
+    expect(second.skipped).toEqual(["001_init", "002_sales_period_agg"]);
 
     // 행 수가 두 배로 늘지 않았는지도 확인 (재적용되지 않았다는 직접 증거)
     const { rows } = await executor.query<{ count: string }>(
       "select count(*)::text as count from schema_migrations",
     );
-    expect(rows[0]?.count).toBe("1");
+    expect(rows[0]?.count).toBe("2");
   });
 
   it("agent_send_log.status는 정해진 값만 허용한다", async () => {
