@@ -1,0 +1,373 @@
+/**
+ * Warehouse의 pg/PGlite 겸용 구현. 커넥션은 밖에서 주입한다(운영 = pg.Pool, 테스트 = PGlite).
+ * SQL은 전부 파라미터라이즈드 고정 쿼리다 — 문자열 보간으로 값을 SQL에 직접 넣지 않는다.
+ * `transaction(fn)`은 실제 BEGIN/COMMIT/ROLLBACK으로 구현한다(DESIGN §11.1, T1 적대적 검수 002-02).
+ */
+import type {
+  AgentSendEntry,
+  InventoryRow,
+  ProductRow,
+  SalesAgg,
+  SalesAggQuery,
+  SalesLineRow,
+  StockQuery,
+  StockRow,
+  StoreRow,
+  Warehouse,
+} from "../core/types.js";
+
+// ── 커넥션 추상화 ───────────────────────────────────────────────────────
+
+/** 단일 세션에서 파라미터라이즈드 쿼리를 실행하는 최소 인터페이스. */
+export interface DbSession {
+  query<T extends Record<string, unknown>>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }>;
+}
+
+interface DbConnection extends DbSession {
+  /** 세션을 반환한다. pg.Pool 기반이면 실제 반환, PGlite처럼 단일 세션뿐이면 no-op. */
+  release(): void;
+}
+
+/** pgWarehouse가 세션을 확보하는 방법 — pg.Pool.connect()이거나 PGlite 인스턴스를 감싼 것. */
+export interface DbConnectionProvider {
+  acquire(): Promise<DbConnection>;
+}
+
+/** node-postgres Pool이 만족하는 최소 시그니처(직접 의존 대신 구조적 타입으로 받는다). */
+export interface PgPoolLike {
+  connect(): Promise<{
+    query<T extends Record<string, unknown>>(
+      text: string,
+      params?: unknown[],
+    ): Promise<{ rows: T[] }>;
+    release(): void;
+  }>;
+}
+
+export function createPgConnectionProvider(pool: PgPoolLike): DbConnectionProvider {
+  return {
+    async acquire() {
+      const client = await pool.connect();
+      return {
+        query: (text, params) => client.query(text, params),
+        release: () => client.release(),
+      };
+    },
+  };
+}
+
+/** PGlite 인스턴스가 만족하는 최소 시그니처(테스트 전용). */
+export interface PgliteLike {
+  query<T extends Record<string, unknown>>(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: T[] }>;
+}
+
+export function createPgliteConnectionProvider(db: PgliteLike): DbConnectionProvider {
+  return {
+    acquire() {
+      // PGlite는 항상 단일 세션이다 — release는 no-op이고, 여러 acquire()가 같은 세션을 공유한다
+      // (테스트 환경의 알려진 제약: 진짜 다중 커넥션 동시성은 PGlite로 검증할 수 없다).
+      return Promise.resolve({
+        query: (text: string, params?: unknown[]) => db.query(text, params),
+        release: () => {},
+      });
+    },
+  };
+}
+
+async function withSession<T>(
+  provider: DbConnectionProvider,
+  fn: (session: DbSession) => Promise<T>,
+): Promise<T> {
+  const conn = await provider.acquire();
+  try {
+    return await fn(conn);
+  } finally {
+    conn.release();
+  }
+}
+
+// ── SQL 헬퍼 ────────────────────────────────────────────────────────────
+
+/** rowCount개 행 × colCount개 컬럼의 `($1,$2), ($3,$4), ...` VALUES 절을 만든다. */
+function buildValuesPlaceholders(rowCount: number, colCount: number): string {
+  const rows: string[] = [];
+  let idx = 1;
+  for (let r = 0; r < rowCount; r++) {
+    const cols: string[] = [];
+    for (let c = 0; c < colCount; c++) cols.push(`$${idx++}`);
+    rows.push(`(${cols.join(", ")})`);
+  }
+  return rows.join(", ");
+}
+
+// ── 리소스별 쓰기/조회 (고정된 session에 바인딩) ───────────────────────────
+
+async function upsertStoresOn(session: DbSession, rows: StoreRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) params.push(r.id, r.name);
+  await session.query(
+    `insert into stores (id, name)
+     values ${buildValuesPlaceholders(rows.length, 2)}
+     on conflict (id) do update set name = excluded.name`,
+    params,
+  );
+}
+
+async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) params.push(r.variantId, r.itemId, r.name, r.sku, r.category);
+  await session.query(
+    `insert into products (variant_id, item_id, name, sku, category)
+     values ${buildValuesPlaceholders(rows.length, 5)}
+     on conflict (variant_id) do update set
+       item_id = excluded.item_id, name = excluded.name,
+       sku = excluded.sku, category = excluded.category`,
+    params,
+  );
+}
+
+async function upsertSalesLinesOn(session: DbSession, rows: SalesLineRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) {
+    params.push(
+      r.receiptId,
+      r.lineNo,
+      r.storeId,
+      r.variantId,
+      r.qty,
+      r.gross,
+      r.discount,
+      r.soldAt.toISOString(),
+    );
+  }
+  await session.query(
+    `insert into sales_lines (receipt_id, line_no, store_id, variant_id, qty, gross, discount, sold_at)
+     values ${buildValuesPlaceholders(rows.length, 8)}
+     on conflict (receipt_id, line_no) do update set
+       store_id = excluded.store_id, variant_id = excluded.variant_id,
+       qty = excluded.qty, gross = excluded.gross, discount = excluded.discount,
+       sold_at = excluded.sold_at`,
+    params,
+  );
+}
+
+async function upsertInventoryOn(session: DbSession, rows: InventoryRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) params.push(r.storeId, r.variantId, r.inStock, r.updatedAt.toISOString());
+  await session.query(
+    `insert into inventory_levels (store_id, variant_id, in_stock, updated_at)
+     values ${buildValuesPlaceholders(rows.length, 4)}
+     on conflict (store_id, variant_id) do update set
+       in_stock = excluded.in_stock, updated_at = excluded.updated_at`,
+    params,
+  );
+}
+
+async function appendInventorySnapshotOn(
+  session: DbSession,
+  runId: string,
+  at: Date,
+  rows: InventoryRow[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) params.push(runId, at.toISOString(), r.storeId, r.variantId, r.inStock);
+  await session.query(
+    `insert into inventory_snapshots (run_id, snapped_at, store_id, variant_id, in_stock)
+     values ${buildValuesPlaceholders(rows.length, 5)}
+     on conflict (run_id, store_id, variant_id) do update set in_stock = excluded.in_stock`,
+    params,
+  );
+}
+
+async function getCursorOn(session: DbSession, resource: string): Promise<string | null> {
+  const { rows } = await session.query<{ cursor: string | null }>(
+    "select cursor from sync_state where resource = $1",
+    [resource],
+  );
+  return rows[0]?.cursor ?? null;
+}
+
+async function setCursorOn(
+  session: DbSession,
+  resource: string,
+  watermark: string,
+  at: Date,
+): Promise<void> {
+  await session.query(
+    `insert into sync_state (resource, cursor, last_synced_at)
+     values ($1, $2, $3)
+     on conflict (resource) do update set
+       cursor = excluded.cursor, last_synced_at = excluded.last_synced_at`,
+    [resource, watermark, at.toISOString()],
+  );
+}
+
+async function querySalesAggOn(session: DbSession, q: SalesAggQuery): Promise<SalesAgg[]> {
+  const { rows } = await session.query<{
+    store_id: string;
+    variant_id: string;
+    name: string;
+    category: string | null;
+    sold_qty_raw: string;
+  }>(
+    `select
+       sl.store_id as store_id,
+       sl.variant_id as variant_id,
+       p.name as name,
+       p.category as category,
+       sum(sl.qty)::text as sold_qty_raw
+     from sales_lines sl
+     join products p on p.variant_id = sl.variant_id
+     where sl.sold_at >= $1 and sl.sold_at < $2
+       and ($3::text is null or sl.store_id = $3)
+       and ($4::text is null or p.category = $4)
+     group by sl.store_id, sl.variant_id, p.name, p.category`,
+    [q.periodStart.toISOString(), q.periodEnd.toISOString(), q.storeId ?? null, q.category ?? null],
+  );
+  return rows.map((r) => ({
+    storeId: r.store_id,
+    variantId: r.variant_id,
+    name: r.name,
+    category: r.category,
+    soldQtyRaw: r.sold_qty_raw,
+  }));
+}
+
+async function queryStockOn(session: DbSession, q: StockQuery): Promise<StockRow[]> {
+  const { rows } = await session.query<{
+    store_id: string;
+    variant_id: string;
+    name: string;
+    in_stock_raw: string;
+    updated_at: string | Date;
+  }>(
+    `select
+       il.store_id as store_id,
+       il.variant_id as variant_id,
+       p.name as name,
+       il.in_stock::text as in_stock_raw,
+       il.updated_at as updated_at
+     from inventory_levels il
+     join products p on p.variant_id = il.variant_id
+     where ($1::text is null or il.store_id = $1)
+       and ($2::text[] is null or il.variant_id = any($2::text[]))`,
+    [q.storeId ?? null, q.variantIds ?? null],
+  );
+  return rows.map((r) => ({
+    storeId: r.store_id,
+    variantId: r.variant_id,
+    name: r.name,
+    inStockRaw: r.in_stock_raw,
+    updatedAt: new Date(r.updated_at),
+  }));
+}
+
+/**
+ * run_id로 기존 행을 찾아 있으면 갱신, 없으면 새로 넣는다 — status='sending'으로 예약한 행을
+ * 나중에 'sent'/'failed'로 "같은 행" 갱신하는 예약 패턴을 지원한다(DESIGN §11.5).
+ * 이 함수 자체는 별도 BEGIN/COMMIT을 열지 않는다 — `transaction()` 안에서 호출되면 그 트랜잭션에
+ * 자연스럽게 참여하고, 단독 호출되면 SELECT와 INSERT/UPDATE 사이에 아주 짧은 경합 창이 있을 수
+ * 있다(v0.1 기준 T8의 호출 패턴에서는 문제되지 않음 — 진짜 동시 재시도 보호는 unique 인덱스가 한다).
+ */
+async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<void> {
+  const { rows } = await session.query<{ id: string }>(
+    "select id from agent_send_log where run_id = $1 order by id desc limit 1",
+    [e.runId],
+  );
+  const existingId = rows[0]?.id;
+  const values = [
+    e.sentAt.toISOString(),
+    e.status,
+    e.recipient,
+    e.subject,
+    e.suggestionCount,
+    e.messageId,
+    e.dryRun,
+    e.errorCode,
+  ];
+  if (existingId === undefined) {
+    await session.query(
+      `insert into agent_send_log
+         (run_id, sent_at, status, recipient, subject, suggestion_count, message_id, dry_run, error_code)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [e.runId, ...values],
+    );
+  } else {
+    await session.query(
+      `update agent_send_log set
+         sent_at = $2, status = $3, recipient = $4, subject = $5,
+         suggestion_count = $6, message_id = $7, dry_run = $8, error_code = $9
+       where id = $1`,
+      [existingId, ...values],
+    );
+  }
+}
+
+// ── 고정 session에 바인딩된 Warehouse (transaction() 안에서 재사용) ─────────
+
+function buildWarehouseOnSession(session: DbSession): Warehouse {
+  return {
+    // 이미 트랜잭션 안이므로 새 BEGIN 없이 같은 session으로 fn을 그대로 실행한다.
+    transaction: (fn) => fn(buildWarehouseOnSession(session)),
+    upsertStores: (rows) => upsertStoresOn(session, rows),
+    upsertProducts: (rows) => upsertProductsOn(session, rows),
+    upsertSalesLines: (rows) => upsertSalesLinesOn(session, rows),
+    upsertInventory: (rows) => upsertInventoryOn(session, rows),
+    appendInventorySnapshot: (runId, at, rows) =>
+      appendInventorySnapshotOn(session, runId, at, rows),
+    getCursor: (resource) => getCursorOn(session, resource),
+    setCursor: (resource, watermark, at) => setCursorOn(session, resource, watermark, at),
+    querySalesAgg: (q) => querySalesAggOn(session, q),
+    queryStock: (q) => queryStockOn(session, q),
+    logAgentSend: (e) => logAgentSendOn(session, e),
+  };
+}
+
+// ── 공개 팩토리 ─────────────────────────────────────────────────────────
+
+export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
+  return {
+    async transaction<T>(fn: (tx: Warehouse) => Promise<T>): Promise<T> {
+      return withSession(provider, async (session) => {
+        await session.query("begin");
+        try {
+          const tx = buildWarehouseOnSession(session);
+          const result = await fn(tx);
+          await session.query("commit");
+          return result;
+        } catch (err) {
+          try {
+            await session.query("rollback");
+          } catch {
+            // rollback 자체 실패는 무시 — 아래에서 원본 에러를 던져 원인을 보존한다.
+          }
+          throw err;
+        }
+      });
+    },
+    upsertStores: (rows) => withSession(provider, (session) => upsertStoresOn(session, rows)),
+    upsertProducts: (rows) => withSession(provider, (session) => upsertProductsOn(session, rows)),
+    upsertSalesLines: (rows) =>
+      withSession(provider, (session) => upsertSalesLinesOn(session, rows)),
+    upsertInventory: (rows) => withSession(provider, (session) => upsertInventoryOn(session, rows)),
+    appendInventorySnapshot: (runId, at, rows) =>
+      withSession(provider, (session) => appendInventorySnapshotOn(session, runId, at, rows)),
+    getCursor: (resource) => withSession(provider, (session) => getCursorOn(session, resource)),
+    setCursor: (resource, watermark, at) =>
+      withSession(provider, (session) => setCursorOn(session, resource, watermark, at)),
+    querySalesAgg: (q) => withSession(provider, (session) => querySalesAggOn(session, q)),
+    queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
+    logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
+  };
+}
