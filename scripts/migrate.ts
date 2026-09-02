@@ -17,6 +17,9 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool, type Pool as PoolType, type PoolClient } from "pg";
+import { withAdvisoryLock } from "../src/adapters/advisoryLock.js";
+
+export { withAdvisoryLock, type LockClient } from "../src/adapters/advisoryLock.js";
 
 const MIGRATIONS_DIR = path.resolve(fileURLToPath(import.meta.url), "../../migrations");
 
@@ -161,25 +164,6 @@ export async function runMigrations(
   }
 
   return { applied, skipped };
-}
-
-/** advisory lock 호출에 필요한 최소 시그니처 — pg의 Pool/PoolClient와 테스트용 fake가 함께 만족한다. */
-export interface LockClient {
-  query(text: string, values?: unknown[]): Promise<unknown>;
-}
-
-/** advisory lock 획득 → fn 실행 → advisory lock 해제. 실패해도 해제는 반드시 시도한다. */
-export async function withAdvisoryLock<T>(
-  client: LockClient,
-  key: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  await client.query("select pg_advisory_lock($1)", [key]);
-  try {
-    return await fn();
-  } finally {
-    await client.query("select pg_advisory_unlock($1)", [key]);
-  }
 }
 
 async function main(): Promise<void> {

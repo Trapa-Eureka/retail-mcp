@@ -72,6 +72,7 @@ async function seedSalesAndStock(warehouse: Warehouse): Promise<void> {
   ];
   await warehouse.upsertInventory(stock);
   await warehouse.setCursor("inventory", NOW_ISO, new Date(NOW_ISO));
+  await warehouse.setCursor("receipts", NOW_ISO, new Date(NOW_ISO));
 }
 
 describe("재주문 에이전트 (agent/reorder.ts)", () => {

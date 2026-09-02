@@ -145,6 +145,13 @@ export interface SalesAgg {
 export interface StockQuery {
   storeId?: string;
   variantIds?: string[];
+  /**
+   * 카테고리 필터(T9 추가). sell_through 도구가 category로 필터링할 때, 판매 없이 재고만
+   * 있는 다른 카테고리 품목이 category=null로 결과에 새는 것을 막으려면 queryStock 자체가
+   * 카테고리로 걸러야 한다 — computeSellThrough가 만드는 결합 결과의 category는 salesAgg
+   * 쪽 값만 신뢰할 수 있고 재고 전용 행에는 카테고리가 없기 때문이다.
+   */
+  category?: string;
 }
 
 export interface StockRow {
@@ -179,6 +186,16 @@ export interface AgentSendEntry {
   errorCode: string | null;
 }
 
+// ── 동기화 상태 (T9 sync_status 도구용) ──────────────────────────────────
+
+export interface SyncStateRow {
+  resource: string;
+  /** sync_state.cursor(=watermark). receipts는 마지막 영수증 updated_at — 실제 동기화 실행
+   * 시각과 다를 수 있다(DESIGN §11.1). stores/items/inventory는 lastSyncedAt과 같은 값이다. */
+  cursor: string | null;
+  lastSyncedAt: Date | null;
+}
+
 // ── 웨어하우스 인터페이스 ───────────────────────────────────────────────
 
 export interface Warehouse {
@@ -200,6 +217,8 @@ export interface Warehouse {
   /** sync_state.cursor(=watermark) 조회. API 페이지 토큰이 아니다. */
   getCursor(resource: string): Promise<string | null>;
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;
+  /** 전 리소스의 cursor+last_synced_at 목록(T9 `sync_status` 도구용). resource 오름차순. */
+  getSyncState(): Promise<SyncStateRow[]>;
   /** 고정 파라미터라이즈드 SQL만 사용한다. */
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
   queryStock(q: StockQuery): Promise<StockRow[]>;

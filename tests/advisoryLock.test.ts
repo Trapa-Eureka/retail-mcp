@@ -1,0 +1,86 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  AdvisoryLockBusyError,
+  withTryAdvisoryLock,
+  type QueryClient,
+} from "../src/adapters/advisoryLock.js";
+
+function fakeClient(locked: boolean): { client: QueryClient; calls: string[] } {
+  const calls: string[] = [];
+  const client: QueryClient = {
+    query: <T extends Record<string, unknown>>(text: string) => {
+      calls.push(text);
+      if (text.startsWith("select pg_try_advisory_lock")) {
+        return Promise.resolve({ rows: [{ locked }] as unknown as T[] });
+      }
+      return Promise.resolve({ rows: [] as T[] });
+    },
+  };
+  return { client, calls };
+}
+
+describe("withTryAdvisoryLock", () => {
+  it("잠금을 얻으면 fn을 실행하고 끝나면 unlock한다", async () => {
+    const { client, calls } = fakeClient(true);
+    const fn = vi.fn().mockResolvedValue(42);
+    await expect(withTryAdvisoryLock(client, 1, fn)).resolves.toBe(42);
+    expect(fn).toHaveBeenCalledOnce();
+    expect(calls).toEqual([
+      "select pg_try_advisory_lock($1) as locked",
+      "select pg_advisory_unlock($1)",
+    ]);
+  });
+
+  it("이미 잠겨 있으면 기다리지 않고 AdvisoryLockBusyError를 던지며 fn을 실행하지 않는다", async () => {
+    const { client } = fakeClient(false);
+    const fn = vi.fn().mockResolvedValue(42);
+    await expect(withTryAdvisoryLock(client, 1, fn)).rejects.toThrow(AdvisoryLockBusyError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fn이 실패해도 unlock은 반드시 호출된다", async () => {
+    const { client, calls } = fakeClient(true);
+    await expect(
+      withTryAdvisoryLock(client, 1, () => Promise.reject(new Error("boom"))),
+    ).rejects.toThrow("boom");
+    expect(calls).toContain("select pg_advisory_unlock($1)");
+  });
+
+  it("동시 호출 시뮬레이션 — 먼저 실행 중인 쪽만 성공하고 나머지는 즉시 busy 에러를 받는다", async () => {
+    // 실제 pg_try_advisory_lock을 흉내내는 단일 상태(locked) 공유 클라이언트.
+    let locked = false;
+    const client: QueryClient = {
+      query: <T extends Record<string, unknown>>(text: string) => {
+        if (text.startsWith("select pg_try_advisory_lock")) {
+          if (locked) return Promise.resolve({ rows: [{ locked: false }] as unknown as T[] });
+          locked = true;
+          return Promise.resolve({ rows: [{ locked: true }] as unknown as T[] });
+        }
+        if (text.startsWith("select pg_advisory_unlock")) {
+          locked = false;
+          return Promise.resolve({ rows: [] as T[] });
+        }
+        return Promise.resolve({ rows: [] as T[] });
+      },
+    };
+
+    let resolveSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      resolveSlow = resolve;
+    });
+
+    const first = withTryAdvisoryLock(client, 1, async () => {
+      await slow;
+      return "first";
+    });
+    // first가 이미 락을 획득한 뒤(동기적으로 잠금 시도까지는 마이크로태스크 큐 안에서 진행) 두
+    // 번째 호출이 뒤따르므로, 두 번째는 busy로 즉시 실패해야 한다.
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = withTryAdvisoryLock(client, 1, () => Promise.resolve("second"));
+
+    await expect(second).rejects.toThrow(AdvisoryLockBusyError);
+    resolveSlow?.();
+    await expect(first).resolves.toBe("first");
+  });
+});

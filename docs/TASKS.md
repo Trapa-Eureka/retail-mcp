@@ -47,7 +47,7 @@
 - 목표: `agent/reorder.ts` — DESIGN §7 흐름, 이중 게이트(`SEND_MODE` + `--confirm`), LLM 실패 시 표만 발송.
 - 완료 기준: [ ] **TESTING §4 에이전트 5항목 전부** 통과 [ ] check 통과
 
-### T9 — MCP 서버 · 상태: TODO · 의존: T7, T8(코어 재사용 확인용), T6
+### T9 — MCP 서버 · 상태: DONE(2026-09-02) · 의존: T7, T8(코어 재사용 확인용), T6
 - 목표: 도구 6종(DESIGN §6, zod 스키마), server.ts는 조립만, `.mcp.json` 커밋.
 - 완료 기준: [ ] **TESTING §4 MCP 4항목 전부** 통과 (도구=에이전트 수치 일치 포함) [ ] `npm run dev` 기동 [ ] check 통과
 
@@ -78,7 +78,7 @@
 | T5 | 음수 순판매·음수 재고 정규화와 경고, 사업장 타임존의 반개방 기간 경계 테스트 |
 | T7 | 페이지 토큰과 watermark 분리, 동률 경계 재조회, 빈 inventory 응답 거부, 리소스별 결과 반환. `updated_at_min` 기준 watermark 사용, `cancelled_at` 있는 영수증 제외, REFUND 라인의 부호 반전을 ETL에서 명시적으로 수행 (docs/003 적대적 검수) |
 | T8 | `provider.send()` 호출 **전에** `status='sending'` 행을 먼저 커밋하는 예약 패턴으로 중복 발송 방지(스키마는 T1에서 확정), 실행 상태별 로그 테스트, `sending`에 멈춘 오래된 행의 회수 정책 — **완료**: `pgWarehouse.logAgentSend`가 `sending`은 항상 새 INSERT(유니크 위반 시 재발송 거부 에러)로, `sent`/`failed`는 그 `sending` 행만 UPDATE하도록 정정(DESIGN §11.5 구현 정정 참조 — 기존 select-then-upsert는 이미 `sent`인 run_id도 재발송을 허용하는 결함이 있었음). 오래된 `sending` 회수는 자동화하지 않고 운영자 수동 확인으로 정책 확정(Warehouse에 조회 메서드가 없어 에이전트가 스스로 판단 불가). `Warehouse.queryStores(storeId?)` 추가(매장명 조회, `reorder_suggestions`/MCP 필터 검증과 공용) — `buildReorderReport()`를 `src/agent/reorder.ts`에 T9 재사용용으로 분리 export |
-| T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트. `sync_now`는 `etl/sync.ts`의 `syncAll()`을 advisory lock으로 감싸 동시 호출 시 하나만 실행되게 한다(DESIGN §11.4) — T7의 `syncAll()` 자체는 동시 호출 가드가 없다(단일 호출의 리소스별 원자성·재개만 보장) |
+| T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트. `sync_now`는 `etl/sync.ts`의 `syncAll()`을 advisory lock으로 감싸 동시 호출 시 하나만 실행되게 한다(DESIGN §11.4) — T7의 `syncAll()` 자체는 동시 호출 가드가 없다(단일 호출의 리소스별 원자성·재개만 보장) — **완료**: 논블로킹 `pg_try_advisory_lock`(`withTryAdvisoryLock`)으로 구현, 실행 중이면 즉시 `AdvisoryLockBusyError`. stale 판정은 `core/freshness.ts`(공유, 기본 24시간·`STALE_THRESHOLD_HOURS`)로 리포트·조회 도구가 공용. `Warehouse.getSyncState()`/`StockQuery.category` 추가(각각 `sync_status`, `sell_through`의 카테고리 필터 새는 결함 수정). `reorder_suggestions`는 `agent/reorder.ts`의 `buildReorderReport()`를 그대로 호출해 도구=에이전트 값 일치를 구조적으로 보장. 로직은 `src/mcp/tools.ts`에 두고 `server.ts`는 `McpServer.registerTool()` 조립만. `sell_through`의 `order` 기본값은 문서에 명시가 없어 desc(높은 순)로 확정 |
 | T10 | `TESTING.md` §7 전체 회귀 가드와 core 커버리지 90% 리포트 |
 | T11 | README에 타임존·권한 분리·stale 확인 및 최초 live 발송 전 체크 절차 반영 |
 

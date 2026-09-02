@@ -1,10 +1,311 @@
 /**
- * MCP 서버 진입점 (자리표시자).
- * 도구 6종 등록은 T9에서 구현한다 (DESIGN.md §6, docs/TASKS.md).
- * `npm run dev`는 이 파일이 완성되기 전까지 명확한 안내 메시지와 함께 종료 코드 1을 반환한다.
+ * MCP 서버 진입점 (DESIGN.md §6, §9). 도구 6종을 등록하는 조립만 한다 — 로직은
+ * `src/mcp/tools.ts`에 있다(CLAUDE.md "server.ts는 도구 등록·조립만, 로직 없음").
+ *
+ * 조회 도구 5종(sell_through/inventory_status/stockout_risk/reorder_suggestions/sync_status)은
+ * 항상 등록한다. `sync_now`(쓰기)는 `SYNC_TOOL_ENABLED=true`일 때만 등록한다 — 운영 기본값은
+ * 비활성이다(DESIGN §11.4). 동시 `sync_now` 호출은 advisory lock으로 하나만 통과시키고
+ * 나머지는 즉시 "실행 중" 에러를 받는다(TESTING §7).
  */
-console.error(
-  "retail-mcp MCP 서버는 아직 구현되지 않았습니다 (T9 예정). " +
-    "docs/TASKS.md의 T9 — MCP 서버 태스크가 완료되면 `npm run dev`로 stdio 서버가 기동됩니다.",
-);
-process.exit(1);
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
+import { Pool } from "pg";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+import { withTryAdvisoryLock } from "./adapters/advisoryLock.js";
+import { createLoyverseClientFromEnv } from "./adapters/loyverseClient.js";
+import { createPgConnectionProvider, createPgWarehouse } from "./adapters/pgWarehouse.js";
+import { createSystemClock } from "./adapters/systemClock.js";
+import { DEFAULT_STALE_THRESHOLD_HOURS } from "./core/freshness.js";
+import {
+  DEFAULT_LEAD_TIME_DAYS,
+  DEFAULT_SAFETY_DAYS,
+  DEFAULT_TARGET_COVER_DAYS,
+} from "./core/metrics.js";
+import type { Clock, LoyverseClient, Warehouse } from "./core/types.js";
+import {
+  inventoryStatusTool,
+  reorderSuggestionsTool,
+  sellThroughTool,
+  stockoutRiskTool,
+  syncNowTool,
+  syncStatusTool,
+  type QueryToolDeps,
+} from "./mcp/tools.js";
+
+/** sync_now 전용 advisory lock 키 — scripts/migrate.ts의 MIGRATION_LOCK_KEY와 겹치지 않는 임의값. */
+const SYNC_NOW_LOCK_KEY = 727_100_205;
+
+// ── 환경설정 파싱 (IO 없음 — 테스트 가능) ────────────────────────────────
+
+export interface ServerConfig {
+  databaseUrl: string;
+  businessTimezone: string;
+  staleThresholdHours: number;
+  syncToolEnabled: boolean;
+}
+
+function parsePositiveNumber(
+  envVarName: string,
+  raw: string | undefined,
+  fallback: number,
+): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(
+      `${envVarName} 값이 올바르지 않습니다: "${raw}". 0보다 큰 숫자를 지정하거나 .env에서 지우세요.`,
+    );
+  }
+  return n;
+}
+
+/** env에서 서버 설정을 읽고 검증한다. IO 없음 — process.env만 읽는다. */
+export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const databaseUrl = env["DATABASE_URL"];
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL이 없습니다. Neon/Supabase Postgres 연결 문자열을 .env에 추가하세요.",
+    );
+  }
+  const businessTimezone = env["BUSINESS_TIMEZONE"];
+  if (!businessTimezone) {
+    throw new Error(
+      "BUSINESS_TIMEZONE이 없습니다. 예: Asia/Manila. .env의 BUSINESS_TIMEZONE에 추가하세요.",
+    );
+  }
+  const staleThresholdHours = parsePositiveNumber(
+    "STALE_THRESHOLD_HOURS",
+    env["STALE_THRESHOLD_HOURS"],
+    DEFAULT_STALE_THRESHOLD_HOURS,
+  );
+  const syncToolEnabled = env["SYNC_TOOL_ENABLED"] === "true";
+  return { databaseUrl, businessTimezone, staleThresholdHours, syncToolEnabled };
+}
+
+// ── 도구 결과 포장 ───────────────────────────────────────────────────────
+
+function ok(payload: unknown): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload as Record<string, unknown>,
+  };
+}
+
+function errorResult(err: unknown): CallToolResult {
+  // 시크릿·외부 응답 원문을 담지 않는다(DESIGN §11.4) — 어댑터들은 이미 원인만 담은 Error를
+  // 던지도록 만들어져 있으므로(loyverseClient/resendProvider 등) message만 그대로 노출한다.
+  const message = err instanceof Error ? err.message : String(err);
+  return { content: [{ type: "text", text: message }], isError: true };
+}
+
+async function wrap(fn: () => Promise<unknown>): Promise<CallToolResult> {
+  try {
+    return ok(await fn());
+  } catch (err) {
+    return errorResult(err);
+  }
+}
+
+// ── 도구 등록 (조립만) ───────────────────────────────────────────────────
+
+export interface RegisterToolsDeps {
+  warehouse: Warehouse;
+  clock: Clock;
+  config: ServerConfig;
+  /** sync_now에서만 쓴다. SYNC_TOOL_ENABLED=false면 아예 참조하지 않는다. */
+  loyverseClient?: LoyverseClient;
+  /** sync_now의 advisory lock 실행기. SYNC_TOOL_ENABLED=false면 아예 참조하지 않는다. */
+  runExclusively?: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
+/** 실제로 등록한 도구 이름 목록을 반환한다 — SYNC_TOOL_ENABLED 분기를 테스트로 확인하기 위함. */
+export function registerTools(server: McpServer, deps: RegisterToolsDeps): string[] {
+  const registered: string[] = [];
+  const queryDeps: QueryToolDeps = {
+    warehouse: deps.warehouse,
+    clock: deps.clock,
+    businessTimezone: deps.config.businessTimezone,
+    staleThresholdHours: deps.config.staleThresholdHours,
+  };
+
+  server.registerTool(
+    "sell_through",
+    {
+      title: "셀스루(근사) 조회",
+      description:
+        "기간 판매수량 대비 기말재고로 근사 셀스루율을 계산한다(SPEC §2). 정통 정의(입고 기반)는 v0.2.",
+      inputSchema: {
+        store_id: z.string().optional(),
+        category: z.string().optional(),
+        period_days: z.number().int().positive().default(30),
+        order: z.enum(["asc", "desc"]).default("desc"),
+        top: z.number().int().positive().max(500).default(20),
+      },
+    },
+    (args) =>
+      wrap(() =>
+        sellThroughTool(queryDeps, {
+          ...(args.store_id !== undefined ? { storeId: args.store_id } : {}),
+          ...(args.category !== undefined ? { category: args.category } : {}),
+          periodDays: args.period_days,
+          order: args.order,
+          top: args.top,
+        }),
+      ),
+  );
+  registered.push("sell_through");
+
+  server.registerTool(
+    "inventory_status",
+    {
+      title: "현재고 + 커버일수 조회",
+      description: "현재고와 재고커버일수(SPEC §2)를 매장·품목별로 반환한다.",
+      inputSchema: {
+        store_id: z.string().optional(),
+        below_days_cover: z.number().positive().optional(),
+      },
+    },
+    (args) =>
+      wrap(() =>
+        inventoryStatusTool(queryDeps, {
+          ...(args.store_id !== undefined ? { storeId: args.store_id } : {}),
+          ...(args.below_days_cover !== undefined ? { belowDaysCover: args.below_days_cover } : {}),
+        }),
+      ),
+  );
+  registered.push("inventory_status");
+
+  server.registerTool(
+    "stockout_risk",
+    {
+      title: "품절위험 조회",
+      description: "재고커버일수 < 리드타임+안전일수인 품목과 예상 소진일을 반환한다(SPEC §2).",
+      inputSchema: {
+        store_id: z.string().optional(),
+        lead_time_days: z.number().int().nonnegative().default(DEFAULT_LEAD_TIME_DAYS),
+        safety_days: z.number().int().nonnegative().default(DEFAULT_SAFETY_DAYS),
+      },
+    },
+    (args) =>
+      wrap(() =>
+        stockoutRiskTool(queryDeps, {
+          ...(args.store_id !== undefined ? { storeId: args.store_id } : {}),
+          leadTimeDays: args.lead_time_days,
+          safetyDays: args.safety_days,
+        }),
+      ),
+  );
+  registered.push("stockout_risk");
+
+  server.registerTool(
+    "reorder_suggestions",
+    {
+      title: "재주문 제안 조회",
+      description:
+        "지점별 재주문 제안 수량 표를 반환한다 — 재주문 에이전트(npm run agent:reorder)와 완전히 " +
+        "동일한 계산 함수를 쓴다(DESIGN §6).",
+      inputSchema: {
+        store_id: z.string().optional(),
+        target_days_cover: z.number().int().positive().default(DEFAULT_TARGET_COVER_DAYS),
+        lead_time_days: z.number().int().nonnegative().default(DEFAULT_LEAD_TIME_DAYS),
+      },
+    },
+    (args) =>
+      wrap(() =>
+        reorderSuggestionsTool(queryDeps, {
+          ...(args.store_id !== undefined ? { storeId: args.store_id } : {}),
+          targetDaysCover: args.target_days_cover,
+          leadTimeDays: args.lead_time_days,
+        }),
+      ),
+  );
+  registered.push("reorder_suggestions");
+
+  server.registerTool(
+    "sync_status",
+    {
+      title: "동기화 상태 조회",
+      description: "리소스별 watermark(cursor)와 마지막 동기화 시각을 반환한다.",
+      inputSchema: {},
+    },
+    () => wrap(() => syncStatusTool({ warehouse: deps.warehouse, clock: deps.clock })),
+  );
+  registered.push("sync_status");
+
+  if (deps.config.syncToolEnabled) {
+    if (!deps.loyverseClient || !deps.runExclusively) {
+      throw new Error(
+        "SYNC_TOOL_ENABLED=true인데 loyverseClient/runExclusively가 조립되지 않았습니다 " +
+          "(server.ts 조립 버그 — createRetailMcpServer() 호출부를 확인하세요).",
+      );
+    }
+    const loyverseClient = deps.loyverseClient;
+    const runExclusively = deps.runExclusively;
+    server.registerTool(
+      "sync_now",
+      {
+        title: "즉시 동기화 실행 (쓰기)",
+        description:
+          "Loyverse에서 즉시 증분 동기화한다. 운영 기본값은 비활성 — SYNC_TOOL_ENABLED=true일 " +
+          "때만 등록된다(DESIGN §11.4). 동시 호출은 하나만 실행되고 나머지는 즉시 오류를 받는다.",
+        inputSchema: {
+          resources: z.array(z.enum(["stores", "items", "receipts", "inventory"])).optional(),
+        },
+      },
+      (args) =>
+        wrap(() =>
+          syncNowTool(
+            { loyverseClient, warehouse: deps.warehouse, clock: deps.clock, runExclusively },
+            args.resources !== undefined ? { resources: args.resources } : {},
+          ),
+        ),
+    );
+    registered.push("sync_now");
+  }
+
+  return registered;
+}
+
+// ── CLI 진입점 (조립만) ───────────────────────────────────────────────────
+
+export function createRetailMcpServer(): { server: McpServer; close: () => Promise<void> } {
+  const config = resolveServerConfig();
+  const pool = new Pool({ connectionString: config.databaseUrl });
+  const warehouse = createPgWarehouse(createPgConnectionProvider(pool));
+  const clock = createSystemClock();
+
+  const server = new McpServer({ name: "retail-mcp", version: "0.1.0" });
+
+  const registerDeps: RegisterToolsDeps = { warehouse, clock, config };
+  if (config.syncToolEnabled) {
+    registerDeps.loyverseClient = createLoyverseClientFromEnv();
+    registerDeps.runExclusively = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const client = await pool.connect();
+      try {
+        return await withTryAdvisoryLock(client, SYNC_NOW_LOCK_KEY, fn);
+      } finally {
+        client.release();
+      }
+    };
+  }
+  registerTools(server, registerDeps);
+
+  return { server, close: () => pool.end() };
+}
+
+async function main(): Promise<void> {
+  const { server } = createRetailMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMainModule) {
+  main().catch((err: unknown) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  });
+}
