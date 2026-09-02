@@ -1,0 +1,92 @@
+{
+  "items": [
+    {
+      "id": "itm_cola",
+      "item_name": "코카콜라 500ml",
+      "category_id": "cat_beverage",
+      "variants": [
+        {
+          "variant_id": "var_cola500",
+          "sku": "SKU-COLA-500"
+        }
+      ]
+    },
+    {
+      "id": "itm_piattos",
+      "item_name": "Piattos Cheese 85g",
+      "category_id": "cat_snack",
+      "variants": [
+        {
+          "variant_id": "var_piattos85",
+          "sku": "SKU-PIATTOS-85"
+        }
+      ]
+    },
+    {
+      "id": "itm_kopiko",
+      "item_name": "Kopiko Coffee 3-in-1",
+      "category_id": "cat_beverage",
+      "variants": [
+        {
+          "variant_id": "var_kopiko3in1",
+          "sku": "SKU-KOPIKO-3IN1"
+        }
+      ]
+    },
+    {
+      "id": "itm_datuputi",
+      "item_name": "Datu Puti Suka 1L",
+      "category_id": "cat_condiment",
+      "variants": [
+        {
+          "variant_id": "var_datuputi1l",
+          "sku": "SKU-DATUPUTI-1L"
+        }
+      ]
+    },
+    {
+      "id": "itm_shinramyun",
+      "item_name": "신라면 컵",
+      "category_id": "cat_noodle",
+      "variants": [
+        {
+          "variant_id": "var_shinramyuncup",
+          "sku": "SKU-SHINRAMYUN-CUP"
+        }
+      ]
+    },
+    {
+      "id": "itm_luckyme",
+      "item_name": "Lucky Me Pancit Canton",
+      "category_id": "cat_noodle",
+      "variants": [
+        {
+          "variant_id": "var_luckymepancit",
+          "sku": "SKU-LUCKYME-PANCIT"
+        }
+      ]
+    },
+    {
+      "id": "itm_bearbrand",
+      "item_name": "Bear Brand Milk 300ml",
+      "category_id": "cat_dairy",
+      "variants": [
+        {
+          "variant_id": "var_bearbrand300",
+          "sku": "SKU-BEARBRAND-300"
+        }
+      ]
+    },
+    {
+      "id": "itm_mirinda",
+      "item_name": "미린다 오렌지",
+      "category_id": "cat_beverage",
+      "variants": [
+        {
+          "variant_id": "var_mirindaorange",
+          "sku": "SKU-MIRINDA-ORANGE"
+        }
+      ]
+    }
+  ]
+}

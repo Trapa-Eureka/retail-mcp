@@ -1,0 +1,12 @@
+{
+  "stores": [
+    {
+      "id": "store_main",
+      "name": "본점"
+    },
+    {
+      "id": "store_makati",
+      "name": "마카티점"
+    }
+  ]
+}

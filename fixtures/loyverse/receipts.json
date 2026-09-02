@@ -1,0 +1,2928 @@
+{
+  "receipts": [
+    {
+      "receipt_number": "R-STORE_MAIN-00001",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-07-28T09:15:00.000Z",
+      "total_money": 1216,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00043",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-07-28T09:15:00.000Z",
+      "total_money": 1200,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00002",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-07-28T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00003",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-07-29T09:15:00.000Z",
+      "total_money": 845,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00044",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-07-29T09:15:00.000Z",
+      "total_money": 1045,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00004",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-07-30T09:15:00.000Z",
+      "total_money": 1114,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00045",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-07-30T09:15:00.000Z",
+      "total_money": 1270,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00005",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-07-31T09:15:00.000Z",
+      "total_money": 885,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00046",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-07-31T09:15:00.000Z",
+      "total_money": 920,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00047",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-07-31T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00006",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-01T09:15:00.000Z",
+      "total_money": 1304,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00048",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-01T09:15:00.000Z",
+      "total_money": 1157,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00007",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-02T09:15:00.000Z",
+      "total_money": 910,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00049",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-02T09:15:00.000Z",
+      "total_money": 910,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00008",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-02T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00009",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-03T09:15:00.000Z",
+      "total_money": 921,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00050",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-03T09:15:00.000Z",
+      "total_money": 1455,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00010",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-04T09:15:00.000Z",
+      "total_money": 1020,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00051",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-04T09:15:00.000Z",
+      "total_money": 1090,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00011",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-05T09:15:00.000Z",
+      "total_money": 1369,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00052",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-05T09:15:00.000Z",
+      "total_money": 880,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00053",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-05T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00012",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-06T09:15:00.000Z",
+      "total_money": 930,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00054",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-06T09:15:00.000Z",
+      "total_money": 965,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00013",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-07T09:15:00.000Z",
+      "total_money": 914,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00055",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-07T09:15:00.000Z",
+      "total_money": 1412,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00014",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-07T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00015",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-08T09:15:00.000Z",
+      "total_money": 955,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00056",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-08T09:15:00.000Z",
+      "total_money": 825,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00016",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-09T09:15:00.000Z",
+      "total_money": 1176,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00057",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-09T09:15:00.000Z",
+      "total_money": 1420,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00017",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-10T09:15:00.000Z",
+      "total_money": 935,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00058",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-10T09:15:00.000Z",
+      "total_money": 910,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00059",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-10T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00018",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-11T09:15:00.000Z",
+      "total_money": 1334,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00060",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-11T09:15:00.000Z",
+      "total_money": 1135,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00019",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-12T09:15:00.000Z",
+      "total_money": 750,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00061",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-12T09:15:00.000Z",
+      "total_money": 1010,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00020",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-12T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00021",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-13T09:15:00.000Z",
+      "total_money": 1169,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00062",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-13T09:15:00.000Z",
+      "total_money": 1247,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00022",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-14T09:15:00.000Z",
+      "total_money": 1000,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00063",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-14T09:15:00.000Z",
+      "total_money": 870,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00023",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-15T09:15:00.000Z",
+      "total_money": 1011,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00064",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-15T09:15:00.000Z",
+      "total_money": 1320,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00065",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-15T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00024",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-16T09:15:00.000Z",
+      "total_money": 980,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00066",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-16T09:15:00.000Z",
+      "total_money": 1085,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00025",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-17T09:15:00.000Z",
+      "total_money": 1234,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00067",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-17T09:15:00.000Z",
+      "total_money": 970,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00026",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-17T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00027",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-18T09:15:00.000Z",
+      "total_money": 925,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00068",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-18T09:15:00.000Z",
+      "total_money": 1055,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00028",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-19T09:15:00.000Z",
+      "total_money": 1004,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00069",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-19T09:15:00.000Z",
+      "total_money": 1502,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00029",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-20T09:15:00.000Z",
+      "total_money": 1045,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00070",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-20T09:15:00.000Z",
+      "total_money": 690,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00071",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-20T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00030",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-21T09:15:00.000Z",
+      "total_money": 1266,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00072",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-21T09:15:00.000Z",
+      "total_money": 1155,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00031",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-22T09:15:00.000Z",
+      "total_money": 800,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00073",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-22T09:15:00.000Z",
+      "total_money": 1000,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00032",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-22T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00033",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-23T09:15:00.000Z",
+      "total_money": 1069,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00074",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-23T09:15:00.000Z",
+      "total_money": 1355,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00034",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-24T09:15:00.000Z",
+      "total_money": 840,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00075",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-24T09:15:00.000Z",
+      "total_money": 1100,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00035",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-25T09:15:00.000Z",
+      "total_money": 1389,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00076",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-25T09:15:00.000Z",
+      "total_money": 1112,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00077",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-25T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00036",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-26T09:15:00.000Z",
+      "total_money": 1090,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00078",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-26T09:15:00.000Z",
+      "total_money": 735,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00037",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-27T09:15:00.000Z",
+      "total_money": 1036,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 4,
+          "gross_total_money": 160,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00079",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-27T09:15:00.000Z",
+      "total_money": 1650,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 6,
+          "gross_total_money": 240,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00038",
+      "receipt_type": "REFUND",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-27T16:40:00.000Z",
+      "total_money": -191,
+      "line_items": [
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": -1,
+          "gross_total_money": -65,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00039",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-28T09:15:00.000Z",
+      "total_money": 1005,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 4,
+          "gross_total_money": 160,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00080",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-28T09:15:00.000Z",
+      "total_money": 1285,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 6,
+          "gross_total_money": 240,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00040",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-29T09:15:00.000Z",
+      "total_money": 1484,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 10,
+          "gross_total_money": 450,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 4,
+          "gross_total_money": 160,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00081",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-29T09:15:00.000Z",
+      "total_money": 1300,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 6,
+          "gross_total_money": 240,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00041",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-30T09:15:00.000Z",
+      "total_money": 1045,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 11,
+          "gross_total_money": 495,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 6,
+          "gross_total_money": 330,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 2,
+          "gross_total_money": 60,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 4,
+          "gross_total_money": 160,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00082",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-30T09:15:00.000Z",
+      "total_money": 1290,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 8,
+          "gross_total_money": 360,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_datuputi",
+          "variant_id": "var_datuputi1l",
+          "item_name": "Datu Puti Suka 1L",
+          "quantity": 2,
+          "gross_total_money": 130,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_luckyme",
+          "variant_id": "var_luckymepancit",
+          "item_name": "Lucky Me Pancit Canton",
+          "quantity": 4,
+          "gross_total_money": 120,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 6,
+          "gross_total_money": 240,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00083",
+      "receipt_type": "REFUND",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-30T16:40:00.000Z",
+      "total_money": -126,
+      "line_items": [
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": -3,
+          "gross_total_money": -126,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAIN-00042",
+      "receipt_type": "SALE",
+      "store_id": "store_main",
+      "receipt_date": "2026-08-31T09:15:00.000Z",
+      "total_money": 1254,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 12,
+          "gross_total_money": 540,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 8,
+          "gross_total_money": 440,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 3,
+          "gross_total_money": 114,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 4,
+          "gross_total_money": 160,
+          "total_discount": 0
+        }
+      ]
+    },
+    {
+      "receipt_number": "R-STORE_MAKATI-00084",
+      "receipt_type": "SALE",
+      "store_id": "store_makati",
+      "receipt_date": "2026-08-31T09:15:00.000Z",
+      "total_money": 1607,
+      "line_items": [
+        {
+          "item_id": "itm_cola",
+          "variant_id": "var_cola500",
+          "item_name": "코카콜라 500ml",
+          "quantity": 9,
+          "gross_total_money": 405,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_piattos",
+          "variant_id": "var_piattos85",
+          "item_name": "Piattos Cheese 85g",
+          "quantity": 10,
+          "gross_total_money": 550,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_kopiko",
+          "variant_id": "var_kopiko3in1",
+          "item_name": "Kopiko Coffee 3-in-1",
+          "quantity": 1,
+          "gross_total_money": 12,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_shinramyun",
+          "variant_id": "var_shinramyuncup",
+          "item_name": "신라면 컵",
+          "quantity": 5,
+          "gross_total_money": 190,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_bearbrand",
+          "variant_id": "var_bearbrand300",
+          "item_name": "Bear Brand Milk 300ml",
+          "quantity": 6,
+          "gross_total_money": 240,
+          "total_discount": 0
+        },
+        {
+          "item_id": "itm_mirinda",
+          "variant_id": "var_mirindaorange",
+          "item_name": "미린다 오렌지",
+          "quantity": 5,
+          "gross_total_money": 210,
+          "total_discount": 0
+        }
+      ]
+    }
+  ]
+}
