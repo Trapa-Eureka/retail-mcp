@@ -1,0 +1,38 @@
+{
+  "name": "retail-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "리테일 다지점 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "dev": "tsx src/server.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "agent:reorder": "tsx src/agent/reorder.ts",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.4.1",
+    "@typescript-eslint/eslint-plugin": "^8.69.0",
+    "@typescript-eslint/parser": "^8.69.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "zod": "^4.5.4"
+  }
+}
