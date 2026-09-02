@@ -33,17 +33,72 @@ export interface FixtureLoyverseClientOptions {
   inventoryPageSize?: number;
 }
 
-/** offset 기반 커서로 배열을 한 페이지씩 잘라낸다. */
-function paginate<T>(all: T[], pageSize: number, cursor: string | undefined): Page<T> {
-  const offset = cursor === undefined ? 0 : Number(cursor);
-  if (!Number.isInteger(offset) || offset < 0) {
+function assertPositiveInt(name: string, value: number): void {
+  if (!Number.isInteger(value) || value <= 0) {
     throw new Error(
-      `유효하지 않은 cursor입니다: "${cursor}". FixtureLoyverseClient가 발급한 cursor 문자열만 전달하세요.`,
+      `${name}는 1 이상의 정수여야 합니다. 받은 값: ${value}. ` +
+        `0/음수/소수/NaN을 페이지 크기로 주면 빈 페이지가 무한히 반복될 수 있습니다.`,
     );
+  }
+}
+
+interface CursorPayload {
+  offset: number;
+  [key: string]: unknown;
+}
+
+/** cursor를 조회 조건(queryTag)과 함께 묶은 불투명(opaque) 토큰으로 인코딩한다. */
+function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string): CursorPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as { offset?: unknown }).offset !== "number"
+  ) {
+    throw new Error(
+      `유효하지 않은 cursor입니다: "${cursor}". FixtureLoyverseClient가 이전 응답으로 발급한 ` +
+        `cursor 문자열만 그대로 전달하세요.`,
+    );
+  }
+  return parsed as CursorPayload;
+}
+
+/**
+ * offset 기반 커서로 배열을 한 페이지씩 잘라낸다. cursor는 발급 당시의 조회 조건(queryTag,
+ * 예: listReceipts의 sinceISO)을 함께 인코딩한 불투명 토큰이다 — 재사용 시 queryTag가
+ * 다르면(예: sinceISO를 바꿔서 넘기면) 명확한 에러로 거부한다.
+ */
+function paginate<T>(
+  all: T[],
+  pageSize: number,
+  cursor: string | undefined,
+  queryTag: Record<string, unknown> = {},
+): Page<T> {
+  let offset = 0;
+  if (cursor !== undefined) {
+    const decoded = decodeCursor(cursor);
+    const { offset: decodedOffset, ...decodedTag } = decoded;
+    if (JSON.stringify(decodedTag) !== JSON.stringify(queryTag)) {
+      throw new Error(
+        "cursor는 최초 호출과 동일한 조회 조건에서만 사용할 수 있습니다. " +
+          "조건을 바꾸려면 cursor 없이 새로 호출하세요.",
+      );
+    }
+    offset = decodedOffset;
   }
   const items = all.slice(offset, offset + pageSize);
   const nextOffset = offset + pageSize;
-  const cursorOut = nextOffset < all.length ? String(nextOffset) : null;
+  const cursorOut =
+    nextOffset < all.length ? encodeCursor({ offset: nextOffset, ...queryTag }) : null;
   return { items, cursor: cursorOut };
 }
 
@@ -59,6 +114,9 @@ export async function createFixtureLoyverseClient(
   const itemsPageSize = opts.itemsPageSize ?? 5;
   const receiptsPageSize = opts.receiptsPageSize ?? 40;
   const inventoryPageSize = opts.inventoryPageSize ?? 10;
+  assertPositiveInt("itemsPageSize", itemsPageSize);
+  assertPositiveInt("receiptsPageSize", receiptsPageSize);
+  assertPositiveInt("inventoryPageSize", inventoryPageSize);
 
   const storesRaw = LvStoresResponseSchema.parse(await readJson(path.join(dir, "stores.json")));
   const itemsRaw = LvItemsResponseSchema.parse(await readJson(path.join(dir, "items.json")));
@@ -82,7 +140,12 @@ export async function createFixtureLoyverseClient(
     .map((r) => ({
       receipt_number: r.receipt_number,
       store_id: r.store_id,
+      receipt_type: r.receipt_type,
+      refund_for: r.refund_for,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
       receipt_date: r.receipt_date,
+      cancelled_at: r.cancelled_at,
       line_items: r.line_items.map((li) => ({
         variant_id: li.variant_id,
         item_id: li.item_id,
@@ -91,13 +154,19 @@ export async function createFixtureLoyverseClient(
         total_discount: li.total_discount,
       })),
     }))
-    // 실제 API처럼 시간순 정렬을 보장한다 — 이후 sinceISO 필터·커서 페이지네이션의 전제
-    .sort((a, b) => a.receipt_date.localeCompare(b.receipt_date));
+    // 실제 API처럼 watermark 기준(updated_at) 정렬을 보장한다 — receipt_date가 아니다.
+    // 동률은 receipt_number로 안정적으로 재조회할 수 있게 한다(DESIGN §11.1).
+    .sort(
+      (a, b) =>
+        a.updated_at.localeCompare(b.updated_at) ||
+        a.receipt_number.localeCompare(b.receipt_number),
+    );
 
   const inventory: LvInventoryLevel[] = inventoryRaw.inventory_levels.map((l) => ({
     variant_id: l.variant_id,
     store_id: l.store_id,
     in_stock: l.in_stock,
+    updated_at: l.updated_at,
   }));
 
   return {
@@ -111,12 +180,11 @@ export async function createFixtureLoyverseClient(
     },
 
     listReceipts(sinceISO: string, cursor?: string) {
-      // sinceISO는 페이지네이션 전 구간의 최초 호출에서만 적용한다(실제 API와 동일하게
-      // cursor가 있으면 원 질의 범위를 그대로 이어받는다 — 우리 인터페이스는 매 호출마다
-      // sinceISO를 다시 받으므로 항상 동일한 값을 넘긴다는 전제로 필터링한다).
+      // sinceISO는 실제 API의 updated_at_min에 대응한다 — receipt_date가 아니라
+      // updated_at 기준으로 필터링해야 과거 영수증의 사후 환불·취소·수정도 놓치지 않는다.
       return Promise.resolve().then(() => {
-        const filtered = allReceipts.filter((r) => r.receipt_date >= sinceISO);
-        return paginate(filtered, receiptsPageSize, cursor);
+        const filtered = allReceipts.filter((r) => r.updated_at >= sinceISO);
+        return paginate(filtered, receiptsPageSize, cursor, { sinceISO });
       });
     },
 
