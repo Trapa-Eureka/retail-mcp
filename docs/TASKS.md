@@ -82,9 +82,10 @@ T12는 완료(DONE)됐다 — 착수 중 스코프가 "리네임"에서 "데이�
 - 완료 기준: [x] `sales_period_agg` 마이그레이션(002) + upsert 멱등·query 필터(매장/기간 겹침) 테스트, 기존 182개 회귀 없이 총 186개 통과 [x] `LoyverseClient`/`etl/sync.ts`에 "Loyverse 전용 경로, CSV는 구현하지 않음"을 명시하는 문서 주석 [x] check 통과
 - **후속 영향(T15~T18 완료 기준에 반영)**: T16(파서)은 "T12에서 리네임한 인터페이스 구현" 대신 도메인 행 타입(`StoreRow`/`ProductRow`/`InventoryRow`/`SalesPeriodAggRow`)으로 직접 변환하는 함수를 만든다. T17(셀스루/임계치 분기)은 `querySalesPeriodAgg` 각 행의 실제 기간 길이(`period_start`~`period_end`)를 `computeReorderMetrics`의 `windowDays`에 반영해야 한다 — CSV 기간 길이가 v0.1 기본값(28일)과 다를 수 있다는 걸 T12에서 발견했다.
 
-### T13 (레인 B) — 파일 락 유틸리티 · 상태: TODO
+### T13 (레인 B) — 파일 락 유틸리티 · 상태: DONE(2026-09-03)
 - 목표: `src/adapters/fileLock.ts` — PID+타임스탬프 락 파일로 디렉터리 단위 배타 접근을 보장하는 acquire/release. 살아있는 프로세스 감지(예: signal 0 kill 시도)로 죽은 프로세스가 남긴 stale lock을 자동 회수. 실패 시 원인+조치 포함 에러(CLAUDE.md 컨벤션).
-- 완료 기준: [ ] 같은 경로에 대한 동시 acquire 시도 중 하나만 성공하는 테스트(SPEC §12 스파이크 재현) [ ] 존재하지 않는 PID가 남긴 stale lock 자동 회수 테스트 [ ] 락 보유 중 재시도 시 에러 메시지에 보유 PID·조치 포함 [ ] check 통과
+- 완료 기준: [x] 같은 경로에 대한 동시 acquire 시도 중 하나만 성공하는 테스트(SPEC §12 스파이크 재현) [x] 존재하지 않는 PID가 남긴 stale lock 자동 회수 테스트 [x] 락 보유 중 재시도 시 에러 메시지에 보유 PID·조치 포함 [x] check 통과
+- **완료**: 락 파일은 보호 대상 경로 밖(`{targetPath}.lock`)에 두어 PGlite 데이터 디렉터리를 오염시키지 않는다. 배타 생성은 `fs.writeFile(path, ..., {flag:"wx"})`(단일 syscall, TOCTOU 경합 없음)로 하고, 두 프로세스가 동시에 시도해도 하나만 성공한다. `isAlive`/`pid`/`nowFn`을 주입 가능하게 해(rateLimiter.ts와 같은 테스트 가능성 패턴) 실제 프로세스를 죽이지 않고도 stale lock 시나리오를 결정론적으로 테스트한다. `FileLockBusyError`(advisoryLock.ts의 `AdvisoryLockBusyError`와 같은 패턴)와 `withFileLock(path, fn)` 편의 함수(`withAdvisoryLock`과 같은 acquire→fn→release 패턴)도 함께 제공. `release()`는 락 파일의 현재 pid가 자신과 다르면(다른 프로세스가 stale로 회수해 새로 잡은 경우) 삭제하지 않는다.
 
 ### T14 (레인 B) — 임베디드 PGlite 웨어하우스 기본값 · 상태: TODO · 의존: T13
 - 목표: `pgWarehouse.ts`에 파일 영속 PGlite용 `DbConnectionProvider` 구현 추가(T13 락으로 디렉터리 열기를 감싸고, 최초 실행 시 `scripts/migrate.ts` 러너로 자동 마이그레이션). `server.ts`/`agent/reorder.ts`가 각자 하드코딩한 "`DATABASE_URL` 없으면 에러" 로직을 공용 팩토리로 추출 — `DATABASE_URL` 있으면 기존 pg.Pool 경로 그대로, 없으면 임베디드 PGlite(기본 경로 `.retail-mcp/data/`)로 대체. 이 로컬 자동 마이그레이션은 CLAUDE.md 가드레일 5("프로덕션 `DATABASE_URL` 마이그레이션은 사람만")의 대상이 아니다 — 원격 프로덕션 DB가 아니라 로컬 임베디드 DB 초기화다.
