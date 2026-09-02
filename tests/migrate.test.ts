@@ -71,4 +71,43 @@ describe("마이그레이션 러너", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("agent_send_log는 run_id당 sending/sent를 최대 1건만 허용하고 failed는 재시도를 허용한다", async () => {
+    const migrations = await loadMigrations();
+    await runMigrations(executor, migrations);
+
+    await executor.exec(
+      `insert into agent_send_log (run_id, sent_at, status, suggestion_count, dry_run)
+       values ('r1', now(), 'sending', 3, false)`,
+    );
+
+    // 같은 run_id로 두 번째 'sending' 예약 시도 — 이미 발송 중이므로 거부되어야 한다
+    await expect(
+      executor.exec(
+        `insert into agent_send_log (run_id, sent_at, status, suggestion_count, dry_run)
+         values ('r1', now(), 'sending', 3, false)`,
+      ),
+    ).rejects.toThrow();
+
+    // 실패로 전이 후에는 같은 run_id로 재시도(새 sending 행)가 허용된다
+    await executor.exec(`update agent_send_log set status = 'failed' where run_id = 'r1'`);
+    await expect(
+      executor.exec(
+        `insert into agent_send_log (run_id, sent_at, status, suggestion_count, dry_run)
+         values ('r1', now(), 'sending', 3, false)`,
+      ),
+    ).resolves.not.toThrow();
+  });
+
+  it("inventory_snapshots는 존재하지 않는 매장/상품을 참조하는 행을 거부한다 (FK)", async () => {
+    const migrations = await loadMigrations();
+    await runMigrations(executor, migrations);
+
+    await expect(
+      executor.exec(
+        `insert into inventory_snapshots (run_id, snapped_at, store_id, variant_id, in_stock)
+         values ('run1', now(), 'no_such_store', 'no_such_variant', 10)`,
+      ),
+    ).rejects.toThrow();
+  });
 });

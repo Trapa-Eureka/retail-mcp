@@ -143,10 +143,15 @@ export interface StockRow {
 
 // ── 에이전트 발송 로그 (DESIGN §11.5) ──────────────────────────────────────
 
-export type AgentSendStatus = "no_suggestions" | "dry_run" | "sent" | "failed";
+export type AgentSendStatus = "no_suggestions" | "dry_run" | "sending" | "sent" | "failed";
 
 export interface AgentSendEntry {
-  /** 멱등 키 — 동일 run_id의 live 재시도는 기존 'sent' 로그가 있으면 재발송하지 않는다. */
+  /**
+   * 멱등 키이자 예약(reservation) 키. `sending`/`sent`는 run_id당 최대 1건만 허용된다
+   * (agent_send_log_run_id_active_idx). T8은 provider.send() 호출 **전에** 반드시
+   * status='sending'으로 이 행을 먼저 커밋해 발송권을 예약해야 한다 — insert가 unique
+   * violation으로 실패하면 이미 발송 중/완료된 것이므로 재발송하지 않는다(DESIGN §11.5).
+   */
   runId: string;
   sentAt: Date;
   status: AgentSendStatus;
@@ -162,6 +167,15 @@ export interface AgentSendEntry {
 // ── 웨어하우스 인터페이스 ───────────────────────────────────────────────
 
 export interface Warehouse {
+  /**
+   * 한 리소스의 data upsert와 watermark(setCursor) 갱신을 하나의 트랜잭션으로 커밋한다
+   * (DESIGN §11.1). `fn` 내부에서 사용하는 `tx`는 같은 트랜잭션에 묶인 Warehouse이며,
+   * `fn`이 예외를 던지면 그 안에서 호출한 모든 쓰기가 롤백된다 — 데이터는 적재됐는데
+   * watermark만 안 남거나 그 반대인 상태가 구조적으로 나오지 않는다. 구현체(T4)는
+   * 실제 BEGIN/COMMIT/ROLLBACK을 제공해야 한다.
+   */
+  transaction<T>(fn: (tx: Warehouse) => Promise<T>): Promise<T>;
+
   upsertStores(rows: StoreRow[]): Promise<void>;
   upsertProducts(rows: ProductRow[]): Promise<void>;
   /** PK(receipt_id, line_no) 충돌 시 갱신 — 멱등. */

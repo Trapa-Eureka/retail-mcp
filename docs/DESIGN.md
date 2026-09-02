@@ -90,13 +90,17 @@ export interface LoyverseClient {
   listInventory(cursor?: string): Promise<Page<LvInventoryLevel>>;
 }
 export interface Warehouse {
+  // 한 리소스의 data upsert + watermark 갱신을 한 트랜잭션으로 커밋한다 (§11.1).
+  // fn 안에서 예외가 나면 fn이 사용한 tx의 모든 쓰기가 롤백된다. 구현체(T4)는 실제
+  // BEGIN/COMMIT/ROLLBACK을 제공해야 한다.
+  transaction<T>(fn: (tx: Warehouse) => Promise<T>): Promise<T>;
   upsertStores(rows: StoreRow[]): Promise<void>;
   upsertProducts(rows: ProductRow[]): Promise<void>;
   upsertSalesLines(rows: SalesLineRow[]): Promise<void>;      // PK 충돌 시 갱신 (멱등)
   upsertInventory(rows: InventoryRow[]): Promise<void>;
-  appendInventorySnapshot(at: Date, rows: InventoryRow[]): Promise<void>;
-  getCursor(resource: string): Promise<string | null>;
-  setCursor(resource: string, cursor: string, at: Date): Promise<void>;
+  appendInventorySnapshot(runId: string, at: Date, rows: InventoryRow[]): Promise<void>;
+  getCursor(resource: string): Promise<string | null>;        // sync_state.cursor(=watermark) 조회
+  setCursor(resource: string, watermark: string, at: Date): Promise<void>;
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;       // 고정 파라미터라이즈드 SQL
   queryStock(q: StockQuery): Promise<StockRow[]>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
@@ -178,14 +182,15 @@ retail-mcp/
 ### 11.1 증분 동기화와 원자성
 
 - 외부 API의 페이지 토큰(`pageCursor`)과 다음 실행의 증분 시작점(`watermark`)을 분리한다. `sync_state.cursor`에는 **완료된 리소스의 watermark만** 저장하며 페이지 토큰은 저장하지 않는다.
-- 한 리소스의 모든 페이지를 staging/트랜잭션 안에서 처리하고, 데이터 upsert와 watermark 갱신을 같은 트랜잭션에서 커밋한다. 중간 페이지 실패 시 해당 리소스의 데이터와 watermark를 롤백한 뒤 이전 watermark부터 재시도한다.
+- 한 리소스의 모든 페이지를 staging/트랜잭션 안에서 처리하고, 데이터 upsert와 watermark 갱신을 같은 트랜잭션에서 커밋한다. 중간 페이지 실패 시 해당 리소스의 데이터와 watermark를 롤백한 뒤 이전 watermark부터 재시도한다. 이 원자성은 `Warehouse.transaction(fn)`으로 표현한다 — ETL(T7)은 upsert류와 `setCursor`를 반드시 같은 `fn` 안에서, 전달받은 `tx`로만 호출한다.
 - `receipts` watermark는 `(updated_at, receipt_id)`처럼 동률을 안정적으로 재조회할 수 있는 경계를 사용한다. API가 단일 시각만 지원하면 경계 시각을 포함해 재조회하고 PK upsert로 중복을 제거한다.
 - 리소스 순서는 의존성 때문에 유지하되, 앞 리소스 성공과 뒤 리소스 실패를 전체 성공으로 보고하지 않는다. 결과에 리소스별 성공/실패와 마지막 성공 시각을 담는다.
 
 ### 11.2 스냅샷과 실행 식별자
 
 - 한 동기화 실행에서 고정한 `runId`와 `snappedAt`을 모든 재고 행에 공통 사용한다. 동일 시각 재실행 충돌을 피하도록 실제 마이그레이션에는 `run_id`를 추가하거나 PK를 `(run_id, store_id, variant_id)`로 정의한다.
-- `appendInventorySnapshot`과 현재고 upsert는 같은 트랜잭션에서 처리한다. 빈 재고 응답은 기존 현재고를 0으로 덮지 않고 동기화 오류로 취급한다.
+- `appendInventorySnapshot`과 현재고 upsert는 같은 트랜잭션에서 처리한다(`Warehouse.transaction`). 빈 재고 응답은 기존 현재고를 0으로 덮지 않고 동기화 오류로 취급한다.
+- `inventory_snapshots.store_id`/`variant_id`는 각각 `stores`/`products`를 참조하는 외래키다 — 존재하지 않는 매장·상품의 스냅샷은 적재 자체가 거부된다.
 
 ### 11.3 수치·시간 정규화
 
@@ -201,8 +206,8 @@ retail-mcp/
 
 ### 11.5 에이전트 실행 로그
 
-- `agent_send_log`는 발송 성공만이 아니라 `no_suggestions`, `dry_run`, `sent`, `failed` 결과를 구분할 수 있어야 한다. 실제 마이그레이션에 `status`, `error_code`, `run_id`를 추가하고, 미발송 상태에서는 `recipient`/`subject`를 nullable로 두거나 별도 `agent_run_log`를 사용한다.
-- provider 성공 후 로그 기록 실패 같은 이중 발송 위험을 줄이기 위해 `run_id`를 멱등 키로 사용한다. 동일 리포트 실행의 live 재시도는 기존 성공 로그가 있으면 다시 보내지 않는다.
+- `agent_send_log`는 발송 성공만이 아니라 `no_suggestions`, `dry_run`, `sending`, `sent`, `failed` 결과를 구분할 수 있어야 한다. 실제 마이그레이션에 `status`, `error_code`, `run_id`를 추가하고, 미발송 상태에서는 `recipient`/`subject`를 nullable로 두거나 별도 `agent_run_log`를 사용한다.
+- 이중 발송 방지는 **예약 패턴**으로 한다: T8은 `provider.send()`를 호출하기 전에 반드시 `status='sending'` 행을 먼저 커밋한다. `run_id`당 `sending`/`sent`는 최대 1건만 허용하는 부분 unique 인덱스가 이 INSERT를 원자적 잠금으로 만든다 — insert가 unique violation으로 실패하면 이미 발송 중이거나 완료된 것이므로 재발송하지 않는다. 성공하면 같은 행을 `sent`로, 실패하면 `failed`로 갱신한다(`failed`는 인덱스 대상이 아니므로 재시도가 새 `sending` 행을 다시 예약할 수 있다). 프로세스 크래시로 `sending`에 멈춘 오래된 행을 어떻게 회수할지는 T8에서 정책을 정한다(예: 일정 시간 경과 후 `failed`로 전이).
 
 ### 11.6 응답 공통 메타데이터
 
