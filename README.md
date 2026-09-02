@@ -28,18 +28,19 @@
 
 sheet_mcp와 동일: **문서 → 에이전트 구현 → 검증** (`docs/WORKFLOW.md`). 사람(Jin)은 스펙·설계·리뷰·실발송/프로덕션 DB 승인을 맡고, 구현은 Claude Code 에이전트가 `docs/TASKS.md` 단위로 수행한다. 공통 게이트는 `npm run check`.
 
-## 퀵스타트 (T0 완료 후 유효)
+## 퀵스타트
 
 ```bash
 npm install
-npm run check          # typecheck + lint + test — 공통 게이트
-npm run dev            # MCP 서버 stdio 실행
-npm run agent:reorder  # 재주문 에이전트 1회 실행 (기본 dry_run)
+npm run check          # typecheck + lint + test — 공통 게이트 (T0 완료 후 유효)
+npm run dev            # MCP 서버 stdio 실행 — T9 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
+npm run agent:reorder  # 재주문 에이전트 1회 실행 — T8 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
+npm run smoke          # 수동 스모크 — T11 완료 후 유효 (그전엔 안내 메시지만 출력하고 종료)
 ```
 
 ## 상태
 
-- 2026-09-02: 문서 단계 (코드 미작성). T0부터 시작.
+- 2026-09-02: T0~T2 완료. `npm run dev`/`agent:reorder`/`smoke`는 아직 자리표시자 — 실행하면 어느 태스크에서 구현되는지 안내하고 종료 코드 1을 반환한다.
 
 ## 구현 전 확인사항
 
