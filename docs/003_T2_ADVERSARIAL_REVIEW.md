@@ -98,10 +98,12 @@
 
 ## 재검수 완료 기준
 
-- [ ] 공식 응답 필수 필드 `updated_at`, `receipt_type`, `refund_for`, `cancelled_at`, inventory `updated_at` 보존
-- [ ] ISO datetime 런타임 검증
-- [ ] 수정·취소·환불 receipt contract fixture 및 정확한 ETL 부호 정책
-- [ ] cursor 조건 불변성과 page size 입력 검증
-- [ ] 공식 샘플 기반 독립 contract test
-- [ ] 신규 품목 5일 시나리오를 정확한 기대값으로 검증
+- [x] 공식 응답 필수 필드 `updated_at`, `receipt_type`, `refund_for`, `cancelled_at`, inventory `updated_at` 보존 — 스키마/타입/픽스처 매핑 전부에 추가
+- [x] ISO datetime 런타임 검증 — `z.iso.datetime()`로 `created_at`/`updated_at`/`receipt_date`/`cancelled_at`(nullable) 검증, invalid-date 거부 테스트 포함
+- [x] 수정·취소·환불 receipt contract fixture 및 정확한 ETL 부호 정책 — 픽스처에 취소 영수증 1건, "생성 후 사후 수정"(updated_at≠receipt_date) 영수증 1건 추가. 환불 line_items는 실제 API처럼 양수 quantity로 재생성(부호 반전은 T7에서 수행하도록 SPEC §9/DESIGN §11.3에 취소 영수증 제외 정책 명시)
+- [x] cursor 조건 불변성과 page size 입력 검증 — cursor를 조회조건(sinceISO 등) 포함 opaque 토큰으로 인코딩, 조건 불일치 시 거부. page size 0/음수/소수/NaN 생성 시점에 거부
+- [x] 공식 샘플 기반 독립 contract test — `tests/loyverseContractSample.test.ts`에 Loyverse 공식 문서(2026-09-02 확인) SALE/REFUND 영수증 예시, inventory 웹훅 payload 예시를 원문 그대로 옮겨 검증. 필수 필드 누락 시 여전히 거부됨도 별도 확인(passthrough와 필드 보존을 분리 테스트)
+- [x] 신규 품목 5일 시나리오를 정확한 기대값으로 검증 — bearbrand 영수증 정확히 10건(5일×2매장), 매장별 날짜 집합을 정확한 배열로 고정, 창 밖 0건 확인
+
+해결 커밋: `fix-t2` 브랜치 (2026-09-02). 필드 값 자체는 Loyverse 공식 문서를 브라우저로 직접 확인해 반영했다(WebFetch로는 SPA라 렌더링된 내용을 못 읽어 `mcp__claude-in-chrome__javascript_tool`로 `document.body.innerText`를 읽어 확인).
 - [ ] `npm run check` 통과

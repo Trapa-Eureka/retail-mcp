@@ -49,7 +49,16 @@ export interface LvReceiptLineItem {
 export interface LvReceipt {
   receipt_number: string;
   store_id: string;
+  /** "SALE" | "REFUND". 환불 라인의 quantity는 양수(환불한 수량) — 부호 반전은 ETL에서 한다. */
+  receipt_type: "SALE" | "REFUND";
+  /** REFUND 영수증에서만 원 판매 영수증 번호. SALE에서는 null. */
+  refund_for: string | null;
+  created_at: IsoDateTimeString;
+  /** 증분 동기화 watermark의 기준(DESIGN §11.1). receipt_date가 아니라 이 필드로 필터링한다. */
+  updated_at: IsoDateTimeString;
   receipt_date: IsoDateTimeString;
+  /** 취소되지 않았으면 null. 취소된 영수증은 집계에서 제외한다(ETL 정책, SPEC §9). */
+  cancelled_at: IsoDateTimeString | null;
   line_items: LvReceiptLineItem[];
 }
 
@@ -57,6 +66,7 @@ export interface LvInventoryLevel {
   variant_id: string;
   store_id: string;
   in_stock: number;
+  updated_at: IsoDateTimeString;
 }
 
 export interface Page<T> {
@@ -71,6 +81,11 @@ export interface Page<T> {
 export interface LoyverseClient {
   listStores(): Promise<LvStore[]>;
   listItems(cursor?: string): Promise<Page<LvItem>>;
+  /**
+   * sinceISO는 실제 API의 `updated_at_min` 질의 파라미터에 대응한다 — `receipt_date`가
+   * 아니라 `updated_at` 기준으로 필터링한다. 과거 영수증이 나중에 환불·취소되어 갱신돼도
+   * 다음 증분 동기화가 이를 놓치지 않는다(DESIGN §11.1).
+   */
   listReceipts(sinceISO: string, cursor?: string): Promise<Page<LvReceipt>>;
   listInventory(cursor?: string): Promise<Page<LvInventoryLevel>>;
 }
