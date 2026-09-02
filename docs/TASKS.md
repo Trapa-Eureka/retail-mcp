@@ -78,7 +78,7 @@
 | T5 | 음수 순판매·음수 재고 정규화와 경고, 사업장 타임존의 반개방 기간 경계 테스트 |
 | T7 | 페이지 토큰과 watermark 분리, 동률 경계 재조회, 빈 inventory 응답 거부, 리소스별 결과 반환. `updated_at_min` 기준 watermark 사용, `cancelled_at` 있는 영수증 제외, REFUND 라인의 부호 반전을 ETL에서 명시적으로 수행 (docs/003 적대적 검수) |
 | T8 | `provider.send()` 호출 **전에** `status='sending'` 행을 먼저 커밋하는 예약 패턴으로 중복 발송 방지(스키마는 T1에서 확정), 실행 상태별 로그 테스트, `sending`에 멈춘 오래된 행의 회수 정책 |
-| T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트 |
+| T9 | 운영 기본값에서 `sync_now` 비활성, 공통 응답 메타데이터와 stale 경고, 조회 전용 역할 테스트. `sync_now`는 `etl/sync.ts`의 `syncAll()`을 advisory lock으로 감싸 동시 호출 시 하나만 실행되게 한다(DESIGN §11.4) — T7의 `syncAll()` 자체는 동시 호출 가드가 없다(단일 호출의 리소스별 원자성·재개만 보장) |
 | T10 | `TESTING.md` §7 전체 회귀 가드와 core 커버리지 90% 리포트 |
 | T11 | README에 타임존·권한 분리·stale 확인 및 최초 live 발송 전 체크 절차 반영 |
 
