@@ -5,6 +5,7 @@
  * 에러 메시지에는 토큰이나 원문 응답 본문을 포함하지 않는다(SPEC §10, CLAUDE.md 가드레일 6).
  */
 import type { LoyverseClient } from "../core/types.js";
+import { createSlidingWindowRateLimiter, type RateLimiter } from "./rateLimiter.js";
 import {
   LvInventoryResponseSchema,
   LvItemsResponseSchema,
@@ -23,6 +24,14 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_PAGE_LIMIT = 250;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 8_000;
+/**
+ * Loyverse 공식 문서(developer.loyverse.com/docs "API rate limits", 2026-09-03 확인)의
+ * 계정당 한도는 "300 requests per 300 sec"다. 무료/유료 플랜을 가리지 않는 계정 단위 한도라
+ * 이 계정으로 동시에 다른 곳(Postman, 다른 스크립트 등)에서도 호출할 여지를 감안해 기본값은
+ * 그 한도보다 낮게(250/300초) 잡는다 — env로 조정 가능.
+ */
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 250;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 300_000;
 
 export interface LoyverseClientOptions {
   apiToken: string;
@@ -30,10 +39,16 @@ export interface LoyverseClientOptions {
   requestTimeoutMs?: number;
   maxRetries?: number;
   pageLimit?: number;
+  /** 슬라이딩 윈도우 안 최대 요청 수. 기본 DEFAULT_RATE_LIMIT_MAX_REQUESTS(250). */
+  rateLimitMaxRequests?: number;
+  /** 슬라이딩 윈도우 길이(ms). 기본 DEFAULT_RATE_LIMIT_WINDOW_MS(300_000 = 5분). */
+  rateLimitWindowMs?: number;
   /** 테스트 주입용. 기본값은 전역 fetch. */
   fetchFn?: typeof fetch;
-  /** 테스트 주입용(백오프 지연 시뮬레이션). 기본값은 실제 setTimeout 기반 대기. */
+  /** 테스트 주입용(백오프·속도제한 지연 시뮬레이션). 기본값은 실제 setTimeout 기반 대기. */
   sleepFn?: (ms: number) => Promise<void>;
+  /** 테스트 주입용(속도제한 시계). 기본값은 Date.now. */
+  nowFn?: () => number;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -91,11 +106,15 @@ interface RetryConfig {
   sleepFn: (ms: number) => Promise<void>;
   requestTimeoutMs: number;
   maxRetries: number;
+  rateLimiter: RateLimiter;
 }
 
 async function fetchWithRetry(url: string, init: RequestInit, cfg: RetryConfig): Promise<Response> {
   let attempt = 0;
   for (;;) {
+    // 실제 HTTP 시도 하나하나(최초 호출 + 각 재시도)가 Loyverse 쪽 요청 수에 잡히므로, 매
+    // 시도 전에 슬롯을 하나 확보한다 — Loyverse가 429로 거부하기 전에 우리가 먼저 늦춘다.
+    await cfg.rateLimiter.acquire();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), cfg.requestTimeoutMs);
     try {
@@ -147,11 +166,18 @@ export function createLoyverseClient(opts: LoyverseClientOptions): LoyverseClien
   const apiToken = opts.apiToken;
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
   const pageLimit = opts.pageLimit ?? DEFAULT_PAGE_LIMIT;
+  const sleepFn = opts.sleepFn ?? defaultSleep;
+  const rateLimiter = createSlidingWindowRateLimiter(
+    opts.rateLimitMaxRequests ?? DEFAULT_RATE_LIMIT_MAX_REQUESTS,
+    opts.rateLimitWindowMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS,
+    { sleepFn, ...(opts.nowFn !== undefined ? { nowFn: opts.nowFn } : {}) },
+  );
   const retryConfig: RetryConfig = {
     fetchFn: opts.fetchFn ?? fetch,
-    sleepFn: opts.sleepFn ?? defaultSleep,
+    sleepFn,
     requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     maxRetries: opts.maxRetries ?? DEFAULT_MAX_RETRIES,
+    rateLimiter,
   };
 
   async function requestJson(
@@ -240,9 +266,19 @@ export function createLoyverseClientFromEnv(): LoyverseClient {
     "LOYVERSE_MAX_RETRIES",
     process.env["LOYVERSE_MAX_RETRIES"],
   );
+  const rateLimitMaxRequests = parseOptionalPositiveInt(
+    "LOYVERSE_RATE_LIMIT_MAX_REQUESTS",
+    process.env["LOYVERSE_RATE_LIMIT_MAX_REQUESTS"],
+  );
+  const rateLimitWindowMs = parseOptionalPositiveInt(
+    "LOYVERSE_RATE_LIMIT_WINDOW_MS",
+    process.env["LOYVERSE_RATE_LIMIT_WINDOW_MS"],
+  );
   return createLoyverseClient({
     apiToken,
     ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
     ...(maxRetries !== undefined ? { maxRetries } : {}),
+    ...(rateLimitMaxRequests !== undefined ? { rateLimitMaxRequests } : {}),
+    ...(rateLimitWindowMs !== undefined ? { rateLimitWindowMs } : {}),
   });
 }

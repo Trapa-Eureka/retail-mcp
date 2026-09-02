@@ -83,3 +83,9 @@
 | T11 | README에 타임존·권한 분리·stale 확인 및 최초 live 발송 전 체크 절차 반영 — **완료**: `scripts/smoke.ts`는 ①`syncAll()` ②조회 도구 3종(sell_through/inventory_status/stockout_risk — reorder_suggestions는 ③단계 에이전트 dry-run과 같은 `buildReorderReport()`를 쓰므로 중복 호출하지 않음) ③에이전트 dry-run 순서로 실행하고, `.env`의 `SEND_MODE`와 무관하게 `sendMode:"dry_run", confirm:false`를 코드로 강제해 실수로 실발송되지 않게 한다(사람 전용, 실 Loyverse+DB 대상이라 자동 테스트 대상 아님 — TESTING §5). README에 "운영 배포 절차"(5단계) + "최초 live 발송 전 사람 체크리스트" + cron/launchd 한 줄 등록 예시 추가 |
 
 T1 구현 시 DESIGN §2의 초기 DDL을 그대로 복사하지 말고 DESIGN §11의 스키마 명확화까지 같은 `001_init.sql`에 반영한다(아직 배포 전이므로 후속 보정 마이그레이션을 만들 필요 없음).
+
+## v0.1 완료 후 보강 로그
+
+T0~T11 전부 완료된 뒤, 새 태스크 번호 없이 진행한 보강.
+
+- 2026-09-03: **Loyverse 클라이언트 속도 제한 추가**. Loyverse 공식 문서(developer.loyverse.com/docs "API rate limits") 확인 결과 계정당 한도가 "300 requests per 300 sec"로 명시돼 있어(무료/유료 플랜 공통, 브라우저로 실제 렌더링된 문서를 확인함), `src/adapters/rateLimiter.ts`(슬라이딩 윈도우, 순수 로직)를 신설해 `loyverseClient.ts`의 매 fetch 시도 직전에 자기 자신을 능동적으로 늦추도록 했다(기존 429/Retry-After 반응적 백오프는 그대로 유지). 기본값은 여유를 두어 250요청/300초(env `LOYVERSE_RATE_LIMIT_MAX_REQUESTS`/`LOYVERSE_RATE_LIMIT_WINDOW_MS`로 조정). SPEC §10에 근거 반영.
