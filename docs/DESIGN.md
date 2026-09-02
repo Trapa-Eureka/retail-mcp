@@ -101,6 +101,7 @@ export interface Warehouse {
   appendInventorySnapshot(runId: string, at: Date, rows: InventoryRow[]): Promise<void>;
   getCursor(resource: string): Promise<string | null>;        // sync_state.cursor(=watermark) 조회
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;
+  getSyncState(): Promise<SyncStateRow[]>;                    // 전 리소스 cursor+last_synced_at(T9 추가)
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;       // 고정 파라미터라이즈드 SQL
   queryStock(q: StockQuery): Promise<StockRow[]>;
   queryStores(storeId?: string): Promise<StoreRow[]>;         // 매장명 조회(T8 추가) — 리포트/필터검증용
@@ -126,14 +127,20 @@ export interface Clock { now(): Date }
 
 | 도구 | 입력(기본값) | 반환 |
 |---|---|---|
-| `sell_through` | store_id?, category?, period_days=30, order=asc\|desc, top=20 | 품목별 근사 셀스루 표 (근사식 각주 포함) |
+| `sell_through` | store_id?, category?, period_days=30, order=asc\|desc(기본값 T9 확정: desc), top=20 | 품목별 근사 셀스루 표 (근사식 각주 포함) |
 | `inventory_status` | store_id?, below_days_cover? | 현재고 + 커버일수 |
-| `stockout_risk` | store_id?, lead_time_days=7, safety_days=3 | 위험 품목 + 예상 소진일(오늘+커버일수) |
-| `reorder_suggestions` | store_id?, target_days_cover=21, lead_time_days=7 | 제안 수량 표 — **에이전트와 동일 함수** |
-| `sync_now` | resources?=[all] | 동기화 실행 결과 요약 |
+| `stockout_risk` | store_id?, lead_time_days=7, safety_days=3 | 위험 품목 + 예상 소진일(오늘+커버일수, YYYY-MM-DD) |
+| `reorder_suggestions` | store_id?, target_days_cover=21, lead_time_days=7 | 제안 수량 표 — **에이전트와 동일 함수**(`agent/reorder.ts`의 `buildReorderReport()`를 그대로 호출) |
+| `sync_now` | resources?=[all] | 동기화 실행 결과 요약 — 동시 호출은 advisory lock으로 하나만 실행, 나머지는 즉시 오류 |
 | `sync_status` | — | 리소스별 커서·마지막 동기화 시각 |
 
 질의 도구는 읽기 전용이며 고정 쿼리만 사용한다. 자유 SQL은 v0.2(`explore_sql`, 읽기 전용 롤 전제).
+
+**구현 정정(T9)**: `sell_through`의 `queryStock`에 `category` 필터를 추가했다 — 카테고리로 필터링할
+때 판매 없이 재고만 있는 다른 카테고리 품목이 `computeSellThrough`의 결합 결과에서
+`category: null`로 새어 들어와 필터를 무력화하는 결함을 막기 위함이다(`StockQuery.category`,
+`core/types.ts`). `Warehouse.getSyncState()`(전 리소스 cursor+last_synced_at)를 추가해
+`sync_status`와 신선도 판정(`core/freshness.ts`)에 쓴다.
 
 ## 7. 재주문 에이전트 (src/agent/reorder.ts)
 
@@ -174,7 +181,7 @@ claude mcp add retail-mcp --scope project -- npx tsx src/server.ts
 retail-mcp/
   CLAUDE.md  README.md  .mcp.json  .env.example
   docs/  migrations/  fixtures/loyverse/  scripts/smoke.ts
-  src/{core,etl,adapters,mocks,agent}/  src/server.ts
+  src/{core,etl,adapters,mocks,agent,mcp}/  src/server.ts   # mcp/ = MCP 도구 6종 로직(T9), server.ts는 등록만
   tests/
 ```
 
@@ -205,6 +212,12 @@ retail-mcp/
 - `sell_through`, `inventory_status`, `stockout_risk`, `reorder_suggestions`, `sync_status`는 읽기 전용 DB 자격 증명으로 실행한다.
 - `sync_now`는 쓰기 작업이다. 운영에서는 별도 동기화 프로세스/쓰기 자격 증명으로 라우팅하고, MCP에 노출할 경우 `SYNC_TOOL_ENABLED=true`일 때만 등록한다. 기본값은 비활성이다.
 - `sync_now` 동시 호출은 DB advisory lock으로 단일 실행만 허용한다. 로그와 MCP 오류에는 시크릿 및 외부 API 응답 원문을 포함하지 않는다.
+  - **구현 정정(T9)**: TESTING §7 "다른 호출은 실행 중 오류/상태를 반환"에 맞춰 **논블로킹**
+    `pg_try_advisory_lock`(`withTryAdvisoryLock`, `src/adapters/advisoryLock.ts`)을 쓴다 — 이미
+    잠긴 상태면 기다리지 않고 즉시 `AdvisoryLockBusyError`를 던진다. 마이그레이션 러너(`scripts/
+    migrate.ts`)의 `withAdvisoryLock`은 블로킹(대기 후 순차 실행)이라 의미가 다르므로 별도
+    함수로 유지한다 — 두 헬퍼 모두 `src/adapters/advisoryLock.ts`에 있다(원래 migrate.ts 전용
+    이었던 것을 src가 scripts에 의존하지 않도록 T9에서 옮겼다).
 
 ### 11.5 에이전트 실행 로그
 
@@ -215,3 +228,8 @@ retail-mcp/
 ### 11.6 응답 공통 메타데이터
 
 모든 조회 도구는 최소한 `generated_at`, `data_last_synced_at`, `timezone`, `filters`, `warnings`를 결과에 포함한다. 셀스루 응답에는 근사식, stale 데이터에는 경고를 포함하며 숫자 필드는 기계 판독 가능한 원값과 표시 문자열을 구분한다.
+
+**구현(T9)**: stale 판정은 `core/freshness.ts`의 `computeFreshness()`(순수 함수, 기본 임계값
+`DEFAULT_STALE_THRESHOLD_HOURS=24`, env `STALE_THRESHOLD_HOURS`로 조정)를 MCP 조회 도구
+(`src/mcp/tools.ts`)와 에이전트 리포트(`agent/reorder.ts`의 `buildReorderReport()`) 둘 다 공유한다
+— SPEC §9 "모든 조회와 리포트"에 stale 경고가 적용되게 하는 단일 지점이다.

@@ -284,6 +284,13 @@ describe("pgWarehouse (PGlite)", () => {
       const result = await warehouse.queryStock({});
       expect(result).toHaveLength(3);
     });
+
+    it("category로 필터링한다 — 판매 없이 재고만 있는 다른 카테고리 품목이 새지 않는다", async () => {
+      // PRODUCT_COLA 카테고리="음료", PRODUCT_CHIPS 카테고리="스낵"(beforeEach 상단 상수).
+      const result = await warehouse.queryStock({ storeId: "store_main", category: "음료" });
+      expect(result).toHaveLength(1);
+      expect(result[0]?.variantId).toBe("var_cola");
+    });
   });
 
   describe("getCursor / setCursor", () => {
@@ -306,6 +313,35 @@ describe("pgWarehouse (PGlite)", () => {
         new Date("2026-09-02T00:00:00Z"),
       );
       expect(await warehouse.getCursor("receipts")).toBe("2026-08-15T00:00:00Z");
+    });
+  });
+
+  describe("getSyncState (T9 sync_status 도구용)", () => {
+    it("설정 전에는 빈 배열을 반환한다", async () => {
+      expect(await warehouse.getSyncState()).toEqual([]);
+    });
+
+    it("리소스별 cursor+last_synced_at을 resource 오름차순으로 반환한다", async () => {
+      await warehouse.setCursor("inventory", "wm-inv", new Date("2026-09-01T06:00:00Z"));
+      await warehouse.setCursor(
+        "receipts",
+        "2026-08-30T00:00:00Z",
+        new Date("2026-09-01T05:00:00Z"),
+      );
+
+      const state = await warehouse.getSyncState();
+      expect(state).toEqual([
+        {
+          resource: "inventory",
+          cursor: "wm-inv",
+          lastSyncedAt: new Date("2026-09-01T06:00:00Z"),
+        },
+        {
+          resource: "receipts",
+          cursor: "2026-08-30T00:00:00Z",
+          lastSyncedAt: new Date("2026-09-01T05:00:00Z"),
+        },
+      ]);
     });
   });
 
@@ -511,7 +547,7 @@ describe("pgWarehouse (PGlite)", () => {
       );
     });
 
-    it("읽기 전용 role로는 조회 도구 3종이 성공한다", async () => {
+    it("읽기 전용 role로는 조회 도구 5종이 성공한다(T9 MCP 조회 도구 전부)", async () => {
       await db.exec("set role app_readonly");
       try {
         await expect(warehouse.queryStock({})).resolves.toBeDefined();
@@ -522,6 +558,8 @@ describe("pgWarehouse (PGlite)", () => {
           }),
         ).resolves.toBeDefined();
         await expect(warehouse.getCursor("receipts")).resolves.toBeNull();
+        await expect(warehouse.queryStores()).resolves.toBeDefined();
+        await expect(warehouse.getSyncState()).resolves.toBeDefined();
       } finally {
         await db.exec("reset role");
       }

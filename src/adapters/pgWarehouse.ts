@@ -13,6 +13,7 @@ import type {
   StockQuery,
   StockRow,
   StoreRow,
+  SyncStateRow,
   Warehouse,
 } from "../core/types.js";
 
@@ -213,6 +214,19 @@ async function setCursorOn(
   );
 }
 
+async function getSyncStateOn(session: DbSession): Promise<SyncStateRow[]> {
+  const { rows } = await session.query<{
+    resource: string;
+    cursor: string | null;
+    last_synced_at: string | Date | null;
+  }>("select resource, cursor, last_synced_at from sync_state order by resource");
+  return rows.map((r) => ({
+    resource: r.resource,
+    cursor: r.cursor,
+    lastSyncedAt: r.last_synced_at === null ? null : new Date(r.last_synced_at),
+  }));
+}
+
 async function querySalesAggOn(session: DbSession, q: SalesAggQuery): Promise<SalesAgg[]> {
   const { rows } = await session.query<{
     store_id: string;
@@ -261,8 +275,9 @@ async function queryStockOn(session: DbSession, q: StockQuery): Promise<StockRow
      from inventory_levels il
      join products p on p.variant_id = il.variant_id
      where ($1::text is null or il.store_id = $1)
-       and ($2::text[] is null or il.variant_id = any($2::text[]))`,
-    [q.storeId ?? null, q.variantIds ?? null],
+       and ($2::text[] is null or il.variant_id = any($2::text[]))
+       and ($3::text is null or p.category = $3)`,
+    [q.storeId ?? null, q.variantIds ?? null, q.category ?? null],
   );
   return rows.map((r) => ({
     storeId: r.store_id,
@@ -359,6 +374,7 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
       appendInventorySnapshotOn(session, runId, at, rows),
     getCursor: (resource) => getCursorOn(session, resource),
     setCursor: (resource, watermark, at) => setCursorOn(session, resource, watermark, at),
+    getSyncState: () => getSyncStateOn(session),
     querySalesAgg: (q) => querySalesAggOn(session, q),
     queryStock: (q) => queryStockOn(session, q),
     queryStores: (storeId) => queryStoresOn(session, storeId),
@@ -398,6 +414,7 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     getCursor: (resource) => withSession(provider, (session) => getCursorOn(session, resource)),
     setCursor: (resource, watermark, at) =>
       withSession(provider, (session) => setCursorOn(session, resource, watermark, at)),
+    getSyncState: () => withSession(provider, (session) => getSyncStateOn(session)),
     querySalesAgg: (q) => withSession(provider, (session) => querySalesAggOn(session, q)),
     queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
     queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),

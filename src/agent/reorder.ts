@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { DEFAULT_STALE_THRESHOLD_HOURS, computeFreshness } from "../core/freshness.js";
 import {
   DEFAULT_WINDOW_DAYS,
   calendarWindow,
@@ -48,6 +49,8 @@ export interface BuildReportOptions {
   leadTimeDays?: number;
   safetyDays?: number;
   targetCoverDays?: number;
+  /** 기본값 DEFAULT_STALE_THRESHOLD_HOURS(24). SPEC §9 stale 경고 기준. */
+  staleThresholdHours?: number;
 }
 
 export interface ReportDeps {
@@ -128,12 +131,21 @@ export async function buildReorderReport(
   }
   sections.sort((a, b) => a.storeId.localeCompare(b.storeId));
 
-  const inventoryWatermark = await deps.warehouse.getCursor("inventory");
+  // 리포트는 receipts(판매 창)와 inventory(현재고) 둘 다에 의존한다 — 신선도는 둘 중 더 오래된
+  // 쪽 기준(SPEC §9, core/freshness.ts를 T9의 MCP 조회 도구와 공유).
+  const syncState = await deps.warehouse.getSyncState();
+  const freshness = computeFreshness(
+    syncState,
+    ["receipts", "inventory"],
+    deps.clock.now(),
+    opts.staleThresholdHours ?? DEFAULT_STALE_THRESHOLD_HOURS,
+  );
+  for (const w of freshness.warnings) warnings.add(w);
 
   return {
     generatedAt: deps.clock.now(),
     timezone: opts.businessTimezone,
-    dataLastSyncedAt: inventoryWatermark ? new Date(inventoryWatermark) : null,
+    dataLastSyncedAt: freshness.dataLastSyncedAt,
     stores: sections,
     warnings: [...warnings],
   };
