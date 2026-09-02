@@ -166,6 +166,45 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
   });
 });
 
+describe("createLoyverseClient — 속도 제한 (Loyverse 공식 한도: 300 req/300초, DESIGN §10)", () => {
+  it("rateLimitMaxRequests를 넘는 요청은 sleepFn으로 대기한 뒤에야 fetchFn을 호출한다", async () => {
+    const fetchFn = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ stores: [] })));
+    let now = 0;
+    const sleepFn = vi.fn().mockImplementation((ms: number) => {
+      now += ms;
+      return Promise.resolve();
+    });
+
+    const client = createLoyverseClient({
+      apiToken: "tok",
+      fetchFn,
+      sleepFn,
+      nowFn: () => now,
+      rateLimitMaxRequests: 2,
+      rateLimitWindowMs: 1000,
+    });
+
+    await client.listStores(); // 1번째
+    await client.listStores(); // 2번째 — 한도 도달, 아직 대기 없음
+    expect(sleepFn).not.toHaveBeenCalled();
+
+    await client.listStores(); // 3번째 — 한도 초과, 대기해야 한다
+    expect(sleepFn).toHaveBeenCalled();
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("기본 속도제한(250/300초)은 일반적인 테스트 호출량에서는 대기를 유발하지 않는다", async () => {
+    const fetchFn = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ stores: [] })));
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const client = createLoyverseClient({ apiToken: "tok", fetchFn, sleepFn });
+
+    for (let i = 0; i < 5; i++) await client.listStores();
+
+    expect(sleepFn).not.toHaveBeenCalled();
+    expect(fetchFn).toHaveBeenCalledTimes(5);
+  });
+});
+
 describe("createLoyverseClient — 시크릿 없는 에러 메시지", () => {
   it("401 응답 시 토큰이나 원문 응답 본문 없이 문서화된 에러 코드만 포함한다", async () => {
     const fetchFn = vi
@@ -212,6 +251,14 @@ describe("createLoyverseClientFromEnv", () => {
     process.env["LOYVERSE_API_TOKEN"] = "tok";
     process.env["LOYVERSE_REQUEST_TIMEOUT_MS"] = "5000";
     process.env["LOYVERSE_MAX_RETRIES"] = "3";
+    process.env["LOYVERSE_RATE_LIMIT_MAX_REQUESTS"] = "200";
+    process.env["LOYVERSE_RATE_LIMIT_WINDOW_MS"] = "300000";
     expect(() => createLoyverseClientFromEnv()).not.toThrow();
+  });
+
+  it("LOYVERSE_RATE_LIMIT_MAX_REQUESTS가 유효하지 않으면 명확한 에러를 던진다", () => {
+    process.env["LOYVERSE_API_TOKEN"] = "tok";
+    process.env["LOYVERSE_RATE_LIMIT_MAX_REQUESTS"] = "0";
+    expect(() => createLoyverseClientFromEnv()).toThrow(/LOYVERSE_RATE_LIMIT_MAX_REQUESTS/);
   });
 });
