@@ -147,6 +147,40 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
     });
   });
 
+  describe("신선도(stale) 경고 — SPEC §9, TESTING §7", () => {
+    it("동기화 이력이 전혀 없으면 data_last_synced_at=null이고 미동기화 경고가 붙는다", async () => {
+      // beforeEach에서 stores/products만 seed하고 sync_state는 건드리지 않는다.
+      const result = await sellThroughTool(deps, { periodDays: 30, order: "desc", top: 20 });
+      expect(result.meta.data_last_synced_at).toBeNull();
+      expect(result.meta.warnings.some((w) => w.includes("한 번도 동기화되지"))).toBe(true);
+    });
+
+    it("임계값을 넘겨 오래된 동기화면 stale 경고가 붙는다", async () => {
+      const oldSyncAt = new Date("2026-08-01T00:00:00Z"); // NOW_ISO(9/1)로부터 31일 전
+      await warehouse.setCursor("receipts", oldSyncAt.toISOString(), oldSyncAt);
+      await warehouse.setCursor("inventory", oldSyncAt.toISOString(), oldSyncAt);
+
+      const staleDeps: QueryToolDeps = { ...deps, staleThresholdHours: 1 };
+      const result = await sellThroughTool(staleDeps, { periodDays: 30, order: "desc", top: 20 });
+      expect(result.meta.data_last_synced_at).toBe(oldSyncAt.toISOString());
+      expect(result.meta.warnings.some((w) => w.includes("stale 상태일 수 있습니다"))).toBe(true);
+    });
+
+    it("reorder_suggestions(에이전트 리포트와 공유하는 buildReorderReport)도 같은 stale 경고를 낸다", async () => {
+      const oldSyncAt = new Date("2026-08-01T00:00:00Z");
+      await warehouse.setCursor("receipts", oldSyncAt.toISOString(), oldSyncAt);
+      await warehouse.setCursor("inventory", oldSyncAt.toISOString(), oldSyncAt);
+
+      const staleDeps: QueryToolDeps = { ...deps, staleThresholdHours: 1 };
+      const report = await reorderSuggestionsTool(staleDeps, {
+        targetDaysCover: 21,
+        leadTimeDays: 7,
+      });
+      expect(report.dataLastSyncedAt).toEqual(oldSyncAt);
+      expect(report.warnings.some((w) => w.includes("stale 상태일 수 있습니다"))).toBe(true);
+    });
+  });
+
   describe("inventory_status", () => {
     it("현재고와 재고커버일수를 반환한다", async () => {
       await warehouse.upsertSalesLines([

@@ -70,6 +70,26 @@ describe("createClaudeSummarizer — 요청 형태", () => {
     expect(body.messages[0]?.content).toContain("37");
   });
 
+  it("요청 본문에 API 키·이메일·원시 영수증 필드가 없다 (TESTING §7)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
+    const apiKey = "sk-ant-super-secret-key-should-never-leak";
+    const summarizer = createClaudeSummarizer({ apiKey, fetchImpl });
+    await summarizer.summarize(REPORT);
+
+    const init = (fetchImpl.mock.calls[0] as [string, RequestInit])[1];
+    const bodyText = init.body as string;
+
+    // ReorderReport(LLM 경계 타입)에는 애초에 recipient/email/token/원시 영수증 필드가 없다
+    // — 이 테스트는 그 구조적 보장이 실제 HTTP 요청 본문에서도 깨지지 않는지 확인한다.
+    expect(bodyText).not.toContain(apiKey);
+    expect(bodyText).not.toMatch(/@/); // 이메일 주소 패턴
+    expect(bodyText).not.toMatch(/receipt_number|line_items|gross_total_money/); // Lv* 원시 필드명
+
+    // x-api-key 헤더로만 전달되고 본문에는 없어야 한다(Anthropic SDK는 Headers 인스턴스를 쓴다).
+    const headers = init.headers as Headers;
+    expect(headers.get("x-api-key")).toBe(apiKey);
+  });
+
   it("system 프롬프트에 '수치 생성 금지'와 '표의 사실만'이 명시되어 있다", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
     const summarizer = createClaudeSummarizer({ apiKey: "sk-ant-test", fetchImpl });

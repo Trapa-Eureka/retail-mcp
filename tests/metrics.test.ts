@@ -164,6 +164,51 @@ describe("computeReorderMetrics — 배열 파이프라인", () => {
   });
 });
 
+describe("소수·큰 numeric 값의 반올림 정책 (TESTING §7)", () => {
+  it("일평균판매·재고커버일수는 중간에 반올림하지 않고, 재주문량만 최종 ceil을 적용한다", () => {
+    const salesAgg: SalesAgg[] = [
+      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "65.7" },
+    ];
+    const stock: StockRow[] = [
+      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "44.276", updatedAt: new Date() },
+    ];
+    const [row] = computeReorderMetrics(salesAgg, stock, { windowDays: 28, targetCoverDays: 21 });
+    const expectedAvg = 65.7 / 28; // = 2.346428571...
+    expect(row?.avgDailySales).toBe(expectedAvg);
+    expect(row?.daysOfCover).toBe(44.276 / expectedAvg);
+
+    const expectedReorderQty = Math.max(0, Math.ceil(21 * expectedAvg - 44.276));
+    expect(row?.reorderQty).toBe(expectedReorderQty);
+    expect(expectedReorderQty).toBe(5);
+
+    // avgDailySales를 중간에 소수 2자리로 반올림했다면(2.35) ceil 경계를 넘어 6이 나왔을
+    // 것이다 — 실제로는 5여야 한다(=중간 반올림이 없다는 증거를 ceil 경계 근처에서 확인).
+    const roundedAvg = Math.round(expectedAvg * 100) / 100;
+    const reorderQtyIfRounded = Math.max(0, Math.ceil(21 * roundedAvg - 44.276));
+    expect(reorderQtyIfRounded).toBe(6);
+    expect(row?.reorderQty).not.toBe(reorderQtyIfRounded);
+  });
+
+  it("큰 numeric 값(6자리 이상)도 정밀도 손실 없이 처리한다", () => {
+    const salesAgg: SalesAgg[] = [
+      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "1234567.89" },
+    ];
+    const stock: StockRow[] = [
+      {
+        storeId: "s1",
+        variantId: "v1",
+        name: "품목",
+        inStockRaw: "999999.5",
+        updatedAt: new Date(),
+      },
+    ];
+    const [row] = computeReorderMetrics(salesAgg, stock, { windowDays: 28, targetCoverDays: 21 });
+    const expectedAvg = 1234567.89 / 28;
+    expect(row?.avgDailySales).toBe(expectedAvg);
+    expect(row?.reorderQty).toBe(Math.max(0, Math.ceil(21 * expectedAvg - 999999.5)));
+  });
+});
+
 describe("calendarWindow — 사업장 타임존 반개방 기간 경계 (Clock 주입, DESIGN §11.3)", () => {
   it("Asia/Manila(UTC+8, DST 없음): 오늘 자정 경계가 정확하다", () => {
     const clock = createFixedClock("2026-09-01T03:00:00Z"); // Manila 기준 09-01 11:00
