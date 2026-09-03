@@ -42,4 +42,35 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
     expect(failure).not.toBeNull();
     expect(failure).toContain("GHSA-new-unapproved");
   });
+
+  describe("무효 리포트(레지스트리 오류 등) — 2차 적대적 검수 SR2-AUD-002 회귀", () => {
+    it("npm 레지스트리 오류 응답({error: ...})은 fail-open으로 통과하되 '0건'이라고 말하지 않는다", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const errorResponse = JSON.stringify({
+        error: { code: "ENOTFOUND", summary: "registry unreachable" },
+      });
+
+      expect(evaluateLockfileAudit(errorResponse)).toBeNull();
+      // 예전엔 이 케이스가 "취약점 0건" 로그를 남겼다(SR2-AUD-002) — 이제는 절대 그렇게
+      // 말하지 않아야 한다.
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0건"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("유효한 취약점 리포트"));
+
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    });
+
+    it("vulnerabilities가 객체가 아니면(형식 이상) fail-open으로 통과하되 '0건'이라고 말하지 않는다", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+      expect(evaluateLockfileAudit(JSON.stringify({ vulnerabilities: "oops" }))).toBeNull();
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0건"));
+      expect(warnSpy).toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    });
+  });
 });

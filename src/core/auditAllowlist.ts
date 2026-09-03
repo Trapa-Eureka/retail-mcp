@@ -14,6 +14,25 @@ export interface NpmAuditReport {
 }
 
 /**
+ * `npm audit --json`이 실제로 유효한 취약점 리포트를 냈는지 확인한다. 레지스트리 접근
+ * 실패 등으로 audit 자체가 실행되지 않으면 npm은 `{"error": {...}}` 형태의 JSON을 낸다 —
+ * `vulnerabilities` 키가 아예 없어서 예전 코드는 이걸 파싱만 성공하면 그대로 "취약점
+ * 0건"으로 오인했다(2차 적대적 검수 SR2-AUD-002 — `checkAdvisoriesAgainstAllowlist(
+ * extractAdvisoryUrls({error: {...}}))`가 `noneFound: true`를 내는 걸 직접 재현·확인).
+ * 실제 성공 응답은 항상 `vulnerabilities`를 객체로 갖는다(npm 11.6.2 실측: `{
+ * auditReportVersion, vulnerabilities, metadata }`) — `error` 필드가 있거나
+ * `vulnerabilities`가 객체가 아니면 무효로 판정한다. 호출자는 무효 판정을 "확인 불가"로
+ * 다뤄야지 "안전"으로 다루면 안 된다(fail-open/closed 정책은 호출자마다 다르다 —
+ * `src/adapters/auditLockfile.ts`/`scripts/verifyPack.ts` 참고).
+ */
+export function isValidAuditReport(value: unknown): value is NpmAuditReport {
+  if (typeof value !== "object" || value === null) return false;
+  if ("error" in value) return false;
+  const vulnerabilities = (value as { vulnerabilities?: unknown }).vulnerabilities;
+  return typeof vulnerabilities === "object" && vulnerabilities !== null;
+}
+
+/**
  * SEC-006(005 검수, TASKS T32)의 승인된 예외 — exceljs@4.4.0이 고정한 `uuid@^8.3.0`은
  * GHSA-w5hq-g745-h8pq(uuid v3/v5/v6 bounds check 결함)에 걸리지만, exceljs는 `uuidv4()`를
  * 인자 없이만 호출해 실제 취약 코드 경로를 타지 않는다. 재검토 기한: 2027-03-03.

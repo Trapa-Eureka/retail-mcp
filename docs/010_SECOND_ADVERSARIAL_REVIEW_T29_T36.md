@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: P0 1/6 RESOLVED(SR2-SEC-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+- 처리 진행 상황: P0 3/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
 
 ## 실행 검증
 
@@ -112,6 +112,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: stdout 없음과 JSON parse 실패가 모두 `null` 성공으로 반환된다. 보안 job의 목적이 release gate인데 외부 audit 서비스 장애 시 green이 된다.
 - 영향: 공격자가 장애를 직접 만들지 않더라도 registry 장애 시 취약점 검증 없이 merge/release가 가능하다. T37이 이 job의 green만 신뢰하면 출시 보장이 무너진다.
 - 수정 기준: PR 편의 gate와 release gate를 분리한다. release/T37에서는 audit 불능을 실패로 처리하고, 사람이 승인한 재시도 외에는 우회하지 않는다.
+- **RESOLVED**: 실은 `scripts/verifyPack.ts`(release gate)는 이미 진짜 실행 실패(stdout 자체가 없음)에는 fail-closed였다(catch에서 `stdout`이 없으면 원본 에러를 그대로 rethrow) — 이번에 새로 발견한 건 SR2-AUD-002와 같은 뿌리(무효 리포트 형식 검증 없음)였다. `isValidAuditReport()`(아래 AUD-002)를 `verifyPack.ts`에도 연결해 **무효 리포트(레지스트리 오류 등)도 이제 fail-closed로 막는다** — `auditLockfile.ts`(PR 편의 gate)는 여전히 fail-open이지만 메시지가 "0건"이라고 절대 말하지 않는다(AUD-002 참고). 정책 자체(PR gate=fail-open, release gate=fail-closed)를 명시적으로 분리해 문서화했다.
 
 ### SR2-AUD-002 — 오류 JSON을 “취약점 0건”으로 오인함
 
@@ -119,6 +120,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 파일: `auditLockfile.ts`, `auditAllowlist.ts`
 - 근거: `npm audit`가 non-zero와 함께 `{"error": ...}` 형태 stdout을 내면 JSON parse는 성공한다. `vulnerabilities`가 없으므로 빈 객체로 처리되어 `noneFound=true`로 통과한다.
 - 수정 기준: report schema에서 `auditReportVersion`, `metadata.vulnerabilities`, `vulnerabilities`를 검증하고 `error` 필드 또는 필수 필드 누락은 실행 실패로 판정한다. 실제 registry error JSON fixture를 추가한다.
+- **RESOLVED**: `src/core/auditAllowlist.ts`에 `isValidAuditReport()` 신설 — `error` 필드가 있거나 `vulnerabilities`가 객체가 아니면 무효로 판정한다(npm 11.6.2 실제 성공 응답을 실측해 `vulnerabilities`가 항상 객체로 존재함을 확인). `auditLockfile.ts`(fail-open이지만 "0건"이라 말하지 않음)와 `verifyPack.ts`(fail-closed, throw) 둘 다 이 검증을 거친다. `evaluateLockfileAudit(JSON.stringify({error:{...}}))`가 더 이상 "0건" 로그를 남기지 않는 걸 회귀 테스트로 고정(`tests/auditLockfile.test.ts`).
 
 ### SR2-AUD-003 — 승인 예외 만료일이 주석일 뿐 기계적으로 집행되지 않음
 

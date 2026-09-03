@@ -13,16 +13,22 @@
  * 않고 둘 다 유지한다 — 여기서 걸러지면 지금 당장, verifyPack에서 걸러지면 게시 직전.
  *
  * **fail-open/fail-closed 정책(QA-006 수정 기준)**: `npm audit` 실행 자체가 레지스트리
- * 통신 실패 등으로 안 되면(JSON을 못 받음) **fail-open**(경고만 출력하고 통과) — 이건
- * 코드 결함이 아니라 외부 서비스 가용성 문제라 이것만으로 PR을 막지 않는다. 반대로 audit는
- * 성공했는데 승인 목록(`src/core/auditAllowlist.ts`) 밖의 새 advisory가 나오면
- * **fail-closed**로 반드시 막는다.
+ * 통신 실패 등으로 안 되거나, 실행은 됐지만 유효한 리포트 형식이 아니면(예: 레지스트리가
+ * `{"error": {...}}`를 반환) **fail-open**(경고만 출력하고 통과) — 이건 코드 결함이
+ * 아니라 외부 서비스 가용성 문제라 이것만으로 PR을 막지 않는다. **단, "확인 불가"를
+ * "취약점 0건"이라고 말하지 않는다**(2차 적대적 검수 SR2-AUD-002 — 예전엔 `{"error":...}`
+ * 처럼 `vulnerabilities` 키가 없는 응답도 파싱만 성공하면 그대로 "0건"으로 통과시켰다).
+ * 이 PR 편의 게이트와 달리 release gate(`scripts/verifyPack.ts`)는 같은 무효 리포트를
+ * **fail-closed**로 막는다(SR2-AUD-001) — 게시 직전 판단은 "레지스트리가 잠깐 느렸을
+ * 수도 있으니 통과"가 아니라 "확인될 때까지 막는다"가 맞다. audit는 성공했는데 승인
+ * 목록(`src/core/auditAllowlist.ts`) 밖의 새 advisory가 나오면 여기서도 **fail-closed**로
+ * 반드시 막는다.
  */
 import { execFileSync } from "node:child_process";
 import {
   checkAdvisoriesAgainstAllowlist,
   extractAdvisoryUrls,
-  type NpmAuditReport,
+  isValidAuditReport,
 } from "../core/auditAllowlist.js";
 
 /** npm audit를 실행한다. 실행 자체가 실패하면(레지스트리 접근 불가 등) null을 반환한다. */
@@ -50,9 +56,9 @@ export function evaluateLockfileAudit(stdout: string | null): string | null {
     return null;
   }
 
-  let report: NpmAuditReport;
+  let parsed: unknown;
   try {
-    report = JSON.parse(stdout) as NpmAuditReport;
+    parsed = JSON.parse(stdout);
   } catch (err) {
     console.warn(
       `npm audit 출력이 JSON으로 파싱되지 않았습니다 — fail-open 정책으로 이 게이트는 ` +
@@ -61,7 +67,19 @@ export function evaluateLockfileAudit(stdout: string | null): string | null {
     return null;
   }
 
-  const advisoryUrls = extractAdvisoryUrls(report);
+  if (!isValidAuditReport(parsed)) {
+    // SR2-AUD-002 — 여기서 "취약점 0건"이라고 말하면 안 된다. 형식이 이상한 응답(레지스트리
+    // 오류 등)은 "안전을 확인 못 함"이지 "안전함"이 아니다. PR 편의 게이트라 fail-open은
+    // 유지하되, 메시지는 절대 0건이라고 하지 않는다.
+    console.warn(
+      "npm audit 출력이 유효한 취약점 리포트 형식이 아닙니다(레지스트리 오류 응답 등으로 " +
+        '추정) — fail-open 정책으로 이 게이트는 통과시키지만 "취약점 0건 확인"은 아닙니다. ' +
+        `수동으로 npm audit를 재시도해 확인하세요.\n${JSON.stringify(parsed).slice(0, 300)}`,
+    );
+    return null;
+  }
+
+  const advisoryUrls = extractAdvisoryUrls(parsed);
   const { unexpected, noneFound } = checkAdvisoriesAgainstAllowlist(advisoryUrls);
   if (unexpected.length > 0) {
     return (
