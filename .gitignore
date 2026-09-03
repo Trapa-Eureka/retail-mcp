@@ -10,3 +10,5 @@ coverage/
 sbom.json
 # 임베디드 PGlite 데이터(DATABASE_URL 미설정 시 기본 경로, T14) — 로컬 데이터, 커밋 금지.
 .retail-mcp/
+# Claude Code 로컬 세션 아티팩트(예: 스케줄 락 파일) — 저장소 콘텐츠 아님, TASKS T36에서 발견해 추가.
+.claude/

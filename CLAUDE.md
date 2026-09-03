@@ -15,15 +15,22 @@
 ## 명령어
 
 ```bash
-npm run check          # typecheck + lint + test 일괄 — 태스크 완료의 필수 게이트
-npm run test           # vitest run
-npm run typecheck      # tsc --noEmit
-npm run lint           # eslint .
-npm run dev            # MCP 서버 stdio 실행
-npm run migrate        # DATABASE_URL 대상 마이그레이션 (프로덕션 실행은 사람만)
-npm run agent:reorder  # 재주문 에이전트 1회 실행 (기본 dry_run)
-npm run smoke          # 실 Loyverse + 실 DB 수동 스모크 (사람 전용)
+npm run check           # typecheck + lint + format:check + test 일괄 — 태스크 완료의 필수 게이트
+npm run test            # vitest run
+npm run coverage        # 위험 모듈 포함 coverage threshold (CI 전용 게이트, check엔 미포함 — TESTING.md §8)
+npm run typecheck       # tsc --noEmit
+npm run lint            # eslint .
+npm run dev             # MCP 서버 stdio 실행
+npm run onboard         # 대화형 설정 CLI — CSV/Excel 채널 .env + 예시 템플릿 생성
+npm run agent:folder-scan  # CSV/Excel 채널 스캔 1회 (v0.2, 다음 실제 출시 대상, 기본 dry_run)
+npm run agent:reorder   # 재주문 에이전트 1회 실행 (Loyverse 경로, 기본 dry_run)
+npm run migrate         # DATABASE_URL 대상 마이그레이션 (프로덕션 실행은 사람만)
+npm run cleanup         # 보존 기간 지난 로그/스냅샷 정리 (기본 dry-run, 사람 전용)
+npm run smoke           # 실 Loyverse + 실 DB 수동 스모크 (사람 전용)
+npm run verify:pack     # 실제 게시 tarball fresh-install + bin 실행 + audit 검증 (release gate, CI에도 연결됨)
 ```
+
+CI(`.github/workflows/ci.yml`, TASKS T35)가 매 push/PR에서 위 게이트 대부분(coverage 포함) + 실 Postgres 컴포넌트 테스트(`npm run test:pg-component`) + 지원 OS/Node matrix에서의 `verify:pack` + dependency audit/시크릿 스캔/SBOM(`npm run audit:lockfile`/`secret-scan`/`sbom`)을 실행한다. 이 스크립트들은 로컬 `npm run check`엔 의도적으로 없다(무겁거나 실 네트워크가 필요 — TESTING.md §8).
 
 ## 소스 레이아웃
 
@@ -38,7 +45,9 @@ src/
   mcp/         # tools.ts — MCP 도구 로직(server.ts는 등록·조립만)
   server.ts    # MCP 서버 진입점 (도구 등록·조립만, 로직 없음)
 migrations/    # 001_init.sql ... 순번 SQL 파일
-tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  scripts/
+scripts/       # 저장소 전용 CLI 셸(migrate/cleanup/verifyPack/auditLockfile/secretScan/smoke) — npm 패키지에는 미포함, src/adapters의 로직을 가져다 씀
+tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(실 Postgres 전용, 기본 게이트 exclude)
+.github/workflows/ci.yml  # OS/Node matrix, coverage, 실 Postgres 컴포넌트, dependency audit/secret scan/SBOM
 ```
 
 ## 컨벤션
@@ -53,7 +62,7 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  scripts/
 ## 가드레일 (위반 금지)
 
 1. **실발송 이중 게이트**: 기본 `SEND_MODE=dry_run`. 실발송은 `SEND_MODE=live` **그리고** 에이전트 실행 인자 `--confirm`이 둘 다 있어야 한다. 테스트는 어떤 경우에도 live 경로 금지.
-2. 테스트에서 **네트워크 호출 0건**: DB는 PGlite, POS는 픽스처, 발송은 목, LLM은 목 응답.
+2. 테스트에서 **네트워크 호출 0건**: DB는 PGlite, POS는 픽스처, 발송은 목, LLM은 목 응답. `tests/component/**`(실 Postgres 대상, `vitest.component.config.ts`)가 가드레일 4의 explore_sql과 같은 패턴의 유일한 예외 — 기본 게이트(`vitest.config.ts`)가 이 디렉터리를 exclude해 원칙 자체는 안 깨지고, CI의 별도 job(`postgres-component`)에서만 돈다. 새 실 네트워크 테스트를 추가할 땐 이 예외를 넓히지 말고 여기 안에 넣는다.
 3. **LLM은 숫자를 만들지 않는다**: 품목·수량·금액은 결정론 계산 결과에서만 오고, LLM 출력은 요약 문구로만 쓰인다. LLM 출력의 수치를 파싱해 로직에 쓰는 코드 금지.
 4. 웨어하우스 **쓰기는 ETL 경로만**. MCP 질의 도구는 읽기 전용 (운영 DB에는 읽기 전용 롤 사용). `explore_sql`을 켤 때는 위험 함수 실행 권한이 없는 전용 role을 필수로 요구한다 — `BEGIN READ ONLY`만으로는 advisory lock류 부수효과를 막지 못함(`docs/SPEC.md` §18, `docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md` SEC-001/002).
 5. `npm run migrate`를 프로덕션 `DATABASE_URL`에 실행하는 것은 사람만. 에이전트는 마이그레이션 **파일 작성까지만**.
@@ -70,6 +79,7 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  scripts/
 
 - 2026-09-02: 최초 작성.
 - 2026-09-03: v0.2(CSV/Excel 채널, SCM 대사, 팩단위 반올림, `explore_sql`) 완료 + npm 출시 전 적대적 검수(`docs/004~009`) 반영 — 스택/레이아웃/가드레일을 v0.2 실제 구조로 갱신, "v0.1 데이터 소스는 Loyverse 단일"만 남기지 않고 v0.2 전환 상태를 명시. 낡은 규칙 삭제는 없음(v0.1 규칙은 여전히 유효, v0.2가 추가된 것).
+- 2026-09-03(T36): T29~T35 완료를 반영해 명령어 목록(coverage/onboard/agent:folder-scan/cleanup/verify:pack)·소스 레이아웃(scripts/, tests/component/, .github/workflows/)·가드레일 2(tests/component/** 예외)·출시 전 검수 절을 갱신. 재검토 결과 삭제할 낡은 규칙은 없었음 — v0.1 규칙(가드레일 1/2/3/5/6, Loyverse 경로)은 실배포 보류와 무관하게 여전히 코드에 실존하고 테스트로 지켜짐.
 
 ## 구현 해석 보충 (2026-09-02 문서 점검)
 
@@ -82,7 +92,9 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  scripts/
 
 ## 출시 전 검수 대응 (2026-09-03, `docs/TASKS.md` T28~T37)
 
-- npm publish 준비 전 적대적 검수(`docs/004~009`, 40건 + 문서 정합성 5건)를 실행했고 판정은 **출시 차단**이다. T29~T37을 전부 완료하고 `docs/008` release gate를 통과하기 전에는 `npm publish`를 실행하지 않는다.
+- npm publish 준비 전 적대적 검수(`docs/004~009`, finding 33건 + 문서 정합성 5건)를 실행했고 판정은 **출시 차단**이었다. T29~T35(패키징/보안/데이터/운영/테스트 게이트) 전부 완료 — finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`. 남은 건 T36(이 절 — 운영 문서 동기화)과 T37(`docs/008` 8단계 release gate 최종 통과 + 사람 확인)뿐이다. `npm publish`는 T37 통과 후 **사용자에게 별도로 확인받기 전까지** 실행하지 않는다.
 - 파일 기반 authoritative 스캔(CSV/Excel 폴더 채널)에서 사라진 SKU/매장은 **자동 tombstone**(비활성 상태, 물리 삭제 금지, 이력 보존) — `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2.
 - 지점 폴더 스캔의 저재고 알림은 **하루 최대 1회 다이제스트를 보장**한다 — 파일이 안 바뀌어도 완전 무음은 아니다(SCM 실패 등 "조용한 실패"를 놓치지 않기 위해). `docs/SPEC.md` §18, `docs/DESIGN.md` §12.3.
 - npm 공개 배포 대상은 `@trapa-eureka/retail-mcp`(scoped, `publishConfig.access=public`, MIT) — unscoped `retail-mcp`는 이름 재사용 불확실성(2026-01-12 unpublish 이력)이 있어 채택하지 않는다.
+- **CI가 이 저장소에 존재한다**(`.github/workflows/ci.yml`, T35) — 매 push/PR에서 지원 OS/Node matrix, coverage threshold, 실 Postgres 컴포넌트 테스트, dependency audit/secret scan/SBOM을 돈다. 새 코드가 이 게이트를 깨면 머지하지 않는다.
+- **외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI는 아직 npm 패키지에 없다**(`scripts/migrate.ts`는 저장소 전용, `files`/빌드 산출물 미포함) — README "설치" 절에 이 간극을 명시했고, bin 추가 여부는 T37에서 결정한다(`docs/004` REL-006).

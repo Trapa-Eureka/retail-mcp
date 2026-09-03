@@ -28,6 +28,27 @@
 | `docs/TASKS.md` | 태스크 백로그 — 에이전트 실행 단위, 완료 기준 | 작업 배정 시 |
 | `docs/WORKFLOW.md` | AI-native 개발 규칙 (sheet_mcp와 공통 + 이 레포 특이사항) | 최초 1회 + 운영 중 참조 |
 | `SECURITY.md` | 보안 취약점 비공개 신고 절차, 지원 버전, 알려진 보안 설계 경계 | 취약점 발견 시 |
+| `CHANGELOG.md` | 릴리스별 변경 이력 (Keep a Changelog 형식) | 버전 업그레이드 전 |
+
+## 설치 (npm 게시 후 — 004 REL-006/009 DOC-004, TASKS T36)
+
+> 아직 `npm publish`가 나가지 않았다(위 배너 참고) — 이 절은 게시 이후의 설치 계약을 미리 확정해둔 것이다. 지금 이 저장소로 실행하려면 아래 "퀵스타트"(저장소 clone 기준)를 따른다.
+
+게시되면 패키지명은 scoped `@trapa-eureka/retail-mcp`(MIT, `publishConfig.access=public`)다.
+
+```bash
+npm install -g @trapa-eureka/retail-mcp   # 전역 설치 — 또는 프로젝트별로 npm install --save-dev
+retail-mcp-onboard                         # 대화형 설정 — .env + 예시 템플릿 CSV 생성(위 "CSV/Excel 채널 퀵스타트"와 같은 대화)
+retail-mcp                                 # MCP 서버 stdio 실행 — claude mcp add에 이 명령을 그대로 연결
+```
+
+**데이터 위치**: `DATABASE_URL`을 안 정하면 임베디드 PGlite가 기본값이고, 데이터는 **`retail-mcp`를 실행하는 현재 작업 디렉터리 기준** `.retail-mcp/data/`(또는 `RETAIL_MCP_DATA_DIR`로 override)에 생긴다 — 전역 설치라도 이 경로는 실행 시점의 CWD에 종속된다. 서로 다른 디렉터리에서 실행하면 서로 다른(독립된) 로컬 DB가 생긴다는 뜻이다 — 지점별로 폴더를 분리해 쓰는 CSV/Excel 채널에는 의도된 동작이지만, cron/launchd 등록 시 반드시 같은 작업 디렉터리(`cd`)를 고정해야 한다(위 "cron/launchd 등록 예시" 참고).
+
+**마이그레이션**: 임베디드 PGlite는 첫 실행에 자동 적용된다(사람 개입 불필요, `warehouseFactory.ts`). **외부 `DATABASE_URL`(Neon/Supabase 등)을 쓰면 현재 npm 패키지에는 마이그레이션 CLI가 없다** — `scripts/migrate.ts`는 저장소 전용이라(devDependency `tsx` 필요, `package.json.files`/빌드 산출물에 포함 안 됨) 게시된 패키지만 설치해서는 실행할 수 없다. 외부 DB를 쓰려면 지금은 이 저장소를 clone해 `npm run migrate`를 실행해야 한다 — **이 간극은 T37(tarball 최종 재검수)에서 마이그레이션 bin 추가 여부를 결정한다**(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md` REL-006).
+
+**업그레이드**: `npm install -g @trapa-eureka/retail-mcp@latest`로 새 버전을 받는다. 마이그레이션 파일은 순번이 매겨져 있고 이미 적용된 건 건너뛰므로(체크섬까지 같으면) 버전을 올려도 임베디드 PGlite 데이터는 안전하다 — 외부 DB는 위 "마이그레이션" 항목과 같은 이유로 새 마이그레이션이 추가된 버전에서는 저장소 clone으로 `npm run migrate`가 필요하다.
+
+**제거**: `npm uninstall -g @trapa-eureka/retail-mcp`는 패키지 코드만 지운다 — 데이터(`.retail-mcp/data/`)와 `.env`는 그대로 남는다(재설치 시 데이터 보존을 위한 의도된 동작). 데이터까지 지우려면 그 디렉터리를 직접 삭제한다.
 
 ## 개발 방식
 

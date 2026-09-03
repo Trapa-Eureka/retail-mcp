@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: `package.json`, npm tarball, 설치·실행 계약
 - 판정: **출시 차단 — 현재 패키지는 publish 불가이며 설치 후 실행할 공개 진입점도 없음**
-- 상태: **부분 RESOLVED(T29, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36, REL-007(전체 release gate)·REL-008(사람의 npm 이름 소유권 최종 확인)은 T37에서 마저 진행. 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
+- 상태: **부분 RESOLVED(T29, PR #40, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36에서 README에 문서화(마이그레이션 CLI 미포함 간극은 명시적으로 남겨두고 T37로 이관). REL-007(전체 release gate)·REL-008(사람의 npm 이름 소유권 최종 확인)은 T37에서 마저 진행. 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
 - 검수 명령: `npm pack --dry-run --json --cache /tmp/retail-mcp-npm-cache`
 
 ## REL-001 — `private: true`로 npm publish가 명시적으로 차단됨
@@ -55,7 +55,7 @@
 - 근거: README는 저장소 clone 후 `npm install` 흐름만 설명한다. npm registry 설치, CLI 이름, 현재 작업 디렉터리에 생성되는 `.retail-mcp/data`, migration/업그레이드, 제거 시 데이터 보존 여부가 없다.
 - 영향: 전역 실행이나 다른 working directory에서 서로 다른 DB가 생성될 수 있고, 사용자는 데이터 위치와 백업 방법을 알 수 없다.
 - 수정 기준: OS별 안정적인 사용자 데이터 디렉터리 또는 명시적 `RETAIL_MCP_DATA_DIR` 요구를 결정하고 install/upgrade/uninstall/backup 문서를 추가한다.
-- 추적: T36(운영 문서 동기화) — 코드가 아니라 README/문서 작업이라 T29 범위 밖.
+- **부분 해결(T36, 2026-09-03)**: README에 "설치(npm 게시 후)" 절을 신설 — 정책 자체는 이미 코드로 확정돼 있던 것(CWD 기준 `.retail-mcp/data`, `RETAIL_MCP_DATA_DIR` override, `warehouseFactory.ts`)을 문서화만 했다. install(`npm install -g`)/업그레이드(`npm install -g @latest`, 마이그레이션 순번+체크섬으로 안전)/제거(`npm uninstall -g`, 데이터는 안 지워짐) 절차를 명시. **착수 중 발견한 진짜 간극**: 외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI가 게시된 npm 패키지에 없다 — `scripts/migrate.ts`는 `package.json.files`/`tsconfig.build.json`의 `dist` 빌드 산출물에 포함되지 않는 저장소 전용 스크립트다(devDependency `tsx` 필요). 임베디드 PGlite 경로는 자동 마이그레이션이라 영향 없다. 이 간극은 README에 명시하고 **T37에서 마이그레이션 bin 추가 여부를 결정**하도록 남겨뒀다(코드 변경은 T36 범위 밖).
 
 ## REL-007 — publish 전 자동 차단 게이트가 없음
 
