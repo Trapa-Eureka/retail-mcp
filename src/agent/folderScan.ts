@@ -21,7 +21,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse as parseCsvText } from "csv-parse/sync";
 import {
   applyPackRounding,
@@ -48,6 +47,7 @@ import type {
 } from "../core/types.js";
 import { writeFileAtomic } from "../adapters/atomicFile.js";
 import { assertFileSizeWithinLimit } from "../adapters/fileLimits.js";
+import { isMainModule } from "../adapters/mainModule.js";
 import {
   decodeFileBytes,
   parseInventoryFile,
@@ -1079,8 +1079,7 @@ async function main(): Promise<void> {
   }
 }
 
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMainModule) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
