@@ -13,7 +13,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
 import { DEFAULT_STALE_THRESHOLD_HOURS, computeFreshness } from "../core/freshness.js";
 import {
   DEFAULT_WINDOW_DAYS,
@@ -33,9 +32,9 @@ import type {
 } from "../core/types.js";
 import { createClaudeSummarizer } from "../adapters/claudeSummarizer.js";
 import { createLoyverseClientFromEnv } from "../adapters/loyverseClient.js";
-import { createPgConnectionProvider, createPgWarehouse } from "../adapters/pgWarehouse.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { createSystemClock } from "../adapters/systemClock.js";
+import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
 import { syncAll } from "../etl/sync.js";
 
 // ── 리포트 조립 (결정론, T9 재사용) ────────────────────────────────────────
@@ -416,12 +415,6 @@ function parseSendMode(): "dry_run" | "live" {
 }
 
 async function main(): Promise<void> {
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (!databaseUrl) {
-    throw new Error(
-      "DATABASE_URL이 없습니다. Neon/Supabase Postgres 연결 문자열을 .env에 추가하세요.",
-    );
-  }
   const businessTimezone = process.env["BUSINESS_TIMEZONE"];
   if (!businessTimezone) {
     throw new Error(
@@ -434,8 +427,10 @@ async function main(): Promise<void> {
   const sendMode = parseSendMode();
   const clock = createSystemClock();
 
-  const pool = new Pool({ connectionString: databaseUrl });
-  const warehouse = createPgWarehouse(createPgConnectionProvider(pool));
+  // DATABASE_URL이 없으면 임베디드 PGlite로 기동한다(T14, SPEC §12) — Neon 계정 없이도
+  // 비개발자 운영자가 npm install만으로 쓸 수 있게 하기 위해서다.
+  const handle = await createWarehouseFromEnv();
+  const warehouse = handle.warehouse;
   try {
     if (shouldSync) {
       const syncResult = await syncAll(
@@ -471,7 +466,7 @@ async function main(): Promise<void> {
         `제안 ${result.suggestionCount}건, 발송 ${result.sent ? "완료" : "안 함"}.`,
     );
   } finally {
-    await pool.end();
+    await handle.close();
   }
 }
 

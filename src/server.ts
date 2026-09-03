@@ -9,15 +9,14 @@
  */
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { Pool } from "pg";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { withTryAdvisoryLock } from "./adapters/advisoryLock.js";
 import { createLoyverseClientFromEnv } from "./adapters/loyverseClient.js";
-import { createPgConnectionProvider, createPgWarehouse } from "./adapters/pgWarehouse.js";
 import { createSystemClock } from "./adapters/systemClock.js";
+import { createWarehouseFromEnv } from "./adapters/warehouseFactory.js";
 import { DEFAULT_STALE_THRESHOLD_HOURS } from "./core/freshness.js";
 import {
   DEFAULT_LEAD_TIME_DAYS,
@@ -41,7 +40,6 @@ const SYNC_NOW_LOCK_KEY = 727_100_205;
 // ── 환경설정 파싱 (IO 없음 — 테스트 가능) ────────────────────────────────
 
 export interface ServerConfig {
-  databaseUrl: string;
   businessTimezone: string;
   staleThresholdHours: number;
   syncToolEnabled: boolean;
@@ -62,14 +60,15 @@ function parsePositiveNumber(
   return n;
 }
 
-/** env에서 서버 설정을 읽고 검증한다. IO 없음 — process.env만 읽는다. */
+/**
+ * env에서 서버 설정을 읽고 검증한다. IO 없음 — process.env만 읽는다.
+ *
+ * `DATABASE_URL`은 더 이상 여기서 필수로 검증하지 않는다(T14) — 없으면 웨어하우스가
+ * 임베디드 PGlite로 기본 동작한다(`createWarehouseFromEnv`, SPEC §12). 다만 `sync_now`는
+ * advisory lock(pg 전용, DESIGN §11.4)이 필요해 `SYNC_TOOL_ENABLED=true`일 때만 예외적으로
+ * `DATABASE_URL`을 요구한다.
+ */
 export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  const databaseUrl = env["DATABASE_URL"];
-  if (!databaseUrl) {
-    throw new Error(
-      "DATABASE_URL이 없습니다. Neon/Supabase Postgres 연결 문자열을 .env에 추가하세요.",
-    );
-  }
   const businessTimezone = env["BUSINESS_TIMEZONE"];
   if (!businessTimezone) {
     throw new Error(
@@ -82,7 +81,14 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
     DEFAULT_STALE_THRESHOLD_HOURS,
   );
   const syncToolEnabled = env["SYNC_TOOL_ENABLED"] === "true";
-  return { databaseUrl, businessTimezone, staleThresholdHours, syncToolEnabled };
+  if (syncToolEnabled && !env["DATABASE_URL"]) {
+    throw new Error(
+      "SYNC_TOOL_ENABLED=true인데 DATABASE_URL이 없습니다. sync_now는 Loyverse 동기화용 " +
+        "advisory lock에 Postgres가 필요합니다 — Neon/Supabase 연결 문자열을 .env에 추가하거나 " +
+        "SYNC_TOOL_ENABLED를 꺼두세요(임베디드 PGlite 경로에서는 sync_now를 쓸 수 없습니다).",
+    );
+  }
+  return { businessTimezone, staleThresholdHours, syncToolEnabled };
 }
 
 // ── 도구 결과 포장 ───────────────────────────────────────────────────────
@@ -271,16 +277,26 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
 
 // ── CLI 진입점 (조립만) ───────────────────────────────────────────────────
 
-export function createRetailMcpServer(): { server: McpServer; close: () => Promise<void> } {
+export async function createRetailMcpServer(): Promise<{
+  server: McpServer;
+  close: () => Promise<void>;
+}> {
   const config = resolveServerConfig();
-  const pool = new Pool({ connectionString: config.databaseUrl });
-  const warehouse = createPgWarehouse(createPgConnectionProvider(pool));
+  const handle = await createWarehouseFromEnv();
   const clock = createSystemClock();
 
   const server = new McpServer({ name: "retail-mcp", version: "0.1.0" });
 
-  const registerDeps: RegisterToolsDeps = { warehouse, clock, config };
+  const registerDeps: RegisterToolsDeps = { warehouse: handle.warehouse, clock, config };
   if (config.syncToolEnabled) {
+    // resolveServerConfig가 SYNC_TOOL_ENABLED=true면 DATABASE_URL을 이미 요구했으므로
+    // handle.kind는 항상 "pg"이고 pgPool이 존재한다.
+    const pool = handle.pgPool;
+    if (!pool) {
+      throw new Error(
+        "SYNC_TOOL_ENABLED=true인데 pg.Pool이 없습니다(내부 불변조건 위반) — DATABASE_URL 설정을 확인하세요.",
+      );
+    }
     registerDeps.loyverseClient = createLoyverseClientFromEnv();
     registerDeps.runExclusively = async <T>(fn: () => Promise<T>): Promise<T> => {
       const client = await pool.connect();
@@ -293,11 +309,11 @@ export function createRetailMcpServer(): { server: McpServer; close: () => Promi
   }
   registerTools(server, registerDeps);
 
-  return { server, close: () => pool.end() };
+  return { server, close: () => handle.close() };
 }
 
 async function main(): Promise<void> {
-  const { server } = createRetailMcpServer();
+  const { server } = await createRetailMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
