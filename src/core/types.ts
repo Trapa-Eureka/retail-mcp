@@ -157,6 +157,34 @@ export interface SalesPeriodAggRow {
   soldQty: Numeric;
 }
 
+/**
+ * SCM 시트 연동(SPEC §13)의 입고 실적 한 건. "발주"(미입고) 상태는 다루지 않는다 — 이미
+ * 입고된 것만 기록한다. 같은 (storeId, variantId, receivedAt)에 여러 건이 있으면 마지막
+ * 값으로 덮어써진다(합산 아님 — v0.1 한계, 원본 시트에 이벤트 순번이 없다).
+ */
+export interface PurchaseReceiptRow {
+  storeId: string;
+  variantId: string;
+  receivedAt: Date;
+  /** 입고 수량. 음수 불가(반품입고는 v0.1 스코프 밖). */
+  receivedQty: Numeric;
+  unitCost?: Numeric | null;
+  currency?: string | null;
+  vendor?: string | null;
+}
+
+/**
+ * 기간 내 입고수량 합계 — querySalesAgg/querySalesPeriodAgg가 반환하는 SalesAgg와 같은
+ * 모양으로 맞춰, core/metrics.ts의 재고 정합성 계산이 판매·입고 두 집계를 대칭적으로
+ * 다룰 수 있게 한다(SPEC §13).
+ */
+export interface PurchaseAgg {
+  storeId: string;
+  variantId: string;
+  /** 기간 내 입고수량 합계(원시값, 음수 없음). */
+  receivedQtyRaw: Numeric;
+}
+
 export interface SalesAggQuery {
   storeId?: string;
   category?: string;
@@ -252,6 +280,16 @@ export interface Warehouse {
    * sales_lines(영수증 라인 단위)와는 별도 테이블이다.
    */
   upsertSalesPeriodAgg(rows: SalesPeriodAggRow[]): Promise<void>;
+  /**
+   * SCM 시트 연동의 입고 실적 upsert(SPEC §13). 같은 (storeId, variantId, receivedAt)는
+   * 마지막 값으로 갱신된다.
+   */
+  upsertPurchaseReceipts(rows: PurchaseReceiptRow[]): Promise<void>;
+  /**
+   * querySalesAgg와 대칭인 입고 집계 조회 — SalesAggQuery를 그대로 재사용한다(같은 반개방
+   * 기간·매장·카테고리 필터 개념).
+   */
+  queryPurchaseAgg(q: SalesAggQuery): Promise<PurchaseAgg[]>;
   /** sync_state.cursor(=watermark) 조회. API 페이지 토큰이 아니다. */
   getCursor(resource: string): Promise<string | null>;
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;

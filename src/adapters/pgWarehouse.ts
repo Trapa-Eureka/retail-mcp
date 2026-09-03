@@ -7,6 +7,8 @@ import type {
   AgentSendEntry,
   InventoryRow,
   ProductRow,
+  PurchaseAgg,
+  PurchaseReceiptRow,
   SalesAgg,
   SalesAggQuery,
   SalesLineRow,
@@ -221,6 +223,67 @@ async function upsertSalesPeriodAggOn(
        sold_qty = excluded.sold_qty`,
     params,
   );
+}
+
+async function upsertPurchaseReceiptsOn(
+  session: DbSession,
+  rows: PurchaseReceiptRow[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  const params: unknown[] = [];
+  for (const r of rows) {
+    params.push(
+      r.storeId,
+      r.variantId,
+      // date 컬럼 — received_at은 시각이 아니라 "그 날짜"라 시간 성분을 버린다(UTC 기준 날짜).
+      r.receivedAt.toISOString().slice(0, 10),
+      r.receivedQty,
+      r.unitCost ?? null,
+      r.currency ?? null,
+      r.vendor ?? null,
+    );
+  }
+  await session.query(
+    `insert into purchase_receipts
+       (store_id, variant_id, received_at, received_qty, unit_cost, currency, vendor)
+     values ${buildValuesPlaceholders(rows.length, 7)}
+     on conflict (store_id, variant_id, received_at) do update set
+       received_qty = excluded.received_qty,
+       unit_cost = excluded.unit_cost,
+       currency = excluded.currency,
+       vendor = excluded.vendor`,
+    params,
+  );
+}
+
+/**
+ * querySalesAggOn과 대칭 — SalesAggQuery를 그대로 받는다. received_at은 date 컬럼이라
+ * `::date`로 캐스트해 기간 경계와 비교한다(SPEC §13 — 사업장 타임존 인지 경계 변환은 이번
+ * 스코프 밖, 알려진 단순화로 문서화).
+ */
+async function queryPurchaseAggOn(session: DbSession, q: SalesAggQuery): Promise<PurchaseAgg[]> {
+  const { rows } = await session.query<{
+    store_id: string;
+    variant_id: string;
+    received_qty_raw: string;
+  }>(
+    `select
+       pr.store_id as store_id,
+       pr.variant_id as variant_id,
+       sum(pr.received_qty)::text as received_qty_raw
+     from purchase_receipts pr
+     join products p on p.variant_id = pr.variant_id
+     where pr.received_at >= $1::date and pr.received_at < $2::date
+       and ($3::text is null or pr.store_id = $3)
+       and ($4::text is null or p.category = $4)
+     group by pr.store_id, pr.variant_id`,
+    [q.periodStart.toISOString(), q.periodEnd.toISOString(), q.storeId ?? null, q.category ?? null],
+  );
+  return rows.map((r) => ({
+    storeId: r.store_id,
+    variantId: r.variant_id,
+    receivedQtyRaw: r.received_qty_raw,
+  }));
 }
 
 async function getCursorOn(session: DbSession, resource: string): Promise<string | null> {
@@ -442,11 +505,13 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     appendInventorySnapshot: (runId, at, rows) =>
       appendInventorySnapshotOn(session, runId, at, rows),
     upsertSalesPeriodAgg: (rows) => upsertSalesPeriodAggOn(session, rows),
+    upsertPurchaseReceipts: (rows) => upsertPurchaseReceiptsOn(session, rows),
     getCursor: (resource) => getCursorOn(session, resource),
     setCursor: (resource, watermark, at) => setCursorOn(session, resource, watermark, at),
     getSyncState: () => getSyncStateOn(session),
     querySalesAgg: (q) => querySalesAggOn(session, q),
     querySalesPeriodAgg: (q) => querySalesPeriodAggOn(session, q),
+    queryPurchaseAgg: (q) => queryPurchaseAggOn(session, q),
     queryStock: (q) => queryStockOn(session, q),
     queryStores: (storeId) => queryStoresOn(session, storeId),
     logAgentSend: (e) => logAgentSendOn(session, e),
@@ -484,6 +549,8 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
       withSession(provider, (session) => appendInventorySnapshotOn(session, runId, at, rows)),
     upsertSalesPeriodAgg: (rows) =>
       withSession(provider, (session) => upsertSalesPeriodAggOn(session, rows)),
+    upsertPurchaseReceipts: (rows) =>
+      withSession(provider, (session) => upsertPurchaseReceiptsOn(session, rows)),
     getCursor: (resource) => withSession(provider, (session) => getCursorOn(session, resource)),
     setCursor: (resource, watermark, at) =>
       withSession(provider, (session) => setCursorOn(session, resource, watermark, at)),
@@ -491,6 +558,7 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     querySalesAgg: (q) => withSession(provider, (session) => querySalesAggOn(session, q)),
     querySalesPeriodAgg: (q) =>
       withSession(provider, (session) => querySalesPeriodAggOn(session, q)),
+    queryPurchaseAgg: (q) => withSession(provider, (session) => queryPurchaseAggOn(session, q)),
     queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
     queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),

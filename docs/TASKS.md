@@ -61,9 +61,14 @@
 
 ---
 
-## v0.2 대기열 — CSV/Excel 이후로 미룬 항목 (착수 금지)
+## v0.2 대기열 — CSV/Excel 이후로 미룬 항목
 
-아래는 CSV/Excel 채널(T12~T22)과 무관하게 여전히 미착수인 항목이다 — SCM 시트 연동(sheet_mcp 클라이언트) / `explore_sql`(읽기 전용 롤) / 팩 단위 반올림 / 정통 셀스루(입고 기반). (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
+CSV/Excel 채널(T12~T22)과 무관한 항목들이다 — `explore_sql`(읽기 전용 롤) / 팩 단위 반올림은 여전히 착수 금지(트리거 없음). SCM 시트 연동 / 정통 셀스루는 사용자가 실제 샘플 시트를 제공해(2026-09-03) T23으로 부분 착수했다(아래). (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
+
+### T23 — SCM 입고 실적 스키마 + 재고 정합성 검증 · 상태: DONE(2026-09-03) · 의존: 없음(v0.1/T12~T22와 독립)
+- 목표: 사용자가 제공한 실제 샘플 구글시트("발주, 입고 데이터" — 상품목록/입출고내역/재고현황/판매요약/대시보드 5탭)를 근거로, SCM 입고 실적을 적재하는 스키마·웨어하우스 계층과 그걸로 계산하는 "정통 셀스루"·"재고 정합성 검증"을 구현한다. 실제 Google Sheets API 연동(자격증명·의존성 결정)은 이번 스코프 밖 — 시트 스냅샷을 테스트 픽스처로만 쓴다(사용자 확인, "지금은 픽스처로만" 선택).
+- 완료 기준: [x] `purchase_receipts` 스키마 + upsert 멱등·FK 테스트 [x] `queryPurchaseAgg`가 `querySalesAgg`와 대칭 형태로 기간·매장 필터 동작 [x] SCM 시트 원시 행 zod 스키마 + "구분=입고만 반영, 출고는 스킵" 도메인 변환 함수 [x] 재고 정합성 검증(원장 예상재고 vs 실사재고 discrepancy) + 정통 셀스루 계산, 실제 샘플 시트 숫자로 골든 케이스 [x] check 통과
+- **완료**: `migrations/004_purchase_receipts.sql`(PK `store_id,variant_id,received_at`), `core/types.ts`(`PurchaseReceiptRow`/`PurchaseAgg`/`Warehouse.upsertPurchaseReceipts`·`queryPurchaseAgg`), `adapters/pgWarehouse.ts` 구현, `core/scmSchema.ts`(원시 행 zod 스키마 + `mapScmRowsToPurchaseReceipts` — 구분=출고는 의도적으로 건너뜀, retail-mcp의 판매 원천은 Loyverse/CSV라 이중 계산 방지), `core/metrics.ts`의 `computeStockReconciliation`. **발견**: 정통 셀스루(판매÷(기초재고+입고))는 재고가 보존되는 한 §2 근사식(판매÷(판매+기말재고))과 대수적으로 항상 같은 값 — 진짜 가치는 "더 정확한 숫자"가 아니라 입고 원장 기준 예상 재고와 POS/CSV 실사 재고를 대사해 도난·파손·실사오차를 잡아내는 재고 정합성 검증. 샘플 시트에 "발주"(미입고) 상태 컬럼이 없어 원래 SCM 연동이 노렸던 "미입고 주문을 재주문 제안에서 빼는" 기능은 시트에 그 컬럼이 추가돼야 후속 가능(범위 밖으로 명시). MCP 도구·에이전트 배선, 실 Google Sheets 어댑터는 실 연동 방식(서비스 계정 vs 공개 링크 CSV export)이 결정된 뒤 별도 태스크. 상세는 `docs/SPEC.md` §13. check 통과(304 테스트 = 기존 278 + 신규 26).
 
 ## v0.2 백로그 — CSV/Excel 채널 (SPEC §12, 2026-09-03 설계)
 

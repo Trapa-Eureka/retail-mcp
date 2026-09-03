@@ -198,3 +198,31 @@ UTF-8을 기본 가정하지 않는다. 한국어 윈도우 엑셀 저장은 CP9
 - **본사 통합 스캔**(`CSV_MODE=consolidated`, `CSV_COLLECT_DIR`) — "다지점 헤드오피스 통합 조회" 절의 "지점 스냅샷 파일이 끝까지 성공 파싱된 뒤에만 그 지점의 watermark를 커밋"을 지점별 독립 트랜잭션으로 구현한다. 스냅샷 전송 수단(공유드라이브/이메일 첨부/USB) 자체는 여전히 이 프로젝트가 규정하지 않는다 — 수집 폴더에 파일이 도착해 있다고만 가정한다.
 - **동시 접근 방지** — 위 "PGlite 다중 프로세스 동시 접근" 절의 대응(자체 파일 락)은 `src/adapters/fileLock.ts` + `src/adapters/warehouseFactory.ts`(임베디드 PGlite 경로를 여는 진입점 전부가 공용으로 거친다)로 구현됐다.
 - **e2e 검증**(`tests/e2eCsvChannel.test.ts`) — 지점 단독 시나리오(파일→파싱→적재→실제 발송)와 본사 통합 시나리오(서로 독립된 웨어하우스 두 개가 각자 만든 실제 스냅샷 파일을 세 번째 독립 웨어하우스가 취합해 매장명으로 필터링 조회)를 실제 파일시스템·PGlite로 끝까지 이어 붙여 통과시킨다.
+
+## 13. SCM 시트 연동 + 재고 정합성 검증 (2026-09-03, v0.2 대기열 착수)
+
+`docs/TASKS.md` "v0.2 대기열"의 "SCM 시트 연동"·"정통 셀스루"를, 사용자가 제공한 실제 샘플 구글시트(발주·입고 데이터, "상품목록"·"입출고내역"·"재고현황"·"판매요약"·"대시보드" 5개 탭)를 근거로 설계·착수한다.
+
+### 스코프 결정 — 이번에 하는 것 / 미룬 것
+
+- **한다**: 시트의 "입출고내역" 탭 중 **구분=입고 행만** 신규 테이블(`purchase_receipts`)에 적재하는 스키마·웨어하우스 계층, 그리고 그 입고 실적으로 "정통 셀스루"와 "재고 정합성 검증"을 계산하는 순수 함수(`computeStockReconciliation`).
+- **구분=출고 행은 적재하지 않는다.** retail-mcp의 판매 원천은 Loyverse/CSV 채널이다 — SCM 시트의 출고까지 별도 파이프라인으로 적재하면 같은 판매를 이중 계산하게 된다.
+- **"발주"(주문했지만 아직 안 들어온 것) 상태는 다루지 않는다.** 확인한 샘플 시트에 발주 상태 컬럼 자체가 없다 — 있는 건 이미 들어온 "입고 실적"뿐이다. 원래 "SCM 시트 연동"이 노렸던 "미입고 주문을 재주문 제안에서 빼는" 기능은 시트에 그 컬럼이 추가돼야 후속 작업이 가능하다.
+- **실제 Google Sheets API 연동은 미룬다.** 앱이 시트를 직접 읽으려면 서비스 계정/OAuth 같은 새 자격증명·의존성(`googleapis`)이 필요한데, 이는 CLAUDE.md 시크릿 목록에 없는 새 결정이라 이번 스코프에서 뺐다. 지금은 시트 스냅샷을 테스트 픽스처(`tests/fixtures/scm/sample-receipts.csv`, 실제 샘플 시트 값 그대로)로만 쓴다. 실 연동 방식(서비스 계정 vs 공개 링크 CSV export)은 이후 별도 태스크에서 결정한다.
+- **매장 매핑**: 시트 자체에는 매장 구분이 없다(단일 사업장 전제). `mapScmRowsToPurchaseReceipts(rawRows, storeId)`가 `storeId`를 호출자로부터 명시적으로 받는다 — CSV 채널의 `매장명` 필수 컬럼과 달리, 이 시트는 애초에 그 개념이 없어서 어댑터 경계에서 채운다.
+- **MCP 도구·에이전트 배선은 이번 스코프 밖.** 지금 배포된 건 `core/`(스키마+지표 계산)와 `Warehouse`(적재+조회) 계층뿐이다 — `sell_through` 같은 MCP 도구에 노출하거나 재주문 에이전트가 참조하게 하는 건 실제 Google Sheets 연동이 결정된 뒤 이어질 태스크다.
+
+### 발견 — "정통 셀스루"는 근사식과 대수적으로 같은 값이다
+
+`판매÷(기초재고+입고)`(정통)과 `판매÷(판매+기말재고)`(§2 근사식)는, 재고가 보존되는 한(`기초재고+입고−판매=기말재고`) 두 식의 분모가 항상 같아 **동일한 값**이 나온다. v0.1이 근사식을 쓴 이유는 공식이 부정확해서가 아니라 입고 데이터 자체가 없어서 관측 가능한 기말재고로 대신 계산한 것뿐이다.
+
+그래서 이 기능의 실제 가치는 "더 정확한 셀스루 숫자"가 아니라 **재고 정합성 검증**이다 — 확인한 샘플 시트의 "재고현황" 탭은 `현재재고`를 실사가 아니라 `입고합계−출고합계`로 **계산**한다(시트 비고에 명시). 반면 retail-mcp의 재고수량(Loyverse/CSV `재고수량`)은 POS가 보고하는 **실사 기반** 값이다. 두 값(원장이 계산한 예상 재고 vs POS/CSV가 보고한 실제 재고)을 대사하면 도난·파손·실사오차처럼 원장에 안 잡히는 재고 손실을 잡아낼 수 있다 — `computeStockReconciliation`이 `discrepancy`/`hasDiscrepancy`로 이걸 표면화한다.
+
+### 구현
+
+- `migrations/004_purchase_receipts.sql` — `purchase_receipts(store_id, variant_id, received_at, received_qty, unit_cost, currency, vendor)`, PK `(store_id, variant_id, received_at)`. 같은 매장·SKU·같은 날짜에 입고가 여러 건이면 마지막 값으로 덮어써진다(합산 아님) — 원본 시트에 이벤트 순번이 없어 생기는 v0.1 한계로 문서화(필요해지면 시퀀스 컬럼 추가).
+- `src/core/types.ts` — `PurchaseReceiptRow`, `PurchaseAgg`, `Warehouse.upsertPurchaseReceipts`/`queryPurchaseAgg`(`querySalesAgg`와 대칭적으로 `SalesAggQuery`를 재사용).
+- `src/adapters/pgWarehouse.ts` — 위 두 메서드 구현. `received_at`은 `date` 컬럼이라 기간 경계와 `::date`로 비교한다(사업장 타임존 인지 경계 변환은 이번 스코프 밖 — 알려진 단순화로 문서화).
+- `src/core/scmSchema.ts` — 확인한 샘플 시트 "입출고내역" 탭 헤더 그대로(일자/구분/상품코드/상품명/수량/단가/거래처)를 zod로 검증하는 `scmReceiptRowSchema`, 그리고 구분=입고 행만 걸러 `PurchaseReceiptRow[]`로 변환하는 `mapScmRowsToPurchaseReceipts`.
+- `src/core/metrics.ts` — `computeStockReconciliation(inventory, purchases, sales, opts)`. `opts.openingStock`(키 `${storeId}:${variantId}`)로 기초재고를 명시할 수 있고, 없으면 0(그 시점부터 원장을 새로 시작한 것으로 취급 — 온보딩 시 1회 실사값을 입력받는 흐름은 이후 태스크).
+- 테스트: `tests/scmSchema.test.ts`, `tests/metrics.test.ts`(`computeStockReconciliation` describe), `tests/pgWarehouse.test.ts`(`purchase_receipts`/`queryPurchaseAgg`) — 골든 케이스 숫자(P001: 입고 30·판매 21·실사재고 9)는 실제 확인한 샘플 시트 값 그대로다.
