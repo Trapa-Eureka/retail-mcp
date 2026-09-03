@@ -719,6 +719,29 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.message_id).toBe("msg-123");
     });
 
+    it("sending으로 예약한 뒤 unknown으로 갱신하면 같은 행이 갱신되고 행이 늘지 않는다(OPS-004, TASKS T34)", async () => {
+      const base = {
+        runId: "run-unknown",
+        sentAt: new Date("2026-09-01T07:00:00Z"),
+        recipient: "owner@example.com",
+        subject: "저재고 알림",
+        suggestionCount: 2,
+        messageId: null,
+        dryRun: false,
+        errorCode: null,
+      };
+      await warehouse.logAgentSend({ ...base, status: "sending" });
+      await warehouse.logAgentSend({ ...base, status: "unknown", errorCode: "AmbiguousSendError" });
+
+      const { rows } = await db.query<{ count: string; status: string; error_code: string }>(
+        "select count(*)::text as count, max(status) as status, max(error_code) as error_code " +
+          "from agent_send_log where run_id = 'run-unknown'",
+      );
+      expect(rows[0]?.count).toBe("1");
+      expect(rows[0]?.status).toBe("unknown");
+      expect(rows[0]?.error_code).toBe("AmbiguousSendError");
+    });
+
     it("no_suggestions 상태는 recipient/subject 없이도 기록된다", async () => {
       await warehouse.logAgentSend({
         runId: "run-2",
@@ -801,6 +824,94 @@ describe("pgWarehouse (PGlite)", () => {
 
       const { rows } = await db.query<{ count: string }>(
         "select count(*)::text as count from agent_send_log where run_id = 'run-5' and status = 'sending'",
+      );
+      expect(rows[0]?.count).toBe("1");
+    });
+  });
+
+  describe("deleteOldInventorySnapshots / deleteOldAgentSendLog — 보존 정책(007 OPS-005, TASKS T34)", () => {
+    it("agent_send_log — before보다 오래된 행만 지우고 최근 행은 남긴다", async () => {
+      await warehouse.logAgentSend({
+        runId: "run-old",
+        sentAt: new Date("2026-01-01T00:00:00Z"),
+        status: "no_suggestions",
+        recipient: null,
+        subject: null,
+        suggestionCount: 0,
+        messageId: null,
+        dryRun: true,
+        errorCode: null,
+      });
+      await warehouse.logAgentSend({
+        runId: "run-recent",
+        sentAt: new Date("2026-09-01T00:00:00Z"),
+        status: "no_suggestions",
+        recipient: null,
+        subject: null,
+        suggestionCount: 0,
+        messageId: null,
+        dryRun: true,
+        errorCode: null,
+      });
+
+      const deleted = await warehouse.deleteOldAgentSendLog(new Date("2026-06-01T00:00:00Z"));
+      expect(deleted).toBe(1);
+
+      const { rows } = await db.query<{ run_id: string }>("select run_id from agent_send_log");
+      expect(rows.map((r) => r.run_id)).toEqual(["run-recent"]);
+    });
+
+    it("agent_send_log — dryRun이면 아무것도 지우지 않고 대상 행 수만 센다", async () => {
+      await warehouse.logAgentSend({
+        runId: "run-old",
+        sentAt: new Date("2026-01-01T00:00:00Z"),
+        status: "no_suggestions",
+        recipient: null,
+        subject: null,
+        suggestionCount: 0,
+        messageId: null,
+        dryRun: true,
+        errorCode: null,
+      });
+
+      const count = await warehouse.deleteOldAgentSendLog(new Date("2026-06-01T00:00:00Z"), {
+        dryRun: true,
+      });
+      expect(count).toBe(1);
+
+      const { rows } = await db.query<{ count: string }>(
+        "select count(*)::text as count from agent_send_log",
+      );
+      expect(rows[0]?.count).toBe("1"); // 여전히 남아 있다 — 지워지지 않았다.
+    });
+
+    it("inventory_snapshots — before보다 오래된 행만 지우고 최근 행은 남긴다", async () => {
+      await warehouse.appendInventorySnapshot("run-old", new Date("2026-01-01T00:00:00Z"), [
+        { storeId: "store_main", variantId: "var_cola", inStock: "10", updatedAt: new Date() },
+      ]);
+      await warehouse.appendInventorySnapshot("run-recent", new Date("2026-09-01T00:00:00Z"), [
+        { storeId: "store_main", variantId: "var_cola", inStock: "8", updatedAt: new Date() },
+      ]);
+
+      const deleted = await warehouse.deleteOldInventorySnapshots(new Date("2026-06-01T00:00:00Z"));
+      expect(deleted).toBe(1);
+
+      const { rows } = await db.query<{ run_id: string }>("select run_id from inventory_snapshots");
+      expect(rows.map((r) => r.run_id)).toEqual(["run-recent"]);
+    });
+
+    it("inventory_snapshots — dryRun이면 아무것도 지우지 않고 대상 행 수만 센다", async () => {
+      await warehouse.appendInventorySnapshot("run-old", new Date("2026-01-01T00:00:00Z"), [
+        { storeId: "store_main", variantId: "var_cola", inStock: "10", updatedAt: new Date() },
+      ]);
+
+      const count = await warehouse.deleteOldInventorySnapshots(new Date("2026-06-01T00:00:00Z"), {
+        dryRun: true,
+      });
+      expect(count).toBe(1);
+
+      const { rows } = await db.query<{ count: string }>(
+        "select count(*)::text as count from inventory_snapshots",
       );
       expect(rows[0]?.count).toBe("1");
     });

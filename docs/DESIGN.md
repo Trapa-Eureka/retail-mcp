@@ -319,3 +319,17 @@ SPEC §18의 정책 확정을 구현 계약으로 옮긴다. §6/§17의 2단계
 **scm_status(DATA-007)** — `agent/folderScan.ts`의 `ScmStatus`(`not_configured`/`no_file`/`failed`/`ok`) 신설, `FolderScanResult.scmStatus`로 모든 반환 경로에 노출한다. `ok` 케이스가 DATA-006의 `insufficientData`를 그대로 품는다 — 두 finding이 결국 "SCM 대사 결과를 얼마나 신뢰·노출할지"라는 같은 축의 다른 측면이라 자연스럽게 하나의 상태로 합쳐졌다. 실제 report가 나갈 땐 `renderAlertText`가 SKU별 목록이 아니라 한 줄 요약으로만 넣는다(노이즈 방지) — "정상 결과처럼 보이는 이메일에 SCM 문제가 묻힌다"는 지적을 이메일 본문 수준에서 막는다.
 
 **동일 날짜 복수 입고 합산(DATA-008)** — 안정적 event key 도입(원본 시트에 그 정보가 없어 불가능) 대신 `core/scmSchema.ts`의 `mapScmRowsToPurchaseReceipts`가 반환 직전에 (매장,SKU,입고일) 단위로 수량을 합산한다(`aggregateSameDayReceipts`). 단가·거래처(감사용, 계산엔 안 쓰임)는 마지막 행 값을 남긴다. 같은 파일 재스캔은 매번 같은 합산 결과를 그대로 대입(assignment)하므로 idempotent하다 — DB 쪽에서 `+=` 누적을 하지 않는다는 게 핵심.
+
+## 12.8 운영 신뢰성 — lock, tie-break, 발송 idempotency, 로그/보존 (OPS-001~006, TASKS T34)
+
+**PGlite close 순서(OPS-001)** — `warehouseFactory.ts`의 `close()`가 `db.close()`/`lock.release()`를 독립된 try/catch로 감싸 release가 db.close() 성공/실패와 무관하게 항상 실행되게 했다. 둘 다 실패하면 `AggregateError`로 두 원인 모두 보존(하나만 던지면 다른 원인이 조용히 사라진다). 초기화 실패 경로(migration 등)의 catch도 같은 원칙.
+
+**PID 재사용 완화(OPS-002)** — `fileLock.ts`의 락 파일에 `hostname`/`nonce`/`pidStartedAt`을 추가했다. `pidStartedAt`은 POSIX(`ps -o lstart= -p <pid>`)에서만 구할 수 있다 — Windows엔 무설치로 쓸 수 있는 동등 명령이 없어(OPS-006과 연결) 항상 `null`이고, 그 경우 이 신호 없이 기존 PID-only 판정으로 안전하게 폴백한다(완화가 실패해도 새 장애를 만들지 않는다는 게 원칙). 판정 순서: ①다른 호스트가 쓴 락(hostname 불일치)은 이 프로세스가 생사를 확인할 방법이 없으므로 **항상 busy로 취급**(자동 회수 절대 안 함, 사람이 수동 확인 후 지워야 함) — 구버전 락(hostname 필드 자체가 없음)은 하위 호환으로 "같은 호스트"로 간주한다. ②같은 호스트면 `isAlive(pid)`로 먼저 살아있는지 보되, 살아있어도 그 pid의 *지금* 시작 시각이 락 기록과 다르면(둘 다 구했을 때만 비교) OS가 그 사이 pid를 재사용한 것으로 판단해 stale 취급하고 회수한다.
+
+**latest file 결정론(OPS-003)** — 에러로 거부하는 대신 결정론적 tie-break를 채택했다: mtime 내림차순, 동률이면 전체 경로 내림차순(`sortByMtimeThenPathDesc`, `agent/folderScan.ts`, inventory/SCM 파일 선택 공유). 같은 파일 집합이면 OS `readdir` 순서와 무관하게 항상 같은 파일이 선택된다. 동률이 실제 감지되면 경고 로그에 그 사실을 명시한다.
+
+**발송 unknown 상태 + idempotency(OPS-004)** — Resend가 `Idempotency-Key` 헤더를 지원함을 API 문서로 확인(2026-09-03, 요청당 고유·24시간 만료·최대 256자)했다. `OutboundMessage.idempotencyKey`(신규)에 `runId`를 그대로 담아 `resendProvider.ts`가 헤더로 전달 — 같은 runId로 사람이 재시도해도 실제로는 한 통만 나간다. `AgentSendStatus`에 `"unknown"` 신설(migration 008) — `resendProvider.ts`는 **타임아웃일 때만**(연결 자체 실패나 HTTP 오류 응답은 "도달 여부"가 확실해 대상 아님) 에러 `.name`을 `AmbiguousSendError`로 표시하고, `agent/folderScan.ts`·`agent/reorder.ts`가 이를 보고 `failed` 대신 `unknown`으로 기록한다. `pgWarehouse.ts`의 `logAgentSendOn`이 `unknown`도 `sent`/`failed`와 같이 "sending 예약 행을 갱신" 대상에 포함해야 하는 걸 놓칠 뻔했다(빠뜨리면 같은 run_id에 행이 두 개 남는 버그 — 통합 테스트로 실제 재현·수정).
+
+**구조화 로그·종료 코드·보존·백업(OPS-005)** — `src/adapters/structuredLog.ts`(신규)의 `logStructured()`가 CLI 진입점(`agent/folderScan.ts`, `agent/reorder.ts`)에서 사람이 읽는 기존 로그와 별개로 `{event, runId, status, ...}` JSON 한 줄을 stdout에 남긴다(server.ts는 stdout이 MCP 프로토콜 전용이라 제외). 종료 코드 계약(0=완료, 1=처리 안 된 예외)은 기존 동작을 README에 문서화만 했다(코드 변경 없음). 보존 정책은 `Warehouse.deleteOldInventorySnapshots`/`deleteOldAgentSendLog`(신규) + `scripts/cleanup.ts`(`npm run cleanup`) — `npm run migrate`와 같은 이중 게이트(기본 dry-run, `--confirm`으로만 실제 삭제), `CLEANUP_RETENTION_DAYS`(기본 90일). 백업/복구는 README에 문서화만(임베디드 PGlite = 데이터 디렉터리 파일 복사, `DATABASE_URL` = 호스팅 서비스의 관리형 백업에 위임).
+
+**설치 환경 호환성(OPS-006) — 부분 해결 + T35로 이관** — 지원 범위(Node 20+, macOS 검증, Linux 미검증, Windows 명시적 미검증)를 README에 문서화했다. 실제 OS/Node CI matrix 구성은 T35로 넘겼다 — T35가 실 Postgres 컴포넌트 테스트를 위해 CI를 처음 구성해야 하므로, matrix도 그때 같이 설정해 중복 구성을 피한다.

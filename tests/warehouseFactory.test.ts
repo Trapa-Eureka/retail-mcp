@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { PGlite } from "@electric-sql/pglite";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireFileLock, FileLockBusyError } from "../src/adapters/fileLock.js";
 import { createWarehouseFromEnv } from "../src/adapters/warehouseFactory.js";
 
@@ -77,5 +78,46 @@ describe("createWarehouseFromEnv", () => {
     const second = await createWarehouseFromEnv({ env: {}, dataDir });
     await expect(second.warehouse.queryStock({})).resolves.toEqual([]);
     await second.close();
+  });
+
+  it("db.close()가 실패해도 lock은 반드시 해제된다(OPS-001, TASKS T34)", async () => {
+    const handle = await createWarehouseFromEnv({ env: {}, dataDir });
+    const closeSpy = vi
+      .spyOn(PGlite.prototype, "close")
+      .mockRejectedValueOnce(new Error("PGlite close 실패(시뮬레이션)"));
+    try {
+      await expect(handle.close()).rejects.toThrow("PGlite close 실패");
+    } finally {
+      closeSpy.mockRestore();
+    }
+
+    // db.close()가 실패했어도 lock 파일은 해제돼 있어야 한다 — 예전엔 release()가 아예
+    // 실행되지 않아 다음 기동이 FileLockBusyError로 계속 막혔다.
+    const second = await createWarehouseFromEnv({ env: {}, dataDir });
+    await second.close();
+  });
+
+  it("db.close()와 lock.release() 둘 다 실패하면 AggregateError로 둘 다 보존한다(OPS-001, TASKS T34)", async () => {
+    const handle = await createWarehouseFromEnv({ env: {}, dataDir });
+    const closeSpy = vi
+      .spyOn(PGlite.prototype, "close")
+      .mockRejectedValueOnce(new Error("db close 실패"));
+    // lock.release()도 실패하게 만든다 — 락 파일 자리를 디렉터리로 바꿔치기하면 rm()이
+    // ENOENT가 아닌 다른 에러(EISDIR)로 실패한다(release()는 ENOENT만 무시한다).
+    const lockPath = `${dataDir}.lock`;
+    await rm(lockPath, { force: true });
+    await mkdir(lockPath, { recursive: true });
+    try {
+      await handle.close();
+      expect.unreachable("close()가 두 실패를 모두 던져야 한다");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AggregateError);
+      const agg = err as AggregateError;
+      expect(agg.errors).toHaveLength(2);
+      expect(String(agg.errors[0])).toContain("db close 실패");
+    } finally {
+      closeSpy.mockRestore();
+      await rm(lockPath, { recursive: true, force: true });
+    }
   });
 });

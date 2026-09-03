@@ -54,6 +54,7 @@ import {
   type ParsedCsvExcelFile,
 } from "../adapters/csvExcelParser.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
+import { logStructured } from "../adapters/structuredLog.js";
 import { createSystemClock } from "../adapters/systemClock.js";
 import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
 
@@ -84,6 +85,18 @@ async function listInventoryFiles(dir: string): Promise<InventoryFileEntry[]> {
   );
 }
 
+/**
+ * mtime 내림차순, 동률이면 전체 경로 내림차순(OPS-003, 006 검수, TASKS T34) — mtime만으로는
+ * 여러 파일이 정확히 같은 값을 가질 수 있고(파일시스템에 따라 mtime 해상도가 1초 단위인
+ * 경우도 있고, 배치로 복사한 파일들이 우연히 같은 초에 찍히기도 한다), 그 경우 이전엔 OS의
+ * `readdir` 반환 순서에 그대로 의존해 실행마다 다른 파일이 선택될 수 있었다. 파일명을 2차
+ * 키로 쓰면 같은 파일 집합에 대해 항상 같은 파일이 선택된다(결정론) — 어떤 값을 "옳다"고
+ * 주장하는 게 아니라, 최소한 매번 같은 답이 나온다는 걸 보장하는 게 목적이다.
+ */
+function sortByMtimeThenPathDesc<T extends { fullPath: string; mtimeMs: number }>(files: T[]): T[] {
+  return [...files].sort((a, b) => b.mtimeMs - a.mtimeMs || b.fullPath.localeCompare(a.fullPath));
+}
+
 async function findLatestInventoryFile(dir: string): Promise<string> {
   const files = await listInventoryFiles(dir);
   if (files.length === 0) {
@@ -91,15 +104,20 @@ async function findLatestInventoryFile(dir: string): Promise<string> {
       `${dir}에 .csv/.xlsx 재고 파일이 없습니다. SPEC §12 고정 템플릿에 맞춰 채운 파일을 이 폴더에 넣으세요.`,
     );
   }
-  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const sorted = sortByMtimeThenPathDesc(files);
 
-  if (files.length > 1) {
+  if (sorted.length > 1) {
+    const tie = sorted[0]!.mtimeMs === sorted[1]!.mtimeMs;
     console.warn(
-      `${dir}에 재고 파일이 ${files.length}개 있습니다 — 가장 최근에 수정된 ` +
-        `"${path.basename(files[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
+      `${dir}에 재고 파일이 ${sorted.length}개 있습니다 — ` +
+        (tie
+          ? `그중 ${sorted.filter((f) => f.mtimeMs === sorted[0]!.mtimeMs).length}개는 수정 ` +
+            `시각이 동일해(파일명 역순으로 결정론적으로 골랐습니다) `
+          : "가장 최근에 수정된 ") +
+        `"${path.basename(sorted[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
     );
   }
-  return files[0]!.fullPath;
+  return sorted[0]!.fullPath;
 }
 
 // ── 알림 대상 판정 (T17 결과 → 사람이 읽는 목록) ────────────────────────────
@@ -222,6 +240,13 @@ function errorCodeOf(err: unknown): string {
   return err instanceof Error && err.name ? err.name : "UnknownError";
 }
 
+/** OPS-004(007 검수, TASKS T34) — NotificationProvider가 "발송됐는지 알 수 없음"(예: Resend
+ * 타임아웃)을 이 이름으로 알린다. `failed`(확실한 실패)와 구분해 `agent_send_log`에
+ * `status: "unknown"`으로 남긴다 — 자동 재시도는 하지 않고 사람이 확인하게 한다. */
+function isAmbiguousSendError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AmbiguousSendError";
+}
+
 // ── SCM 입고 실적 수동 내보내기 흡수 (지점 모드 전용, SPEC §16) ─────────────
 //
 // 실 Google Sheets API 연동은 채택하지 않는다(2026-09-03 결정) — 서비스 계정 발급은
@@ -246,14 +271,20 @@ async function findLatestScmFile(dir: string): Promise<string | null> {
       return { fullPath: full, mtimeMs: st.mtimeMs };
     }),
   );
-  withMtimes.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  if (withMtimes.length > 1) {
+  // OPS-003(006 검수, TASKS T34) — 위 findLatestInventoryFile과 같은 결정론적 tie-break.
+  const sorted = sortByMtimeThenPathDesc(withMtimes);
+  if (sorted.length > 1) {
+    const tie = sorted[0]!.mtimeMs === sorted[1]!.mtimeMs;
     console.warn(
-      `${dir}에 SCM 입고 파일이 ${withMtimes.length}개 있습니다 — 가장 최근에 수정된 ` +
-        `"${path.basename(withMtimes[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
+      `${dir}에 SCM 입고 파일이 ${sorted.length}개 있습니다 — ` +
+        (tie
+          ? `그중 ${sorted.filter((f) => f.mtimeMs === sorted[0]!.mtimeMs).length}개는 수정 ` +
+            `시각이 동일해(파일명 역순으로 결정론적으로 골랐습니다) `
+          : "가장 최근에 수정된 ") +
+        `"${path.basename(sorted[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
     );
   }
-  return withMtimes[0]!.fullPath;
+  return sorted[0]!.fullPath;
 }
 
 /** 이번 스캔의 재고 파일에 매장이 정확히 하나면 그 매장으로 자동 추론하고, 여럿이면 명시를 요구한다. */
@@ -780,6 +811,9 @@ export async function runFolderScan(
       to: recipient,
       subject,
       text: reportText,
+      // OPS-004 — runId를 그대로 idempotency key로 쓴다(resendProvider.ts 문서 참고). 같은
+      // runId로 사람이 재시도해도(예: status="unknown" 확인 후) 실제로는 중복 발송되지 않는다.
+      idempotencyKey: runId,
     });
     await deps.warehouse.logAgentSend({
       runId,
@@ -811,7 +845,10 @@ export async function runFolderScan(
     await deps.warehouse.logAgentSend({
       runId,
       sentAt: now,
-      status: "failed",
+      // OPS-004 — 타임아웃처럼 "발송됐는지 알 수 없는" 실패는 failed와 구분해 unknown으로
+      // 남긴다(persistDigestWatermark도 호출하지 않는다 — 기존 실패 경로와 동일하게 다음
+      // 실행이 즉시 재시도할 수 있어야 한다).
+      status: isAmbiguousSendError(err) ? "unknown" : "failed",
       recipient,
       subject,
       suggestionCount: issueCount,
@@ -983,6 +1020,17 @@ async function runBranchMain(clock: Clock, handle: { warehouse: Warehouse }): Pr
       `알림 ${result.alertCount}건, 재고 정합성 경고 ${result.reconciliation.length}건, ` +
       `발송 ${result.sent ? "완료" : "안 함"}. 스냅샷: ${result.snapshotPath}`,
   );
+  // OPS-005 — 위 사람이 읽는 줄과 별개로, 파싱 가능한 한 줄을 추가로 남긴다.
+  logStructured({
+    event: "folder_scan_completed",
+    runId: result.runId,
+    status: result.status,
+    itemCount: result.itemCount,
+    alertCount: result.alertCount,
+    reconciliationCount: result.reconciliation.length,
+    scmStatus: result.scmStatus.kind,
+    sent: result.sent,
+  });
 }
 
 async function runConsolidatedMain(clock: Clock, handle: { warehouse: Warehouse }): Promise<void> {
@@ -1003,6 +1051,15 @@ async function runConsolidatedMain(clock: Clock, handle: { warehouse: Warehouse 
   for (const f of failed) {
     console.error(`  실패: ${f.file} — ${f.error}`);
   }
+  // OPS-005 — 본사 통합 모드는 파일별 독립 처리라 원래 하나의 runId 개념이 없다(위 문서
+  // 참고) — 이 배치 실행 자체를 가리키는 상관관계 id를 로그용으로 새로 만든다.
+  logStructured({
+    event: "consolidated_scan_completed",
+    runId: randomUUID(),
+    status: result.ok ? "success" : "failed",
+    fileCount: result.files.length,
+    failedCount: failed.length,
+  });
 }
 
 async function main(): Promise<void> {
