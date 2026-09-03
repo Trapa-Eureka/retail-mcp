@@ -11,7 +11,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { hostname as osHostname } from "node:os";
+import { hostname as osHostname, networkInterfaces } from "node:os";
 import path from "node:path";
 
 export interface FileLock {
@@ -30,6 +30,9 @@ export interface FileLockOptions {
   maxRetries?: number;
   /** 테스트 주입용(OPS-002). 기본값: os.hostname(). */
   hostname?: string;
+  /** 테스트 주입용(2차 적대적 검수 SR2-LOCK-001). 기본값: defaultGetMachineId()(첫 번째
+   * non-internal 네트워크 인터페이스의 MAC 주소, 못 구하면 undefined). */
+  machineId?: string;
   /**
    * 테스트 주입용(OPS-002) — 주어진 pid로 실행 중인 프로세스의 시작 시각을 구할 수 있으면
    * 문자열로, 못 구하면(플랫폼 미지원·권한 없음·프로세스 없음) null을 반환한다. 기본값은
@@ -46,6 +49,12 @@ interface LockFileContent {
    * 회수하지 않는다(수동 확인 필요). 구버전이 쓴 락 파일엔 이 필드가 없을 수 있다 — 그 경우
    * "같은 호스트"로 간주해 기존 PID 기반 판정으로 폴백한다(하위 호환). */
   hostname?: string;
+  /** 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
+   * 머신/컨테이너가 같은 값을 쓰면(흔한 기본 hostname, 동일 이미지의 컨테이너 등) 오판할 수
+   * 있다. MAC 주소는 물리/가상 NIC에 묶인 값이라 그런 충돌 확률이 훨씬 낮다 — 이 값이 있으면
+   * hostname 문자열 비교보다 우선한다(둘 다 있을 때). 구버전 락(필드 없음)이나 이 값을 구할 수
+   * 없는 환경(네트워크 인터페이스 없음 등)에서는 기존 hostname 판정으로 폴백한다. */
+  machineId?: string;
   /** 같은 pid·hostname이라도 이 락을 실제로 만든 실행 인스턴스를 구분하는 무작위 값
    * (release()가 pid만이 아니라 이 값도 맞는지 확인한다 — OPS-002 보강). */
   nonce?: string;
@@ -73,6 +82,31 @@ function defaultGetProcessStartedAt(pid: number): string | null {
     return out === "" ? null : out;
   } catch {
     return null;
+  }
+}
+
+/** 2차 적대적 검수 SR2-LOCK-001 — hostname 문자열 충돌(동일 기본 hostname을 쓰는 서로 다른
+ * 머신/컨테이너)이 다른 호스트의 active lock을 stale로 오판·삭제하게 만드는 문제의 보조 신호.
+ * 디스크에 아무것도 쓰지 않고(설치 시 UUID를 파일로 영속화하는 방식은 lock 대상 디렉터리 자체가
+ * 공유/network filesystem일 때 그 파일도 같이 공유돼 목적을 못 이룬다) 이미 OS가 들고 있는
+ * network interface MAC 주소를 그대로 쓴다 — 물리/가상 NIC에 묶인 값이라 hostname보다 충돌
+ * 확률이 훨씬 낮고, 동기 호출이라 테스트에서 실제 파일 IO 부수효과가 없다. loopback(internal)과
+ * 값이 없는 인터페이스는 제외하고 첫 번째로 찾은 값을 쓴다 — 인터페이스가 여러 개여도 이 값은
+ * "같은 머신인지" 판정의 보조 신호일 뿐이라 어느 걸 골라도 일관되게 재현 가능하면 충분하다.
+ * 못 구하면(네트워크 인터페이스 없는 샌드박스 등) undefined — 이 경우 기존 hostname 판정으로
+ * 안전하게 폴백한다(이 함수가 예외를 던지면 락 획득 자체가 막히므로 절대 throw하지 않는다). */
+function defaultGetMachineId(): string | undefined {
+  try {
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (!entry.internal && entry.mac && entry.mac !== "00:00:00:00:00:00") {
+          return entry.mac;
+        }
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -177,6 +211,7 @@ export async function acquireFileLock(
   const nowFn = opts.nowFn ?? (() => new Date());
   const maxRetries = opts.maxRetries ?? 5;
   const hostname = opts.hostname ?? osHostname();
+  const machineId = opts.machineId ?? defaultGetMachineId();
   const getProcessStartedAt = opts.getProcessStartedAt ?? defaultGetProcessStartedAt;
   const lockPath = lockPathFor(targetPath);
 
@@ -188,6 +223,10 @@ export async function acquireFileLock(
       hostname,
       nonce,
       pidStartedAt: getProcessStartedAt(pid),
+      // exactOptionalPropertyTypes: machineId를 못 구했을 때(undefined) 필드 자체를 아예 안
+      // 넣는다 — `machineId: undefined`를 명시적으로 넣는 것과 다르다(구버전 락과 동일하게
+      // "이 신호가 없다"로 취급되게 하려는 의도).
+      ...(machineId !== undefined ? { machineId } : {}),
     };
     if (await tryCreateLockFile(lockPath, content)) {
       return {
@@ -211,7 +250,21 @@ export async function acquireFileLock(
 
     // OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 수 없다. 구버전이 쓴
     // 락(hostname 필드 없음)은 "같은 호스트"로 간주해 기존 판정으로 폴백한다(하위 호환).
-    const crossHost = typeof holder.hostname === "string" && holder.hostname !== hostname;
+    //
+    // 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
+    // 머신/컨테이너가 우연히 같은 값을 쓰면(흔한 기본 hostname, 동일 베이스 이미지의 컨테이너
+    // 등) "같은 호스트"로 오판해 다른 호스트가 실제 쓰고 있는 락을 stale로 삭제할 수 있었다.
+    // 양쪽 다 machineId(네트워크 인터페이스 MAC, defaultGetMachineId 참고)를 구할 수 있으면
+    // hostname 문자열 비교보다 이 값을 우선한다 — hostname이 같아도 machineId가 다르면 다른
+    // 호스트로 판정한다(반대로 hostname이 달라도 machineId가 같으면 같은 호스트로 판정 —
+    // hostname이 실행 중 바뀌는 드문 경우까지 커버). 둘 중 하나라도 machineId를 못 구했으면
+    // (구버전 락, 네트워크 인터페이스 없는 샌드박스 등) 이 신호 없이 기존 hostname 판정으로
+    // 폴백한다(LOCK-002 — 구버전 락 자체의 안전성 강화는 별도 트래킹).
+    const holderMachineId = typeof holder.machineId === "string" ? holder.machineId : undefined;
+    const crossHost =
+      holderMachineId !== undefined && machineId !== undefined
+        ? holderMachineId !== machineId
+        : typeof holder.hostname === "string" && holder.hostname !== hostname;
     if (crossHost) {
       throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, holder.hostname);
     }

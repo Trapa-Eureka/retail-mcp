@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: P0 4/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+- 처리 진행 상황: P0 5/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록.
 
 ## 실행 검증
@@ -142,6 +142,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: host identity가 `os.hostname()` 문자열 하나다. 서로 다른 머신/container가 같은 hostname을 쓰면 same-host로 판정한다. 그 PID가 로컬에서 죽어 있거나 시작 시각이 다르면 다른 호스트가 실제 사용 중인 lock을 삭제한다.
 - 영향: 공유/network filesystem에서 두 PGlite 프로세스가 같은 data directory를 동시에 열어 데이터가 유실될 수 있다. 이 lock의 존재 목적을 직접 무너뜨린다.
 - 수정 기준: PGlite data directory를 network/shared filesystem에서 지원하지 않는다고 강제하거나, 설치 시 영속적으로 만든 machine UUID까지 host identity에 포함한다. cross-host 안전성을 보장할 수 없다면 자동 stale 회수를 금지한다.
+- **RESOLVED**: `FileLockOptions.machineId`(기본값 `defaultGetMachineId()` — loopback이 아닌 첫 네트워크 인터페이스의 MAC 주소, 못 구하면 undefined)를 락 파일에 함께 기록하고, cross-host 판정에서 양쪽 다 machineId를 구할 수 있으면 hostname 문자열 비교보다 이 값을 우선하도록 바꿨다(hostname이 같아도 machineId가 다르면 다른 호스트로 판정, hostname이 달라도 machineId가 같으면 같은 호스트로 판정). 설치 시 UUID를 파일로 영속화하는 방식은 채택하지 않았다 — lock 대상 디렉터리 자체가 공유/network filesystem이면 그 파일도 같이 공유돼 목적을 못 이루고, home directory에 쓰면 테스트마다 실제 디스크 IO 부수효과가 생긴다. MAC 주소는 OS가 이미 들고 있는 값이라 디스크에 아무것도 안 쓰고, 동기 호출이라 테스트 부수효과가 없다. machineId를 한쪽이라도 못 구하면(구버전 락, 네트워크 인터페이스 없는 샌드박스 등) 기존 hostname 판정으로 안전하게 폴백한다(LOCK-002는 그 폴백 경로 자체의 안전성 강화 — 별도 트래킹, 아직 미해결). `tests/fileLock.test.ts`에 5개 회귀 테스트 추가, 기존 "다른 호스트가 쓴 락은..." 테스트는 두 acquireFileLock 호출 모두 hostname과 함께 서로 다른 machineId를 명시하도록 갱신했다(실제 테스트 실행 머신의 진짜 MAC에 좌우되지 않고 "다른 호스트" 시나리오를 결정적으로 재현하기 위해).
 
 ### SR2-LOCK-002 — 구버전 lock은 공유 filesystem에서 안전하지 않음
 
