@@ -33,7 +33,7 @@ import {
   loadMigrations,
   runMigrations,
   createPgliteExecutor,
-  type SqlExecutor,
+  type QueryOnlyExecutor,
 } from "./migrationRunner.js";
 import {
   createPgConnectionProvider,
@@ -165,14 +165,9 @@ export async function createWarehouseFromEnv(
   return createEmbeddedWarehouse(dataDir);
 }
 
-function sqlExecutorFromSession(session: DbSession): SqlExecutor {
+function queryOnlyExecutorFromSession(session: DbSession): QueryOnlyExecutor {
   return {
-    async exec(sql) {
-      await session.query(sql);
-    },
-    async query<T extends Record<string, unknown>>(sql: string) {
-      return session.query<T>(sql);
-    },
+    query: <T extends Record<string, unknown>>(sql: string) => session.query<T>(sql),
   };
 }
 
@@ -195,7 +190,7 @@ export async function ensureNetworkMigrationsApplied(handle: WarehouseHandle): P
 
   const migrations = await loadMigrations();
   const { pending } = await withSession(handle.connectionProvider, (session) =>
-    checkPendingMigrations(sqlExecutorFromSession(session), migrations),
+    checkPendingMigrations(queryOnlyExecutorFromSession(session), migrations),
   );
   if (pending.length === 0) return;
 

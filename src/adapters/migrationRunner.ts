@@ -107,6 +107,11 @@ export interface PendingMigrationsStatus {
   pending: string[];
 }
 
+/** 조회만 하는 최소 인터페이스 — `checkPendingMigrations`는 아무것도 쓰지 않으므로 `exec()`가
+ * 있는 전체 `SqlExecutor`를 요구하지 않는다(그래도 `SqlExecutor`는 이 타입을 그대로 만족해
+ * 기존 호출자를 바꿀 필요는 없다). */
+export type QueryOnlyExecutor = Pick<SqlExecutor, "query">;
+
 /**
  * 2차 적대적 검수 SR2-REL-001 — 아무것도 적용하지 않고(읽기 전용) 대기 중인 마이그레이션이
  * 있는지만 확인한다. `warehouseFactory.ts`의 network Postgres 시작 시 사전 점검과
@@ -118,7 +123,7 @@ export interface PendingMigrationsStatus {
  * 다시 던진다 — 실제 장애를 "migrate를 실행하세요"로 오인시키면 안 된다.
  */
 export async function checkPendingMigrations(
-  executor: SqlExecutor,
+  executor: QueryOnlyExecutor,
   migrations: readonly Migration[],
 ): Promise<PendingMigrationsStatus> {
   let rows: { id: string }[];
