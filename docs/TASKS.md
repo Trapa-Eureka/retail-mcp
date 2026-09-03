@@ -9,37 +9,39 @@
 
 의존 그래프: `T0 → T1 → {A: T2→T3, B: T4, C: T5, D: T6} → T7(T2,T4) → T8(T4,T5,T6) → T9(T7,T8, T6) → T10(T9) → T11`
 
+> **문서 정정(2026-09-03, docs/009 DOC-001 대응)**: 아래 T0~T7의 상태 라벨이 실제 구현 이후에도 `TODO`로 남아 있었다 — `T8`~`T11`이 이 태스크들에 의존하는데도 완료 처리돼 있었고, git history(`T0: Project scaffolding` ~ `T7: ETL sync orchestration`, 전부 2026-09-02 머지)와 실제 소스도 완료를 가리켜 라벨만 갱신을 놓쳤던 것으로 확인했다. 아래 상태를 실제 커밋 날짜로 정정한다 — 재작업 아님, 표기 오류 수정.
+
 ---
 
-### T0 — 프로젝트 스캐폴딩 · 상태: TODO
+### T0 — 프로젝트 스캐폴딩 · 상태: DONE(2026-09-02)
 - 목표: TS strict + ESLint + Prettier + Vitest + 스크립트 일체 (`check/test/typecheck/lint/dev/migrate/agent:reorder/smoke`), `.env.example`, `.gitignore`.
 - 완료 기준: [ ] `npm run check` 통과 [ ] 더미 테스트 1개 실행 [ ] git init + 첫 커밋
 
-### T1 — 마이그레이션 + 도메인 타입 · 상태: TODO · 의존: T0
+### T1 — 마이그레이션 + 도메인 타입 · 상태: DONE(2026-09-02) · 의존: T0
 - 목표: `migrations/001_init.sql` (DESIGN §2 전체), 최소 마이그레이션 러너(`scripts/migrate.ts` — 적용 이력 테이블 포함), `core/types.ts` (DESIGN §4 인터페이스 전체).
 - 완료 기준: [ ] PGlite에 001 적용 → 전 테이블 존재 검증 테스트 [ ] 러너 2회 실행 멱등 [ ] check 통과
 
-### T2 (레인 A) — FixtureLoyverseClient + 픽스처 · 상태: TODO · 의존: T1
+### T2 (레인 A) — FixtureLoyverseClient + 픽스처 · 상태: DONE(2026-09-02) · 의존: T1
 - 목표: TESTING §2 시나리오(매장2×품목8×35일, 환불·신규·재고0·유니코드 포함) 픽스처 제작 + 페이지네이션 재현 목 클라이언트.
 - 완료 기준: [ ] 픽스처가 실제 Loyverse 응답 스키마(zod)로 파싱됨 [ ] 커서 페이지 2개 이상 재현 테스트 [ ] check 통과
 
-### T3 (레인 A) — Loyverse 실어댑터 · 상태: TODO · 의존: T2
+### T3 (레인 A) — Loyverse 실어댑터 · 상태: DONE(2026-09-02) · 의존: T2
 - 목표: fetch 기반 `loyverseClient` — 토큰 헤더, 커서 페이지네이션, 429 지수 백오프. 테스트는 주입된 목 fetch로 요청 형태만 검증 (실호출 없음).
 - 완료 기준: [ ] LoyverseClient 계약 충족 [ ] 백오프 로직 fake timer 테스트 [ ] 시크릿 하드코딩 없음 [ ] check 통과
 
-### T4 (레인 B) — 웨어하우스 어댑터 · 상태: TODO · 의존: T1
+### T4 (레인 B) — 웨어하우스 어댑터 · 상태: DONE(2026-09-02) · 의존: T1
 - 목표: `pgWarehouse` (pg/PGlite 겸용 — 커넥션 주입) — upsert 전부, 커서, 스냅샷, 고정 집계 쿼리(`querySalesAgg`, `queryStock`), `agent_send_log`.
 - 완료 기준: [ ] PGlite로 upsert 멱등 테스트 [ ] 집계 쿼리가 골든 픽스처 합계와 일치 [ ] SQL 전부 파라미터라이즈드 [ ] check 통과
 
-### T5 (레인 C) — 지표 코어 · 상태: TODO · 의존: T1
+### T5 (레인 C) — 지표 코어 · 상태: DONE(2026-09-02) · 의존: T1
 - 목표: `core/metrics.ts` 순수 함수 5종 (DESIGN §3 수식 그대로).
 - 완료 기준: [ ] **TESTING §3 골든 케이스 전부** 하드코딩 값으로 통과 [ ] ∞/null 경계 처리 [ ] Clock 주입 확인 [ ] check 통과
 
-### T6 (레인 D) — 알림 + 요약 어댑터 · 상태: TODO · 의존: T1
+### T6 (레인 D) — 알림 + 요약 어댑터 · 상태: DONE(2026-09-02) · 의존: T1
 - 목표: sheet_mcp에서 `NotificationProvider`/`ResendEmailProvider` 이식(+출처 주석), `MockNotificationProvider`, `Summarizer` 인터페이스 + Claude API 구현 + `MockSummarizer`.
 - 완료 기준: [ ] 목 fetch로 Resend·Claude 요청 형태 테스트 [ ] Summarizer 프롬프트에 "수치 생성 금지, 제공된 표의 사실만" 명시 [ ] check 통과
 
-### T7 — ETL 동기화 · 상태: TODO · 의존: T2, T4
+### T7 — ETL 동기화 · 상태: DONE(2026-09-02) · 의존: T2, T4
 - 목표: `etl/sync.ts` — DESIGN §5 순서·커서·멱등·부분 실패 재개.
 - 완료 기준: [ ] **TESTING §4 ETL 4항목 전부** 통과 [ ] check 통과
 
@@ -194,3 +196,58 @@ T0~T11 전부 완료된 뒤, 새 태스크 번호 없이 진행한 보강.
 - 2026-09-03: **다지점 헤드오피스 통합 조회 설계 추가** (코드 변경 없음, 문서만). 위에서 미정으로 남겼던 항목 중 하나를 정했다 — 지점에 공용 Neon 업로드를 요구하지 않고, **지점별 산출물을 §12 컬럼 구성과 동일한 고정 템플릿 스냅샷 파일로 내보내 본사 인스턴스가 취합**하는 방식. 본사는 같은 retail-mcp를 "통합 조회" 모드로 별도 설치해 지점 스냅샷이 모이는 폴더를 동일한 폴더 감시 채널로 관찰하고, 매장명이 이미 구분자라 기존 MCP 도구·에이전트의 지점 필터링이 스키마 변경 없이 그대로 다지점 조회에 쓰인다. 상세는 SPEC §12 "다지점 헤드오피스 통합 조회". 실행 모델·PGlite 동시 접근 검증(§8)은 여전히 미정.
 - 2026-09-03: **실행 모델 결정** (코드 변경 없음, 문서만). §8에 남은 두 미결 항목 중 하나를 정리했다 — 폴더 감시는 **`agent:reorder`와 같은 주기 스캔(cron)**으로 하고, 상시 워처(데몬)는 채택하지 않는다. 비개발자 운영자에게 크래시 복구·재시작 등록 같은 새 운영 부담을 지우는 데 비해 재고 변동을 실시간 반영해야 할 이유가 없다는 판단(재주문 의사결정은 이미 §5에서 주간 주기로 설계돼 있음). 스캔 1회가 파싱→적재→알림→(지점이면) 스냅샷 갱신까지 전부 수행하므로, 다지점 절에서 미해결로 남겼던 "지점 스냅샷 전송 주기"도 이 결정으로 자동 해소됨(스캔 주기와 동일). 상세는 SPEC §12 "실행 모델". §8에는 이제 PGlite 다중 프로세스 동시 접근 검증 하나만 남았고, 이는 문서로 정할 사안이 아니라 구현 착수 시 스파이크로 확인해야 하는 기술 검증 항목이다.
 - 2026-09-03: **PGlite 다중 프로세스 동시 접근 스파이크** (코드 변경 없음, 검증 스크립트는 세션 스크래치패드에서 실행 후 정리함). 같은 파일 영속 PGlite 데이터 디렉터리를 서로 다른 Node 프로세스 두 개가 겹쳐 열도록 재현(A가 먼저 열어 6초 유지, 1.5초 뒤 B가 열어 각자 insert, 이후 세 번째 프로세스로 최종 상태 확인) — 2회 반복해 재현성 확인. **결과: 에러 없이 나중에 연 프로세스(B)의 쓰기가 조용히 유실됐다** — 락 거부가 아니라 silent data loss(PGlite README도 "single user/connection" 명시). 이에 따라 retail-mcp가 **자체 파일 락(PID+타임스탬프)으로 동시 접근을 막는 것**을 v0.2 구현 요구사항으로 확정했다. 이걸로 SPEC §8의 v0.2 관련 미결 항목이 전부 정리됐다(남은 3개는 Loyverse/v0.1 재검토용). 상세는 SPEC §12 "PGlite 다중 프로세스 동시 접근". 다음은 CSV/Excel 데이터소스 실제 백로그(TASKS.md 새 태스크) 설계.
+
+## v0.3 백로그 — npm 출시 전 적대적 검수 대응 (T28~T37, 2026-09-03)
+
+v0.2 대기열(T23~T27) 완료 직후, npm publish 준비에 들어가기 전에 사용자 지시로 코드 검수를 실행했다(`/code-review`). 결과는 **출시 차단** — `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`에 40건, `docs/009_DOCUMENTATION_CHANGE_STRATEGY.md`에 문서 정합성 5건 + 수정 순서 판정을 기록했다. `docs/009`가 권고한 순서(①규범 문서 확정 → ②코드+실패 테스트 수정 → ③운영 문서 동기화 → ④tarball 재검수)를 그대로 채택해 T28~T37로 번호화한다. 각 검수 문서의 finding ID(REL-*/SEC-*/DATA-*/OPS-*/QA-*/DOC-*)를 그대로 추적키로 쓴다 — 새 번호 체계를 만들지 않는다.
+
+사용자 확인(2026-09-03, AskUserQuestion)으로 아래 정책을 먼저 확정했다(T28에서 SPEC §18/DESIGN §12/TASKS 본 절에 반영):
+- **npm 배포 범위**: `@trapa-eureka/retail-mcp` scoped, `publishConfig.access=public`, MIT 라이선스로 공개 배포한다(REL-001/005/008, DOC-004).
+- **DATA-002(누락 SKU/매장)**: 자동 tombstone — 최신 authoritative 스캔에 없는 행은 비활성 상태로 표시하고 재주문/저재고 계산에서 제외하되 이력은 DB에 보존한다.
+- **DATA-003(반복 발송)**: 파일 변경 여부와 무관하게 **하루 최대 1회 다이제스트를 보장**하고, 같은 날 안에서는 재발송을 억제한다(watermark가 "완전 무음"이 아니라 "일 1회 상한"으로 동작).
+- **진행 방식**: 기존 세션 표준과 동일 — Task 단위로 쪼개 하나씩 진행하고 매번 확인받는다.
+
+의존 그래프: `T28 → T29 → T30 → T31 → T32 → T33 → T34 → T35 → T36 → T37`(정책 문서가 코드보다 먼저, 운영 문서가 코드보다 나중이라는 009의 원칙을 태스크 순서에도 그대로 반영 — 병렬화하지 않는다. 검수 항목이 서로 참조하는 경우가 많아 순차 진행이 재작업 위험을 줄인다).
+
+---
+
+### T28 — 정책 문서 확정 (코드 변경 없음) · 상태: DONE(2026-09-03) · 의존: 없음(v0.2 대기열 이후 첫 태스크)
+- 목표: `docs/009` 1단계 — 실제 코드를 건드리기 전에 "어떻게 동작해야 하는지"를 SPEC/DESIGN/TESTING/TASKS에 먼저 못박는다. 새로 확정한 정책(위 3가지)과, 004~008의 나머지 P0/P1 항목이 요구하는 설계 계약(빌드/bin 구조, tombstone 교체 계약, 일일 다이제스트, explore_sql 격리 강화, atomic snapshot write)을 구현 전 계약으로 문서화한다. `docs/TASKS.md` T0~T7 상태 오표기(DOC-001)도 정정한다.
+- 완료 기준: [x] `docs/SPEC.md`에 npm 배포 대상·공개범위·데이터 보존(tombstone)·반복발송(일일 다이제스트)·explore_sql 강화 허용조건을 명문화하는 새 절 추가 [x] `docs/DESIGN.md`에 v0.2 배포·안정성 설계 확장 절(빌드/bin 계약, authoritative snapshot 교체 계약, 파일 idempotency/다이제스트 설계, SQL 격리 확정, atomic write) 추가 [x] `docs/TESTING.md`에 008이 제안한 release gate + 공격 회귀 테스트를 필수 기준으로 추가 [x] `docs/TASKS.md` T0~T7 상태 정정 + 본 T28~T37 절 반영 [x] `docs/001~003`에 재검수 완료 상태 표기 정리(DOC-005 대응) [x] 이 단계에서 README의 "완료/사용 가능" 표현은 확대하지 않는다(009 지침) — 대신 출시 차단 경고 배너만 추가 [x] 코드 변경 없음, `npm run check` 회귀 없음(문서만이므로 기존 376 테스트 그대로 통과)
+- **완료**: `docs/SPEC.md` §18(npm 배포 대상, tombstone 정책, 일일 다이제스트 정책, explore_sql 강화 허용조건, 나머지 P0/P1 항목의 TASKS 배정 요약), `docs/DESIGN.md` §12(12.1 빌드/bin, 12.2 tombstone 교체 계약, 12.3 파일 idempotency+다이제스트+atomic write, 12.4 explore_sql role 강제+PGlite 재검토, 12.5 `atomicFile.ts` 공용 유틸리티 계약), `docs/TESTING.md` §8(패키징/보안/데이터/운영/Postgres 5개 release gate, 004~008 finding ID와 1:1 대응). `docs/TASKS.md` T0~T7 상태를 git log(전부 2026-09-02 병합 확인)로 대조해 TODO→DONE 정정, T28~T37 절 신설. `docs/001~003`에 "상태: RESOLVED" 재확인 라인 추가(001/002는 이미 완료 기준 체크리스트가 있었음을 재확인, 003은 체크박스 표기 누락 하나를 함께 정정), `docs/004~009`에 "상태: OPEN/RESOLVED(1단계)" + 추적 TASKS 번호 라인 추가. `CLAUDE.md`는 v0.1 전용 서술을 v0.2 실제 구조(임베디드 PGlite 기본값, CSV/Excel 채널, `cli/`·`mcp/` 디렉터리, `explore_sql` 예외)로 갱신하고 출시 전 검수 대응 절 신설, 프루닝 로그에 이번 갱신 기록(낡은 규칙 삭제는 없음 — v0.1 규칙 위에 v0.2가 추가된 것). README에 "출시 차단" 경고 배너 1줄 추가(기존 "완료" 서술은 확대하지 않음, 009 지침). `npm run check` 통과(typecheck/lint/format:check 전부 통과, 테스트 375/376 — 나머지 1건은 `tests/reorderAgent.test.ts`의 `beforeEach` PGlite 초기화 hook timeout으로 문서 변경과 무관한 환경 플레이키, 파일 단독 재실행 시 12/12 통과 확인, 세션 내 기존에도 반복 관찰된 패턴).
+
+### T29 — npm 배포 계약 (REL-001~004, QA-001) · 상태: TODO · 의존: T28
+- 목표: `private: true` 해제와 확정된 scope(`@trapa-eureka/retail-mcp`)/라이선스(MIT) 반영, `bin`/`exports`/`main` 공개 진입점 정의, `tsc` 빌드 파이프라인(`dist/` 산출물, 런타임은 빌드된 JS만 실행 — `tsx`는 devDependency로 유지), `files` allowlist로 tarball에서 테스트·fixture·내부 검수 문서 제외.
+- 완료 기준: [ ] `package.json` — `private` 제거, `name`/`license`/`author`/`repository`/`bugs`/`homepage`/`publishConfig.access=public` [ ] `bin` 등록(shebang 포함 빌드 산출물), 필요 시 `exports`/타입 선언 [ ] `prepack`/`build` 스크립트로 `dist/` 생성, 런타임 스크립트가 빌드 산출물을 실행하도록 정리 [ ] `files` allowlist로 `npm pack --dry-run` 결과가 `dist`/migration/README/LICENSE 등 필요 파일만 포함(007이 지적한 97개 → 대폭 축소) [ ] LICENSE 파일 추가(MIT) [ ] `npm pack → 임시 디렉터리 → npm install --omit=dev → 실행` 스모크 테스트를 QA-001 대응으로 추가 [ ] `npm run check` 통과
+
+### T30 — explore_sql 보안 강화 (SEC-001~002) · 상태: TODO · 의존: T29
+- 목표: `BEGIN READ ONLY`만으로는 advisory lock 등 volatile 함수 부수효과와 `set_config` 재정의를 막지 못한다는 005의 재현을 반영해, 전용 제한 role 요구를 강제화하고 PGlite에서의 노출 범위를 재검토하며 회귀 테스트를 추가한다.
+- 완료 기준: [ ] 운영 배포 시 explore_sql 전용 DB role에 위험 함수 실행 권한이 없어야 함을 SPEC/README에 명시하고, 가능한 범위에서 코드/문서로 강제(예: 실행 전 역할 점검 또는 명확한 경고) [ ] `pg_advisory_lock`/`pg_try_advisory_lock`류, `set_config` 재정의를 이용한 우회 공격 테스트 추가(005 SEC-001/002 재현 케이스를 회귀 가드로 고정) [ ] PGlite(`statement_timeout` 미집행 환경)에서 explore_sql 노출 정책 재검토 결과를 SPEC §17에 반영 [ ] `npm run check` 통과
+
+### T31 — 데이터 정합성 P0 (DATA-001~004) · 상태: TODO · 의존: T30
+- 목표: pack size가 snapshot export에서 소실되는 결함(왕복 보장 깨짐), authoritative 스캔에서 사라진 SKU/매장이 DB에 영구 잔존하는 문제(확정된 tombstone 정책 구현), 파일 변경 없이 cron마다 반복 발송되는 문제(확정된 일일 다이제스트 정책 구현), snapshot 파일 쓰기가 원자적이지 않은 문제를 해결한다.
+- 완료 기준: [ ] `snapshotExport.ts`에 `포장수량` 포함 + `parse → export → parse` 왕복 시 packSize 보존 회귀 테스트 [ ] authoritative 스캔에서 누락된 행을 같은 트랜잭션에서 tombstone 처리(비활성 상태 컬럼) + 재주문/저재고 계산에서 제외 + 이력 보존 테스트 [ ] source identity + content hash/mtime watermark로 "파일 변경 없음"을 판정하되, 마지막 발송으로부터 하루가 지나면 변경 여부와 무관하게 1회는 발송(같은 날 재실행은 억제) — 두 경계 모두 테스트 [ ] snapshot 파일을 임시 파일에 쓰고 flush 후 atomic rename [ ] `npm run check` 통과
+
+### T32 — 파일·시크릿 보안 P1 (SEC-003~007) · 상태: TODO · 의존: T31
+- 목표: XLSX/CSV 입력 크기·행·셀 길이 한도, snapshot CSV의 spreadsheet formula injection 방어, `.env` 파일 권한(0600) + 원자 쓰기, `exceljs`/`uuid` 의존성 취약점 대응, `SECURITY.md` 신설.
+- 완료 기준: [ ] 파일 크기/행 수/셀 길이 상한 정의 + 초과 시 원인 포함 에러 [ ] snapshot export에서 `=`/`+`/`-`/`@`로 시작하는 값 escape + round-trip 테스트 [ ] `.cli/onboard.ts`의 `.env` 쓰기를 0600 + 임시파일→rename으로 변경 [ ] `npm audit --omit=dev` moderate 2건(exceljs/uuid) 해결 또는 근거·만료일 있는 승인된 예외 기록 [ ] `SECURITY.md`(지원 버전, 비공개 신고 채널) 추가 [ ] `npm run check` 통과
+
+### T33 — SCM/필드 정합성 P1 (DATA-005~008) · 상태: TODO · 의존: T32
+- 목표: nullable 필드(팩사이즈·저재고임계치)의 명시적 clear 지원, SCM 대사의 기초재고 0/기간 불일치를 `insufficient_data`로 표시, SCM 처리 실패 상태를 결과/이메일에 노출, 같은 날짜 복수 입고 합산.
+- 완료 기준: [ ] CSV에서 셀을 명시적으로 비우면 기존 값을 지우는 것과 "컬럼 자체가 없어 정보 없음"을 구분하는 계약 정의 + clear 회귀 테스트 [ ] opening stock/공통 대사 기간이 없으면 reconciliation을 `insufficient_data`로 표시하고 확정 원인이 아닌 불일치 사실만 표현 [ ] `FolderScanResult`/이메일에 `scm_status`(성공/실패/미설정) 노출 [ ] `purchase_receipts`에 안정적 event key 도입 또는 동일 날짜 행 합산 정책 구현 [ ] `npm run check` 통과
+
+### T34 — 운영 신뢰성 P1 (OPS-001~006) · 상태: TODO · 의존: T33
+- 목표: PGlite close 실패 시 lock 미해제, PID 재사용으로 인한 stale lock 오판, latest-file 동률 tie-break 부재, 이메일 발송 unknown 상태/idempotency, 장기 실행 관측성·보존 정책, 설치 환경 호환성 범위.
+- 완료 기준: [ ] `warehouseFactory.close()`가 `finally`에서 lock을 해제 [ ] `fileLock.ts`에 hostname/시작 식별자 등 추가 판정 근거 [ ] latest file 동률 시 명확한 에러 또는 안정적 tie-breaker [ ] Resend timeout을 `unknown` 상태로 별도 처리하고 idempotency key 지원 여부 확인·적용 [ ] 구조화 로그(runId 포함)와 `agent_send_log`/`inventory_snapshots` 보존 정책 정의 [ ] 지원 OS/Node 범위를 문서화하고 최소 clean install 검증 [ ] `npm run check` 통과
+
+### T35 — 테스트 게이트 P1 (QA-002~006) · 상태: TODO · 의존: T34
+- 목표: coverage 범위를 core 밖(explore_sql/folderScan/warehouseFactory/provider/CLI)까지 확장, 실 Postgres 컴포넌트 테스트, 005~007의 공격/정확성 회귀 케이스 총정리, dependency audit·tarball allowlist 자동화.
+- 완료 기준: [ ] release gate에 `npm run coverage` 포함 + 위험 모듈 threshold 추가 [ ] CI에서 실 Postgres 서비스로 migration/READ ONLY/advisory lock/explore_sql timeout 컴포넌트 테스트 [ ] 005~007 재검수 체크리스트 항목이 전부 자동 테스트로 연결됐는지 대조표 작성 [ ] `npm audit`/allowlist assertion을 release 워크플로에 연결 [ ] `npm run check` 통과
+
+### T36 — 운영 문서 동기화 (DOC-004~005) · 상태: TODO · 의존: T35
+- 목표: `docs/009` 3단계 — 구현이 끝난 뒤 README/CLAUDE/SECURITY/CHANGELOG를 실제 tarball·명령 출력에 맞춰 갱신하고, `docs/001~009` 각 finding에 해결 근거를 기록한다.
+- 완료 기준: [ ] README에 npm registry 설치·CLI 이름·데이터 디렉터리·업그레이드/제거 절차 추가 [ ] CLAUDE.md 가드레일을 v0.2/v0.3 실제 구조와 일치시킴(T28에서 이미 반영한 것 재확인) [ ] CHANGELOG 신설 [ ] 004~008 각 finding에 해결 commit/재검수 결과 기록 [ ] `npm run check` 통과
+
+### T37 — tarball 최종 재검수 + npm publish 준비 확인 · 상태: TODO · 의존: T36
+- 목표: `docs/008` 권장 release gate(clean checkout → typecheck/lint/format/test → coverage → audit/secret scan → build → `npm pack` allowlist 검증 → `--omit=dev` fresh install + CLI/MCP smoke → 버전/changelog/tag/provenance)를 끝까지 통과시킨다. **이 태스크 완료 후에는 자동으로 npm publish 준비 단계로 넘어가지 않고 사용자에게 확인받는다**(사용자 지시, 2026-09-03).
+- 완료 기준: [ ] 008의 8단계 release gate 전부 통과 [ ] tarball fresh install 후 CLI/MCP 실행 확인 [ ] `npm view`로 패키지명 재사용 가능 여부 최종 확인(REL-008, 사람 확인 필요 항목) [ ] `npm run check` 통과 [ ] 사용자에게 npm publish 준비 단계 진입 여부 확인

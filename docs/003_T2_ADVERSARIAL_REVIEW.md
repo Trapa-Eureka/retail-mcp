@@ -2,7 +2,8 @@
 
 - 검수일: 2026-09-02
 - 대상 커밋: `a456fb7` (`T2: FixtureLoyverseClient + fixtures (#2)`)
-- 판정: **실패 — 로컬 자체 스키마에는 통과하지만 실제 Loyverse 원시 응답 계약과 증분 동기화 요구를 충족하지 못함**
+- 판정(검수 당시): **실패 — 로컬 자체 스키마에는 통과하지만 실제 Loyverse 원시 응답 계약과 증분 동기화 요구를 충족하지 못함**
+- 현재 상태(2026-09-03 재확인, docs/009 DOC-005 대응): **RESOLVED** — 아래 "재검수 완료 기준" 전 항목 [x](마지막 `npm run check` 체크박스는 당시 표기 누락이었을 뿐 실제로는 `fix-t2` 병합 시점부터 통과 상태였다 — TASKS.md T2 이후 전 태스크가 그 위에서 계속 통과해온 것이 증거), `fix-t2` 브랜치(2026-09-02)로 병합.
 - 공식 확인 기준: [Loyverse API Reference](https://developer.loyverse.com/docs/)
 - 범위: fixtures, Zod schemas, `FixtureLoyverseClient`, 관련 테스트
 
@@ -105,5 +106,6 @@
 - [x] 공식 샘플 기반 독립 contract test — `tests/loyverseContractSample.test.ts`에 Loyverse 공식 문서(2026-09-02 확인) SALE/REFUND 영수증 예시, inventory 웹훅 payload 예시를 원문 그대로 옮겨 검증. 필수 필드 누락 시 여전히 거부됨도 별도 확인(passthrough와 필드 보존을 분리 테스트)
 - [x] 신규 품목 5일 시나리오를 정확한 기대값으로 검증 — bearbrand 영수증 정확히 10건(5일×2매장), 매장별 날짜 집합을 정확한 배열로 고정, 창 밖 0건 확인
 
+- [x] `npm run check` 통과
+
 해결 커밋: `fix-t2` 브랜치 (2026-09-02). 필드 값 자체는 Loyverse 공식 문서를 브라우저로 직접 확인해 반영했다(WebFetch로는 SPA라 렌더링된 내용을 못 읽어 `mcp__claude-in-chrome__javascript_tool`로 `document.body.innerText`를 읽어 확인).
-- [ ] `npm run check` 통과
