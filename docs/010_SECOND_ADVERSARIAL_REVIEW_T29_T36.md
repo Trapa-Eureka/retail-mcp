@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 1/10 RESOLVED(SR2-CI-001, 순서상 앞당겨 처리 — 아래 참고). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
+- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 2/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록.
 
 ## 실행 검증
@@ -177,6 +177,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: `AmbiguousSendError`는 Error name이 `TimeoutError`일 때만 설정된다. 연결 reset/socket close는 요청 본문이 서버에 도달한 뒤 응답만 유실된 상황일 수 있는데 `failed`로 기록된다.
 - 영향: 다음 실행이 확실한 미발송으로 오인하고 재시도할 수 있다.
 - 수정 기준: HTTP response를 받기 전 발생한 네트워크 오류는 원칙적으로 ambiguous로 분류하고 provider idempotency로 안전하게 재시도한다. 명백한 DNS/connection-refused를 별도로 구분할지는 보수적으로 결정한다.
+- **RESOLVED**: `resendProvider.ts`의 분류 기준을 뒤집었다 — 예전엔 `TimeoutError`만 `AmbiguousSendError`(→ `unknown`)였고 나머지 응답-이전 오류는 전부 `failed`였는데, 이제 **연결이 성립조차 안 된 게 확실한 코드**(`ENOTFOUND`/`EAI_AGAIN`/`ECONNREFUSED`, `DEFINITELY_NOT_SENT_CODES`)만 `failed`이고 그 외 모든 응답-이전 오류(타임아웃, `ECONNRESET`, undici `UND_ERR_SOCKET`, 코드 없는 알 수 없는 오류)는 `AmbiguousSendError`다. 오분류 비용이 비대칭이라(실제 나간 메일을 failed로 기록 → 다음 실행이 새 run_id로 중복 발송 / 실제 안 나간 메일을 unknown으로 기록 → 사람이 대시보드 한 번 확인) 기본값을 ambiguous 쪽으로 뒀다. 실제 undici 오류 형태(`TypeError("fetch failed")` + `cause.code`)는 Node 24에서 닫힌 포트(`ECONNREFUSED`)·없는 호스트(`ENOTFOUND`)·연결 후 응답 없이 끊는 서버(`UND_ERR_SOCKET`)로 직접 재현해 확인했고, cause 체인을 따라가 code를 찾는다(최대 5단계). `tests/resendProvider.test.ts`에 6개 회귀 테스트(재현한 실제 형태를 픽스처로), `core/types.ts` `unknown` 주석과 README "이메일 발송 재시도" 절 갱신. MAIL-003(dedupe 보존시간 이후 정책)은 별도 트래킹.
 
 ### SR2-MAIL-003 — provider의 dedupe 보존시간 이후 재시도 정책이 없음
 

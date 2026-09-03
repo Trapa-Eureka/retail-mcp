@@ -34,6 +34,36 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+/**
+ * 2차 적대적 검수 SR2-MAIL-002 — "요청이 Resend에 닿았을 가능성이 0인" 네트워크 오류 코드.
+ * DNS 해석 실패(ENOTFOUND/EAI_AGAIN)와 연결 거부(ECONNREFUSED)는 TCP 연결 자체가 성립하지
+ * 않은 것이라 요청 본문이 서버에 도달했을 수 없다 → 확실한 `failed`. 이 목록에 **없는** 모든
+ * 응답-이전 오류(ECONNRESET, EPIPE, undici의 UND_ERR_SOCKET "other side closed", 코드 없는
+ * 알 수 없는 오류 등)는 연결이 성립된 뒤 응답만 유실됐을 수 있으므로 보수적으로
+ * `AmbiguousSendError`로 분류한다. 예전엔 반대로 타임아웃만 ambiguous였고 나머지는 전부
+ * `failed`였다 — 그러면 소켓이 끊긴 실제 발송을 "확실히 안 나감"으로 오인해 다음 실행이
+ * 새 run_id로 재발송할 수 있다. Node 24 undici로 직접 재현: 닫힌 포트 → `cause.code ===
+ * "ECONNREFUSED"`, 없는 호스트 → `"ENOTFOUND"`, 연결 후 응답 없이 끊는 서버 →
+ * `"UND_ERR_SOCKET"`. 실제 fetch는 `TypeError("fetch failed")`로 감싸고 `cause`에 원인을
+ * 두므로 cause 체인을 따라가며 code를 찾는다.
+ */
+const DEFINITELY_NOT_SENT_CODES: ReadonlySet<string> = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+]);
+
+/** cause 체인(최대 5단계 — 순환 방어)에서 첫 번째 문자열 `code`를 찾는다. */
+function findErrorCode(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    current = current.cause;
+  }
+  return undefined;
+}
+
 const resendSuccessSchema = z.object({ id: z.string() });
 // 에러 응답 형태는 Resend 버전에 따라 달라질 수 있어 message만 느슨하게 시도하고, 없으면 HTTP 상태로 대체한다.
 const resendErrorLikeSchema = z.object({ message: z.string() }).partial();
@@ -100,19 +130,40 @@ export function createResendEmailProvider(
           timeoutMs,
         );
       } catch (err) {
+        // 여기 도달했다는 건 HTTP 응답을 받기 전에 실패했다는 뜻이다. OPS-004(007 검수, TASKS
+        // T34) — 호출자(agent/folderScan.ts, agent/reorder.ts)가 `AmbiguousSendError`라는
+        // 이름으로 "확실한 실패"(failed)와 "발송됐는지 알 수 없음"(unknown)을 구분해
+        // agent_send_log에 남긴다.
+        //
+        // SR2-MAIL-002(2차 적대적 검수) — 분류 기준을 "타임아웃만 ambiguous"에서 "연결이
+        // 성립조차 안 된 게 확실한 경우만 failed, 나머지 응답-이전 오류는 전부 ambiguous"로
+        // 뒤집었다(DEFINITELY_NOT_SENT_CODES 주석 참고). 오분류의 비용이 비대칭이기 때문이다:
+        // 실제로는 나간 메일을 failed로 기록하면 다음 실행이 새 run_id(=새 Idempotency-Key)로
+        // 중복 발송하는 반면, 실제로는 안 나간 메일을 unknown으로 기록하면 사람이 대시보드를
+        // 한 번 확인하는 비용만 든다.
         const isTimeout = err instanceof Error && err.name === "TimeoutError";
-        const wrapped = new Error(
-          isTimeout
-            ? `Resend 요청이 ${timeoutMs}ms 내에 응답하지 않아 타임아웃 처리했습니다. ` +
-                "이미 발송됐을 수 있으니 재시도 전에 Resend 대시보드에서 이 수신자에게 발송됐는지 확인하세요."
-            : `Resend 요청 자체가 실패했습니다: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        );
+        const code = findErrorCode(err);
+        const definitelyNotSent =
+          !isTimeout && code !== undefined && DEFINITELY_NOT_SENT_CODES.has(code);
+        const detail = err instanceof Error ? err.message : String(err);
+
+        let message: string;
         if (isTimeout) {
-          // OPS-004 — 호출자(agent/folderScan.ts, agent/reorder.ts)가 이 이름으로 "확실한
-          // 실패"와 "발송됐는지 알 수 없음"을 구분해 agent_send_log에 status='unknown'으로
-          // 남긴다. 타임아웃이 아닌 다른 실패(연결 자체 거부 등)는 Resend에 요청이 닿지도
-          // 못했을 가능성이 높아 'failed'로 그대로 둔다.
+          message =
+            `Resend 요청이 ${timeoutMs}ms 내에 응답하지 않아 타임아웃 처리했습니다. ` +
+            "이미 발송됐을 수 있으니 재시도 전에 Resend 대시보드에서 이 수신자에게 발송됐는지 확인하세요.";
+        } else if (definitelyNotSent) {
+          message =
+            `Resend에 연결할 수 없었습니다(${code}): ${detail}. ` +
+            "요청이 서버에 닿지 않았으므로 발송되지 않았습니다 — 네트워크/DNS 상태를 확인한 뒤 다시 시도하세요.";
+        } else {
+          message =
+            `Resend 요청이 응답을 받기 전에 실패했습니다(${code ?? "코드 없음"}): ${detail}. ` +
+            "요청이 이미 서버에 도달해 발송됐을 수 있으니 재시도 전에 Resend 대시보드에서 이 수신자에게 발송됐는지 확인하세요.";
+        }
+
+        const wrapped = new Error(message, { cause: err });
+        if (!definitelyNotSent) {
           wrapped.name = "AmbiguousSendError";
         }
         throw wrapped;

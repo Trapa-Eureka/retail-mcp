@@ -253,9 +253,11 @@ export interface StockRow {
  * 요약·스냅샷 재작성 없이 조용히). Loyverse 경로(agent/reorder.ts)는 이 상태를 쓰지 않는다.
  */
 /**
- * `unknown`(007 OPS-004, TASKS T34) — 발송 요청이 타임아웃돼 "이미 발송됐을 수도, 안 됐을
- * 수도" 있는 경우 전용 — `failed`(확실히 실패)와 구분한다. `NotificationProvider`가 이
- * 애매함을 감지하면 `AmbiguousSendError`(`.name`)를 던지고, 에이전트가 그걸 보고
+ * `unknown`(007 OPS-004, TASKS T34) — 발송 요청이 HTTP 응답을 받기 전에 실패해(타임아웃,
+ * 연결 후 소켓 끊김 등) "이미 발송됐을 수도, 안 됐을 수도" 있는 경우 전용 — `failed`(확실히
+ * 실패: HTTP 오류 응답, 또는 DNS 실패/연결 거부처럼 연결이 성립조차 안 된 경우)와 구분한다
+ * (SR2-MAIL-002, 2차 적대적 검수 — 예전엔 타임아웃만 unknown이었다). `NotificationProvider`가
+ * 이 애매함을 감지하면 `AmbiguousSendError`(`.name`)를 던지고, 에이전트가 그걸 보고
  * `status: "unknown"`으로 기록한다. 사람이 발송처 대시보드로 실제 발송 여부를 확인한 뒤
  * 재시도 여부를 판단해야 한다 — 자동 재시도 로직은 이 프로젝트에 없다(그 자체가 정책).
  */
