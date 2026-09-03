@@ -13,6 +13,7 @@
  * `auditLockfile.ts`처럼 CI 셸(`scripts/`)이 가져다 쓰는 어댑터.
  */
 import { execFileSync } from "node:child_process";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { scanContentForSecrets, type SecretFinding } from "../core/secretScan.js";
 
@@ -120,4 +121,74 @@ export function scanGitRange(repoRoot: string, base: string, head: string): Rang
   }
 
   return { commitCount: commits.length, newBlobCount: seen.size, findings };
+}
+
+/** 읽지 못해 검사하지 못한 추적 파일 — 시크릿 "발견"과는 별개 카테고리(검사 불가)다. */
+export interface UnreadableFile {
+  filePath: string;
+  /** Node errno 코드(EACCES/ENOENT/EISDIR 등) 또는 알 수 없으면 에러 메시지. */
+  reason: string;
+}
+
+export interface TrackedScanResult {
+  /** 실제로 읽어 스캔한 파일 수(확장자 스킵·심볼릭 링크·읽기 실패 제외). */
+  scannedFileCount: number;
+  /** 심볼릭 링크라 건너뛴 추적 파일 수(내용이 링크 대상 경로일 뿐 — range 스캔의 mode 120000 제외와 일관). */
+  skippedSymlinkCount: number;
+  /** 2차 적대적 검수 SR2-SEC-004 — 예전엔 `readFile(...).catch(() => null)`로 조용히 건너뛰어
+   * "발견 0건"으로 성공했다. 이제 전부 모아 반환하고 호출자(scripts/secretScan.ts)가 non-zero로
+   * 실패시킨다(fail-closed) — 검사하지 못한 파일이 있는데 통과라고 말하면 안 된다. */
+  unreadable: UnreadableFile[];
+  findings: SecretFinding[];
+}
+
+function errnoReason(err: unknown): string {
+  if (
+    err instanceof Error &&
+    "code" in err &&
+    typeof (err as { code?: unknown }).code === "string"
+  ) {
+    return (err as { code: string }).code;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * 현재 트리(`git ls-files`) 전체를 스캔한다. 의도적으로 건너뛰는 건 두 가지뿐이고 둘 다 명시적
+ * 규칙이다 — binary 확장자 allowlist(`SKIP_EXTENSIONS`)와 심볼릭 링크(`lstat`). 그 외 어떤 이유로든
+ * 읽지 못한 파일은 `unreadable`에 담아 반환한다(조용히 continue하지 않는다, SR2-SEC-004).
+ */
+export async function scanTrackedFiles(repoRoot: string): Promise<TrackedScanResult> {
+  const files = git(repoRoot, ["ls-files", "-z"])
+    .split("\0")
+    .filter((f) => f.length > 0)
+    .filter((f) => !shouldSkipPath(f));
+
+  const result: TrackedScanResult = {
+    scannedFileCount: 0,
+    skippedSymlinkCount: 0,
+    unreadable: [],
+    findings: [],
+  };
+
+  for (const file of files) {
+    const absolute = path.join(repoRoot, file);
+    let content: string;
+    try {
+      // lstat: 링크 자체를 본다(follow하지 않음) — 깨진 링크도 여기서 "링크"로 판별돼 ENOENT로
+      // 읽기 실패에 잡히지 않는다.
+      if ((await lstat(absolute)).isSymbolicLink()) {
+        result.skippedSymlinkCount++;
+        continue;
+      }
+      content = await readFile(absolute, "utf8");
+    } catch (err) {
+      result.unreadable.push({ filePath: file, reason: errnoReason(err) });
+      continue;
+    }
+    result.scannedFileCount++;
+    result.findings.push(...scanContentForSecrets(file, content));
+  }
+
+  return result;
 }

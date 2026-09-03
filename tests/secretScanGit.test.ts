@@ -7,11 +7,16 @@
  * 조합된 완성 문자열은 tmpdir의 임시 저장소에만 커밋되고 이 저장소 트리엔 들어오지 않는다.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scanGitRange, shouldSkipPath, UnknownBaseError } from "../src/adapters/secretScanGit.js";
+import {
+  scanGitRange,
+  scanTrackedFiles,
+  shouldSkipPath,
+  UnknownBaseError,
+} from "../src/adapters/secretScanGit.js";
 
 const fakeAwsKey = (): string => ["AKIA", "HISTORYONLYKEY01"].join("");
 
@@ -105,5 +110,78 @@ describe("scanGitRange (SR2-SEC-003)", () => {
   it("바이너리 확장자 blob은 읽지 않는다(트리 스캔과 같은 SKIP_EXTENSIONS)", () => {
     expect(shouldSkipPath("docs/logo.PNG")).toBe(true);
     expect(shouldSkipPath("src/server.ts")).toBe(false);
+  });
+});
+
+describe("scanTrackedFiles (SR2-SEC-004 — 읽기 실패는 조용히 건너뛰지 않는다)", () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await mkdtemp(join(tmpdir(), "retail-mcp-secretscan-tree-"));
+    git(repo, "init", "-q", "-b", "main");
+    await writeFile(join(repo, "clean.ts"), "export const x = 1;\n");
+    git(repo, "add", "clean.ts");
+    git(repo, "commit", "-q", "-m", "base");
+  });
+
+  afterEach(async () => {
+    // chmod 000 파일이 남아 있으면 rm이 실패할 수 있다 — 먼저 권한을 되돌린다.
+    await chmod(join(repo, "locked.txt"), 0o644).catch(() => undefined);
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  it("정상 트리는 파일 수를 세고 unreadable이 비어 있다", async () => {
+    const result = await scanTrackedFiles(repo);
+    expect(result.scannedFileCount).toBe(1);
+    expect(result.unreadable).toEqual([]);
+    expect(result.findings).toEqual([]);
+  });
+
+  it("추적 파일을 읽지 못하면(권한 없음) unreadable에 파일명과 errno가 담긴다 — 예전엔 조용히 continue였다", async () => {
+    // root는 권한 비트를 무시하므로 이 케이스를 재현할 수 없다 — CI 러너/로컬 개발 환경은
+    // root가 아니다. root면 건너뛴다(잘못 통과시키는 게 아니라 재현 불가 표시).
+    if (process.getuid?.() === 0) return;
+
+    await writeFile(join(repo, "locked.txt"), "cannot read me\n");
+    git(repo, "add", "locked.txt");
+    git(repo, "commit", "-q", "-m", "add locked");
+    await chmod(join(repo, "locked.txt"), 0o000);
+
+    const result = await scanTrackedFiles(repo);
+    expect(result.unreadable).toEqual([{ filePath: "locked.txt", reason: "EACCES" }]);
+    // 읽을 수 있는 파일은 여전히 스캔된다 — 실패가 전체를 멈추지 않고 모아서 보고한다.
+    expect(result.scannedFileCount).toBe(1);
+  });
+
+  it("추적 중이지만 워킹 트리에서 사라진 파일(race/로컬 삭제)은 ENOENT로 unreadable에 담긴다", async () => {
+    await writeFile(join(repo, "gone.txt"), "x\n");
+    git(repo, "add", "gone.txt");
+    git(repo, "commit", "-q", "-m", "add gone");
+    await unlink(join(repo, "gone.txt")); // git 입장에선 여전히 tracked.
+
+    const result = await scanTrackedFiles(repo);
+    expect(result.unreadable).toEqual([{ filePath: "gone.txt", reason: "ENOENT" }]);
+  });
+
+  it("심볼릭 링크는 스캔도 실패도 아닌 '건너뜀'으로 센다(깨진 링크 포함 — range 스캔의 mode 120000 제외와 일관)", async () => {
+    await symlink("clean.ts", join(repo, "link-ok"));
+    await symlink("does-not-exist", join(repo, "link-broken"));
+    git(repo, "add", "link-ok", "link-broken");
+    git(repo, "commit", "-q", "-m", "add links");
+
+    const result = await scanTrackedFiles(repo);
+    expect(result.skippedSymlinkCount).toBe(2);
+    expect(result.unreadable).toEqual([]);
+    expect(result.scannedFileCount).toBe(1);
+  });
+
+  it("binary 확장자는 allowlist로만 제외되고 unreadable로 잡히지 않는다", async () => {
+    await writeFile(join(repo, "img.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    git(repo, "add", "img.png");
+    git(repo, "commit", "-q", "-m", "add png");
+
+    const result = await scanTrackedFiles(repo);
+    expect(result.scannedFileCount).toBe(1); // clean.ts만
+    expect(result.unreadable).toEqual([]);
   });
 });
