@@ -25,7 +25,7 @@ import {
   ACCEPTED_ADVISORY_URLS,
   checkAdvisoriesAgainstAllowlist,
   extractAdvisoryUrls,
-  type NpmAuditReport,
+  isValidAuditReport,
 } from "../src/core/auditAllowlist.js";
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
@@ -171,8 +171,19 @@ function verifyDependencyAudit(installDir: string): void {
     stdout = withStdout.stdout;
   }
 
-  const report = JSON.parse(stdout) as NpmAuditReport;
-  const advisoryUrls = extractAdvisoryUrls(report);
+  const parsed: unknown = JSON.parse(stdout);
+  if (!isValidAuditReport(parsed)) {
+    // SR2-AUD-001/002(2차 적대적 검수) — 예전엔 여기서도 {"error": {...}} 같은 무효 응답을
+    // 파싱만 성공하면 "취약점 0건"으로 통과시켰다. 이 스크립트는 release gate(T37이 최종
+    // 게시 판단의 근거로 쓴다)라 **fail-closed**로 막는다 — CI PR 편의 게이트
+    // (auditLockfile.ts)와 달리 "확인 불가"를 통과시키지 않는다.
+    throw new Error(
+      "npm audit 출력이 유효한 취약점 리포트 형식이 아닙니다(레지스트리 오류 응답 등으로 " +
+        `추정) — release gate는 이 상태를 통과시키지 않습니다. 네트워크 상태를 확인하고 ` +
+        `다시 시도하세요.\n${JSON.stringify(parsed).slice(0, 500)}`,
+    );
+  }
+  const advisoryUrls = extractAdvisoryUrls(parsed);
   const { unexpected, noneFound } = checkAdvisoriesAgainstAllowlist(advisoryUrls);
   if (unexpected.length > 0) {
     throw new Error(
