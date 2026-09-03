@@ -246,6 +246,8 @@ retail-mcp/
 - **`files` allowlist**: `dist/`, `migrations/`, `README.md`, `LICENSE`, `.env.example`을 포함하고 `tests/`, `tests/fixtures/`, `docs/`(내부 검수 문서), ESLint/Vitest 설정, 원본 `.ts` 소스는 제외한다. `npm pack --dry-run` 결과 파일 목록을 release gate에 고정한다(TASKS T29 완료 기준).
 - **검증**: tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치한 뒤 `npx retail-mcp --help`(또는 MCP initialize)까지 확인하는 스모크 테스트를 release gate에 추가한다(QA-001, TASKS T29).
 
+**구현 완료(T29)**: `tsconfig.build.json`(`rootDir: src`, `src/mocks/**` 제외), `scripts/verifyPack.ts`(`npm run verify:pack`)가 빌드→pack→fresh install→`retail-mcp`(MCP `tools/list`)·`retail-mcp-onboard`(`.env`+템플릿 생성) 실행까지 실제로 검증한다. 이 스모크 테스트 자체가 소스 트리 테스트로는 드러나지 않던 결함 두 가지를 잡아냈다 — `src/adapters/mainModule.ts`(`process.argv[1]`이 npm bin 심볼릭 링크일 때의 realpath 비교)와 `src/cli/onboard.ts`의 `createReadlineAsk()`(파이프 입력에서 `rl.question()` 반복 호출이 멈추는 Node 자체의 동작, 비동기 이터레이터 소비로 교체) — 둘 다 이 문서 §12.1이 처음 계약을 쓸 때는 예상하지 못했던 IO 경계 결함이다.
+
 ### 12.2 authoritative snapshot 교체 계약 — tombstone (DATA-002, TASKS T31)
 
 SPEC §18이 확정한 정책의 구현 계약이다.

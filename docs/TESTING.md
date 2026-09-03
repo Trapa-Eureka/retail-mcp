@@ -92,10 +92,10 @@
 
 npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`)가 지적한 대로, 지금까지의 게이트(`npm run check` + 위 §1~§7)는 저장소 소스 트리와 devDependency가 설치된 환경만 검증하고 실제 npm 설치·운영 경계·공격 시나리오는 검증하지 않는다(008 QA-001~006). 아래를 **release gate**(npm publish 전 필수, 매 로컬 `npm run check`와는 별도)로 추가한다 — 각 항목의 실제 구현은 담당 TASKS 번호에서 진행한다.
 
-**패키징 게이트 (TASKS T29)**
+**패키징 게이트 (TASKS T29 — 구현 완료, `npm run verify:pack`)**
 
-- [ ] `npm pack --dry-run`의 파일 목록이 `files` allowlist와 일치(`dist`/`migrations`/`README`/`LICENSE`/`.env.example`만)
-- [ ] tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치 후 `bin` 실행 또는 MCP initialize까지 성공(QA-001)
+- [x] `npm pack --dry-run`의 파일 목록이 `files` allowlist와 일치(`dist`/`migrations`/`README`/`LICENSE`/`.env.example`만) — 97개→63개로 확인
+- [x] tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치 후 `bin` 실행 또는 MCP initialize까지 성공(QA-001) — `scripts/verifyPack.ts`가 `retail-mcp`(MCP `tools/list`)와 `retail-mcp-onboard`(`.env`+템플릿 생성)를 둘 다 실제 spawn으로 검증. 아직 `npm run check`/CI에는 자동 연결하지 않음(빌드+pack+install까지 하는 무거운 절차라 release gate 전용 별도 스크립트로 둠, TESTING §1 원칙과 별개) — CI 연결은 T37.
 
 **보안 게이트 (TASKS T30, T32)**
 

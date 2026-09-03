@@ -68,6 +68,18 @@ describe("fileLock", () => {
     await reclaimed.release();
   });
 
+  it("락 파일의 부모 디렉터리가 아직 없어도 자동으로 만들어 획득에 성공한다(TASKS T29, QA-001 tarball smoke test가 발견 — 새 설치 첫 실행의 `.retail-mcp/`)", async () => {
+    const freshTargetPath = join(dir, "not-yet-created", "data");
+
+    const lock = await acquireFileLock(freshTargetPath);
+    const content = JSON.parse(await readFile(`${freshTargetPath}.lock`, "utf8")) as {
+      pid: number;
+    };
+    expect(content.pid).toBe(process.pid);
+
+    await lock.release();
+  });
+
   it("release 후에는 다시 acquire할 수 있다", async () => {
     const lock = await acquireFileLock(targetPath);
     await lock.release();

@@ -4,6 +4,7 @@ coverage/
 .env*
 !.env.example
 *.log
+*.tgz
 .DS_Store
 # 임베디드 PGlite 데이터(DATABASE_URL 미설정 시 기본 경로, T14) — 로컬 데이터, 커밋 금지.
 .retail-mcp/

@@ -35,6 +35,17 @@ describe("createWarehouseFromEnv", () => {
     }
   });
 
+  it("dataDir의 부모 디렉터리조차 없는 완전히 새 경로에서도 기동한다(TASKS T29, QA-001 tarball smoke test가 발견 — 새 설치 첫 실행 재현)", async () => {
+    const freshDataDir = join(dir, "not-yet-created", "data");
+    const handle = await createWarehouseFromEnv({ env: {}, dataDir: freshDataDir });
+    try {
+      expect(handle.kind).toBe("pglite");
+      await expect(handle.warehouse.queryStock({ storeId: "no_such_store" })).resolves.toEqual([]);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it("DATABASE_URL 설정 시 pg 경로로 기동한다(실제 연결은 시도하지 않음 — 회귀 확인용)", async () => {
     const handle = await createWarehouseFromEnv({
       env: { DATABASE_URL: "postgres://user:pass@localhost:1/nonexistent" },

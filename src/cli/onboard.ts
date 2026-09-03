@@ -1,10 +1,12 @@
+#!/usr/bin/env node
 /**
  * 온보딩 CLI(`npm run onboard`, TASKS T21) — 지점/본사 모드 선택, 감시 폴더 경로, 저재고
  * 임계치·수신자 이메일, 웨어하우스 선택(임베디드 기본/`DATABASE_URL` 옵션)을 물어 `.env`에
  * 저장하고, 지점 모드면 SPEC §12 고정 템플릿 예시 CSV를 감시 폴더에 만들어준다.
  *
- * npm 패키지 `bin` 등록·게시는 범위 밖이다(TASKS T21) — 지금은 `tsx src/cli/onboard.ts`로
- * 직접 실행한다.
+ * npm 패키지 `bin`(TASKS T29, DESIGN §12.1) — `package.json.bin["retail-mcp-onboard"]`가
+ * 빌드된 `dist/cli/onboard.js`를 가리킨다. 저장소 안에서 개발할 땐 `npm run onboard`(tsx로
+ * 소스 직접 실행)를 그대로 쓴다.
  *
  * 질문·답변 수집(`collectOnboardAnswers`)과 `.env` 병합(`mergeEnvFile`)은 순수 함수로
  * 분리해뒀다 — `ask()`를 주입하면 실제 터미널 없이도 비대화식으로(스크립트가 답을 미리
@@ -13,7 +15,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "../adapters/mainModule.js";
 import { exportSnapshotCsv } from "../core/snapshotExport.js";
 
 export type AskFn = (question: string) => Promise<string>;
@@ -226,10 +228,33 @@ async function readExistingEnv(): Promise<string> {
   }
 }
 
+/**
+ * `rl.question()`을 반복 호출하는 대신 `rl`의 비동기 이터레이터에서 한 줄씩 꺼내는 `AskFn`을
+ * 만든다.
+ *
+ * 착수 중 발견(QA-001 tarball smoke test, `scripts/verifyPack.ts`) — 파이프로 넘긴 비대화식
+ * 입력(`printf "a\nb\nc" | retail-mcp-onboard`, CI/스크립트 온보딩의 일반적인 방식)에서는
+ * `readline/promises`의 `rl.question()`을 여러 번 순차 호출하면 **첫 질문만 응답을 받고
+ * 이후 질문은 영원히 멈춘다** — stdin이 TTY가 아니면 파이프에 이미 도착해 있는 나머지 줄들이
+ * `question()`이 다음 리스너를 등록하기 전에 먼저 소비돼버리는 Node 자체의 알려진 동작이다
+ * (사람이 터미널에서 한 줄씩 타이핑할 때는 매 줄이 늦게 도착해 문제가 드러나지 않는다 —
+ * `collectOnboardAnswers`의 단위 테스트가 주입한 `ask()`도 실제 `readline`을 거치지 않아
+ * 이 결함을 가리고 있었다). 비동기 이터레이터로 한 줄씩 명시적으로 꺼내면 TTY·파이프 양쪽에서
+ * 안전하다 — Node 공식 문서가 권장하는 `for await...of rl` 소비 방식과 같은 메커니즘이다.
+ */
+function createReadlineAsk(rl: ReturnType<typeof createInterface>): AskFn {
+  const lines = rl[Symbol.asyncIterator]();
+  return async (question) => {
+    process.stdout.write(`${question}: `);
+    const { value, done } = await lines.next();
+    return done || value === undefined ? "" : value;
+  };
+}
+
 async function main(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const ask: AskFn = (question) => rl.question(`${question}: `);
+    const ask = createReadlineAsk(rl);
     const answers = await collectOnboardAnswers(ask);
 
     const existingEnv = await readExistingEnv();
@@ -256,8 +281,7 @@ async function main(): Promise<void> {
   }
 }
 
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMainModule) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
