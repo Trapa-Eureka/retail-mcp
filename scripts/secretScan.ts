@@ -62,8 +62,9 @@ async function main(): Promise<void> {
     }
     console.error(
       "실제 시크릿이면 즉시 폐기(rotate)하고 git 히스토리에서 제거하세요. " +
-        "테스트 픽스처의 의도된 가짜 값이면 해당 줄에 fake/example/placeholder류 표시를 추가하거나 " +
-        "scripts/secretScan.ts의 PLACEHOLDER_LINE_MARKER를 확인하세요.",
+        "테스트 픽스처의 의도된 가짜 값이면 해당 줄에 `secretscan-allow` 마커를 " +
+        "추가하세요(예: `// secretscan-allow: 테스트 픽스처`) — src/core/secretScan.ts의 " +
+        "EXPLICIT_ALLOW_MARKER 참고. 흔한 단어(fake/example 등)로는 더 이상 우회되지 않습니다(SR2-SEC-001).",
     );
     process.exitCode = 1;
     return;

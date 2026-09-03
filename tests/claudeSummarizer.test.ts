@@ -75,7 +75,7 @@ describe("createClaudeSummarizer — 요청 형태", () => {
 
   it("요청 본문에 API 키·이메일·원시 영수증 필드가 없다 (TESTING §7)", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
-    const apiKey = "sk-ant-super-secret-key-should-never-leak";
+    const apiKey = "sk-ant-super-secret-key-should-never-leak"; // secretscan-allow: 테스트 픽스처, 실제 키 아님
     const summarizer = createClaudeSummarizer({ apiKey, fetchImpl });
     await summarizer.summarize(REPORT);
 

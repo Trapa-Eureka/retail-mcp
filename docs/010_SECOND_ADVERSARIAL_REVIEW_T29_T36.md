@@ -1,0 +1,212 @@
+# 010 — 2차 적대적 검수 (T29~T36)
+
+- 검수일: 2026-09-03
+- 대상 커밋: `92ad7d0`(T29) ~ `0064f01`(T36)
+- 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
+- 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
+- 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
+- 처리 진행 상황: P0 1/6 RESOLVED(SR2-SEC-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+
+## 실행 검증
+
+| 검증 | 결과 |
+|---|---|
+| `npm run check` | 통과 |
+| Vitest | 42 files, 522 tests 통과 |
+| `npm run secret-scan` | 통과(추적 파일 136개, 발견 0건) |
+| `npm run audit:lockfile` | 통과(현재 lockfile 취약점 0건) |
+
+`secret-scan`과 `audit:lockfile`은 기본 sandbox에서 `tsx` IPC 권한 오류가 발생해 승인된 외부 실행으로 재검증했다. 이는 애플리케이션 결함 판정에는 포함하지 않는다.
+
+---
+
+## A. CI·공급망
+
+### SR2-CI-001 — workflow token 권한을 최소값으로 고정하지 않음
+
+- 우선순위: **P1**
+- 파일: `.github/workflows/ci.yml`
+- 근거: workflow 또는 job 수준 `permissions:` 선언이 없다. 실제 `GITHUB_TOKEN` 권한은 repository/organization 기본 설정에 의존한다.
+- 공격/실패 시나리오: fork PR의 코드는 `npm ci` lifecycle, 테스트, package script로 실행된다. 기본 권한이 나중에 넓어지면 PR 코드가 그 권한을 상속한다.
+- 수정 기준: workflow 최상단에 최소 `permissions: { contents: read }`를 명시하고 artifact job에 추가 권한이 필요한 경우 해당 job에만 부여한다. fork PR에서 secrets 미주입과 token 권한을 repository 설정/branch protection까지 확인한다.
+
+### SR2-CI-002 — 외부 Action과 Postgres image가 immutable digest로 고정되지 않음
+
+- 우선순위: **P1**
+- 파일: `.github/workflows/ci.yml`
+- 근거: `actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4`, `postgres:16`처럼 이동 가능한 tag를 사용한다.
+- 공격/실패 시나리오: upstream tag 또는 image가 변하면 동일 commit의 CI가 다른 코드를 실행한다. 공급망 침해 시 repo token/소스에 접근하는 코드가 바뀔 수 있다.
+- 수정 기준: Actions는 검증한 full commit SHA에 고정하고 사람이 읽을 tag를 주석으로 남긴다. service image도 가능하면 digest를 고정하고 정기 갱신 절차를 둔다.
+
+### SR2-CI-003 — job timeout이 없어 악성/교착 PR이 runner를 장시간 점유 가능
+
+- 우선순위: **P2**
+- 파일: `.github/workflows/ci.yml`
+- 근거: 네 job 모두 `timeout-minutes`가 없다. 개별 Vitest timeout은 전체 process, `npm ci`, pack install, audit network hang을 제한하지 않는다.
+- 수정 기준: 관측된 정상 시간에 여유를 둔 job별 timeout을 설정한다.
+
+### SR2-CI-004 — branch protection과 required checks가 코드로 검증되지 않음
+
+- 우선순위: **P1**
+- 근거: T35는 CI를 만들었지만 main 직접 push 차단, required job, approval, stale approval dismissal은 workflow 파일만으로 보장되지 않는다.
+- 영향: 모든 gate가 있어도 관리자가 실패/미실행 상태로 merge 또는 직접 push하면 우회된다.
+- 수정 기준: GitHub ruleset에서 네 job을 required로 지정하고 main 보호 설정을 T37 체크리스트의 사람 확인 항목으로 증거화한다.
+
+---
+
+## B. 자체 secret scanner
+
+### SR2-SEC-001 — placeholder 단어 하나로 실제 시크릿을 우회 가능
+
+- 우선순위: **P0**
+- 파일: `src/core/secretScan.ts`
+- 근거: 매치된 같은 줄에 `fake|example|placeholder|dummy|...` 중 하나만 있으면 실제 매치값의 형태와 무관하게 무조건 제외한다.
+- 우회 예:
+
+```ts
+const productionKey = "sk-ant-실제키값"; // example
+```
+
+- 영향: 악의적 PR뿐 아니라 “example로 쓰려던 실제 키” 같은 사람 실수를 정확히 놓친다.
+- 수정 기준: line marker 기반 자동 제외를 제거한다. 필요한 fixture는 실제 provider 형식과 일치하지 않는 명백한 test token을 생성하거나 파일/라인 단위 allowlist에 사유·소유자·만료일을 명시한다.
+- **RESOLVED**: 흔한 영단어 목록(`fake|example|placeholder|...`)을 전부 제거하고, 우연히 나올 일이 없는 전용 마커 `secretscan-allow`(정확한 문자열 일치) 하나로 좁혔다 — `src/core/secretScan.ts`의 `EXPLICIT_ALLOW_MARKER`. 이 finding이 지적한 정확한 우회(`// example`)가 더 이상 안 통하는 걸 `tests/secretScan.test.ts`에 5가지 흔한 단어 케이스로 직접 회귀 테스트로 고정했다. 기존에 이 느슨한 마커에 의존하던 실제 픽스처 2곳(`tests/claudeSummarizer.test.ts`, `tests/secretScan.test.ts` 자체)을 새 마커로 갱신.
+
+### SR2-SEC-002 — `tests/secretScan.test.ts` 전체 제외가 영구 blind spot임
+
+- 우선순위: **P1**
+- 파일: `scripts/secretScan.ts`
+- 근거: `SELF_EXCLUDE`가 해당 파일 전체를 검사하지 않는다.
+- 공격/실패 시나리오: 실제 credential이 이 파일에 들어가도 CI는 구조적으로 발견하지 못한다. 테스트용 가짜 값과 새로 추가된 다른 문자열을 구분하지 않는다.
+- 수정 기준: 파일 전체 제외를 없애고 fixture literal만 좁게 허용하거나 test가 런타임에 문자열을 조합하도록 바꾼다.
+
+### SR2-SEC-003 — git history를 검사한다는 CI 설명과 실제 구현이 다름
+
+- 우선순위: **P1**
+- 파일: `.github/workflows/ci.yml`, `scripts/secretScan.ts`
+- 근거: checkout은 `fetch-depth: 0`이지만 scanner는 `git ls-files`의 현재 tree만 읽는다. commit history/diff object는 검사하지 않는다.
+- 영향: PR의 이전 commit에 secret을 넣었다가 마지막 commit에서 지우면 scanner는 통과하지만 secret은 Git history에 남아 원격에서 열람 가능하다.
+- 수정 기준: PR base~head commit/diff와 새 blob을 검사하거나 검증된 history-aware scanner를 병행한다. 설명도 실제 범위와 일치시킨다.
+
+### SR2-SEC-004 — 파일 읽기 실패를 조용히 무시하는 fail-open
+
+- 우선순위: **P1**
+- 파일: `scripts/secretScan.ts`
+- 근거: `readFile(...).catch(() => null)` 후 아무 오류 없이 continue한다.
+- 영향: 권한·인코딩·race·비정상 파일 때문에 검사하지 못한 tracked file이 있어도 “발견 0건”으로 성공한다.
+- 수정 기준: 검사 대상 tracked file을 읽지 못하면 non-zero로 실패하고 파일명을 보고한다. 의도적으로 제외하는 binary는 allowlist에서만 제외한다.
+
+### SR2-SEC-005 — 프로젝트가 실제 사용하는 credential 종류를 충분히 다루지 않음
+
+- 우선순위: **P2**
+- 근거: AWS/PEM/Anthropic/Resend/Postgres만 검사한다. npm token, GitHub token, Google credential JSON, 일반 bearer token과 `LOYVERSE_API_TOKEN`의 값은 탐지 계약에 없다.
+- 수정 기준: 이 프로젝트의 `.env.example`, CI/publish 흐름에서 실제 취급하는 credential 목록을 기준으로 pattern/entropy scanner 범위를 정한다. 경량 자체 scanner의 한계를 SECURITY에 명확히 표시한다.
+
+---
+
+## C. dependency audit gate
+
+### SR2-AUD-001 — 네트워크/실행/JSON 오류가 CI 성공으로 처리되는 fail-open
+
+- 우선순위: **P0**
+- 파일: `src/adapters/auditLockfile.ts`
+- 근거: stdout 없음과 JSON parse 실패가 모두 `null` 성공으로 반환된다. 보안 job의 목적이 release gate인데 외부 audit 서비스 장애 시 green이 된다.
+- 영향: 공격자가 장애를 직접 만들지 않더라도 registry 장애 시 취약점 검증 없이 merge/release가 가능하다. T37이 이 job의 green만 신뢰하면 출시 보장이 무너진다.
+- 수정 기준: PR 편의 gate와 release gate를 분리한다. release/T37에서는 audit 불능을 실패로 처리하고, 사람이 승인한 재시도 외에는 우회하지 않는다.
+
+### SR2-AUD-002 — 오류 JSON을 “취약점 0건”으로 오인함
+
+- 우선순위: **P0**
+- 파일: `auditLockfile.ts`, `auditAllowlist.ts`
+- 근거: `npm audit`가 non-zero와 함께 `{"error": ...}` 형태 stdout을 내면 JSON parse는 성공한다. `vulnerabilities`가 없으므로 빈 객체로 처리되어 `noneFound=true`로 통과한다.
+- 수정 기준: report schema에서 `auditReportVersion`, `metadata.vulnerabilities`, `vulnerabilities`를 검증하고 `error` 필드 또는 필수 필드 누락은 실행 실패로 판정한다. 실제 registry error JSON fixture를 추가한다.
+
+### SR2-AUD-003 — 승인 예외 만료일이 주석일 뿐 기계적으로 집행되지 않음
+
+- 우선순위: **P1**
+- 파일: `src/core/auditAllowlist.ts`
+- 근거: `2027-03-03` 재검토 기한은 주석에만 있고 allowlist 데이터에는 만료일이 없다.
+- 영향: 기한이 지나도 CI는 계속 같은 advisory를 자동 승인한다.
+- 수정 기준: allowlist를 `{url, expiresAt, rationale}` 구조로 만들고 기준 시계가 만료일 이상이면 실패시킨다.
+
+---
+
+## D. file lock PID/cross-host 판정
+
+### SR2-LOCK-001 — hostname 충돌 시 다른 호스트의 active lock을 stale로 삭제 가능
+
+- 우선순위: **P0**
+- 파일: `src/adapters/fileLock.ts`
+- 근거: host identity가 `os.hostname()` 문자열 하나다. 서로 다른 머신/container가 같은 hostname을 쓰면 same-host로 판정한다. 그 PID가 로컬에서 죽어 있거나 시작 시각이 다르면 다른 호스트가 실제 사용 중인 lock을 삭제한다.
+- 영향: 공유/network filesystem에서 두 PGlite 프로세스가 같은 data directory를 동시에 열어 데이터가 유실될 수 있다. 이 lock의 존재 목적을 직접 무너뜨린다.
+- 수정 기준: PGlite data directory를 network/shared filesystem에서 지원하지 않는다고 강제하거나, 설치 시 영속적으로 만든 machine UUID까지 host identity에 포함한다. cross-host 안전성을 보장할 수 없다면 자동 stale 회수를 금지한다.
+
+### SR2-LOCK-002 — 구버전 lock은 공유 filesystem에서 안전하지 않음
+
+- 우선순위: **P1**
+- 근거: hostname이 없는 이전 lock을 항상 same-host로 취급한다. 업그레이드 직후 공유 디렉터리에서 다른 호스트의 구버전 active lock을 로컬 PID 검사만으로 회수할 수 있다.
+- 수정 기준: hostname 없는 lock은 보수적으로 busy 처리하거나, 명시적 migration/사람 확인을 거쳐서만 회수한다.
+
+### SR2-LOCK-003 — release의 확인 후 삭제가 하나의 원자 연산이 아님
+
+- 우선순위: **P2**
+- 근거: release가 파일을 읽어 nonce를 확인한 뒤 별도 `rm`을 한다. 그 사이 운영자/복구 도구가 파일을 교체하면 새 소유자의 lock을 지울 수 있다.
+- 영향: 일반 정상 경로에서는 낮은 확률이지만 수동 stale 복구와 겹치면 보호가 깨질 수 있다.
+- 수정 기준: 수동 복구 규약에서 실행 중 release와 경합하지 않게 하거나 OS 수준 lock/원자 rename 기반 소유권 검증을 검토한다.
+
+---
+
+## E. Resend idempotency·상태 판정
+
+### SR2-MAIL-001 — 새 실행마다 random runId라 재실행 시 idempotency key가 달라짐
+
+- 우선순위: **P0**
+- 파일: `agent/reorder.ts`, `agent/folderScan.ts`, `resendProvider.ts`
+- 근거: provider에는 runId를 idempotency key로 넘기지만 CLI 실행마다 random UUID를 만든다. timeout/unknown 후 다음 cron 또는 일반 CLI 재실행은 같은 보고서에도 새 key를 사용한다. 사용자가 CLI에서 이전 runId를 지정하는 인터페이스도 없다.
+- 영향: Resend의 동일-key dedupe가 적용되지 않아 “발송됐지만 응답을 못 받은” 실행 뒤 동일 이메일이 다시 전송될 수 있다.
+- 수정 기준: 보고서 identity(수신자+보고기간+내용 hash 등)에서 안정적인 delivery key를 만들거나 unknown 상태를 다음 실행이 조회해 사람 확인 전 같은 digest 발송을 막는다. 실제 CLI 재실행 경로로 검증한다.
+
+### SR2-MAIL-002 — timeout 이외 네트워크 오류도 결과가 불확실할 수 있음
+
+- 우선순위: **P1**
+- 근거: `AmbiguousSendError`는 Error name이 `TimeoutError`일 때만 설정된다. 연결 reset/socket close는 요청 본문이 서버에 도달한 뒤 응답만 유실된 상황일 수 있는데 `failed`로 기록된다.
+- 영향: 다음 실행이 확실한 미발송으로 오인하고 재시도할 수 있다.
+- 수정 기준: HTTP response를 받기 전 발생한 네트워크 오류는 원칙적으로 ambiguous로 분류하고 provider idempotency로 안전하게 재시도한다. 명백한 DNS/connection-refused를 별도로 구분할지는 보수적으로 결정한다.
+
+### SR2-MAIL-003 — provider의 dedupe 보존시간 이후 재시도 정책이 없음
+
+- 우선순위: **P1**
+- 근거: 코드 주석은 Resend 동일-key dedupe가 24시간이라고 명시하지만 unknown/sending 상태의 만료·사람 확인·24시간 이후 처리 규칙이 연결되어 있지 않다.
+- 수정 기준: provider dedupe TTL 안에서만 자동 재시도를 허용하고, TTL 이후에는 새 발송 승인 또는 원격 message 조회가 필요하도록 상태 머신을 정의한다.
+
+---
+
+## F. npm 설치 후 migration CLI 간극
+
+### SR2-REL-001 — network Postgres 사용자는 게시 패키지만으로 migration을 실행할 수 없음
+
+- 우선순위: **P0**
+- 파일: `package.json`, `scripts/migrate.ts`, `warehouseFactory.ts`
+- 근거:
+  - tarball `files`에는 `migrations`는 포함하지만 `scripts/migrate.ts`와 컴파일된 migration CLI는 포함하지 않는다.
+  - 등록된 bin은 server/onboard뿐이다.
+  - `DATABASE_URL`이 있으면 `createNetworkWarehouse()`는 자동 migration을 실행하지 않는다.
+- 영향: npm 소비자가 Neon/Supabase를 선택하면 빈 DB에 필요한 schema를 만들 공식 명령이 없다. README의 repository용 `npm run migrate`는 설치된 dependency에서 사용할 수 없다.
+- 판정: 사용자 제안대로 제품 결정을 먼저 해야 하지만, 결정 전에는 publish를 차단해야 한다.
+- 선택지:
+  1. `retail-mcp-migrate` bin을 제공하고 사람 확인 가드·dry-run/target 표시를 둔다.
+  2. server/agent startup 자동 migration을 채택하되 기존 “프로덕션 migration은 사람만” 가드레일을 공식 변경한다.
+  3. npm 배포판은 embedded PGlite만 지원하고 network Postgres 기능을 비공개/고급 설치 범위로 분리한다.
+
+---
+
+## T37 전 권장 처리 순서
+
+1. **P0 결정/수정**: SR2-SEC-001, AUD-001/002, LOCK-001, MAIL-001, REL-001
+2. **P1 보강**: CI 권한·pin/ruleset, history secret scan, audit expiry, legacy lock, ambiguous network/TTL
+3. 실패 회귀 테스트와 실 Postgres/pack 재검증
+4. 이 문서 각 항목에 `OPEN/RESOLVED/ACCEPTED` 및 해결 commit 기록
+5. 그 다음 T37의 8단계 기계적 release gate 실행
+
+## 최종 판정
+
+T29~T36은 1차 검수의 많은 결함을 실질적으로 개선했고 기존 522개 테스트도 모두 통과한다. 그러나 새로 만든 보안 게이트와 멱등성/락 보강 자체에 독립적인 우회 경로가 남아 있다. 특히 audit의 오류 JSON 통과, stable하지 않은 email idempotency key, hostname 충돌 lock 회수, network Postgres migration 부재는 npm 공개 전 반드시 닫아야 한다.

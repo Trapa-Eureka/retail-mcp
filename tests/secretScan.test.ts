@@ -57,12 +57,29 @@ describe("scanContentForSecrets (QA-006, TASKS T35)", () => {
     expect(findings).toEqual([]);
   });
 
-  it("같은 줄에 fake/example/placeholder류 표시가 있으면 건너뛴다", () => {
+  it("같은 줄에 secretscan-allow 마커가 있으면 건너뛴다(의도된 테스트 픽스처)", () => {
     const findings = scanContentForSecrets(
       "tests/x.test.ts",
-      'const apiKey = "sk-ant-super-secret-key-should-never-leak"; // fake',
+      'const apiKey = "sk-ant-super-secret-key-should-never-leak"; // secretscan-allow: 테스트 픽스처',
     );
     expect(findings).toEqual([]);
+  });
+
+  it("흔한 단어(fake/example/placeholder 등)만으로는 더 이상 우회되지 않는다(2차 적대적 검수 SR2-SEC-001 회귀)", () => {
+    // 예전엔 이 5개 케이스 전부 findings가 비어 있었다 — 실제 시크릿과 같은 줄에 우연히
+    // 흔한 영단어 하나만 있어도 통째로 건너뛰는 결함이었다. 이제는 전용 마커
+    // (secretscan-allow)가 없으면 반드시 발견돼야 한다.
+    const casesThatMustStillBeCaught = [
+      'const productionKey = "AKIAABCDEFGHIJKLMNOP"; // example',
+      'const productionKey = "AKIAABCDEFGHIJKLMNOP"; // fake value below, this one is real though',
+      'const productionKey = "AKIAABCDEFGHIJKLMNOP"; // placeholder for now',
+      'const productionKey = "AKIAABCDEFGHIJKLMNOP"; // dummy? no',
+      'const productionKey = "AKIAABCDEFGHIJKLMNOP"; // your_real_key_here',
+    ];
+    for (const content of casesThatMustStillBeCaught) {
+      const findings = scanContentForSecrets("a.ts", content);
+      expect(findings, `놓친 줄: ${content}`).toHaveLength(1);
+    }
   });
 
   it("여러 파일·여러 줄에 걸쳐도 매치가 서로 섞이지 않는다(RegExp lastIndex 격리)", () => {
