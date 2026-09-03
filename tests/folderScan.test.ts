@@ -269,6 +269,155 @@ describe("runFolderScan", () => {
   });
 });
 
+describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (SPEC §16, TASKS T26)", () => {
+  let dir: string;
+  let watchDir: string;
+  let snapshotDir: string;
+  let scmReceiptsDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-scm-"));
+    watchDir = join(dir, "watch");
+    snapshotDir = join(dir, "snapshot");
+    scmReceiptsDir = join(dir, "scm");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(watchDir, { recursive: true });
+    await mkdir(scmReceiptsDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("scmReceiptsDir을 안 주면(기존 동작) reconciliation은 항상 빈 배열이다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "utf8",
+    );
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      { watchDir, snapshotDir },
+    );
+    expect(result.reconciliation).toEqual([]);
+  });
+
+  it("SCM 입고 CSV를 흡수해 purchase_receipts에 적재하고 재고 정합성 불일치를 찾아낸다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "utf8",
+    );
+    // 구글시트를 "파일 > 다운로드 > CSV"로 내보낸 것을 흉내낸다(SPEC §16) — 입고 30인데
+    // 판매이력이 없어(재고 파일이 판매수량 컬럼 없음) 예상재고 30, 실제재고 9로 불일치.
+    await writeFile(
+      join(scmReceiptsDir, "receipts.csv"),
+      "일자,구분,상품코드,상품명,수량,단가,거래처\n" +
+        "2026-07-01,입고,SKU-COLA,코카콜라 500ml,30,12000,스마트유통\n",
+      "utf8",
+    );
+
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      { watchDir, snapshotDir, scmReceiptsDir },
+    );
+
+    expect(result.reconciliation).toHaveLength(1);
+    const [row] = result.reconciliation;
+    expect(row?.variantId).toBe("SKU-COLA");
+    expect(row?.expectedStock).toBe(30); // 0(기초, 기본값) + 30(입고) − 0(판매이력 없음)
+    expect(row?.actualStock).toBe(9);
+    expect(row?.discrepancy).toBe(-21);
+
+    // 재고 자체는 기본 임계치(5) 이상이라 저재고 알림은 0건이지만, 재고 정합성 경고만으로도
+    // "보고할 게 있다" 판정이 나 dry-run 출력까지 이어진다(issueCount 로직).
+    expect(result.alertCount).toBe(0);
+    expect(result.status).toBe("dry_run");
+
+    const purchases = await warehouse.queryPurchaseAgg({
+      storeId: "본점",
+      periodStart: new Date("2026-01-01T00:00:00Z"),
+      periodEnd: new Date("2027-01-01T00:00:00Z"),
+    });
+    expect(purchases).toEqual([{ storeId: "본점", variantId: "SKU-COLA", receivedQtyRaw: "30" }]);
+  });
+
+  it("매장이 여러 개인 재고 파일에서 scmReceiptsStoreId 없이는 명확한 에러를 던진다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n마카티점,생수 500ml,SKU-WATER,20\n",
+      "utf8",
+    );
+    await writeFile(
+      join(scmReceiptsDir, "receipts.csv"),
+      "일자,구분,상품코드,상품명,수량\n2026-07-01,입고,SKU-COLA,코카콜라 500ml,30\n",
+      "utf8",
+    );
+
+    await expect(
+      runFolderScan(
+        {
+          warehouse,
+          clock: createFixedClock(NOW_ISO),
+          notificationProvider: createMockNotificationProvider(),
+        },
+        { watchDir, snapshotDir, scmReceiptsDir },
+      ),
+    ).rejects.toThrow(/scmReceiptsStoreId/);
+  });
+
+  it("SCM 파일 파싱이 실패해도 저재고 알림 판정은 계속 진행한다(격리)", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    await writeFile(join(scmReceiptsDir, "broken.csv"), "이건,SCM,형식이,아님\n1,2,3,4\n", "utf8");
+
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      // HAPPY_CSV엔 매장이 2개라 store 자동추론이 안 된다 — 이 테스트의 초점은 store 결정이
+      // 아니라 "SCM 파싱 실패가 알림 판정을 막지 않는다"이므로 명시해서 그 경로만 검증한다.
+      { watchDir, snapshotDir, scmReceiptsDir, scmReceiptsStoreId: "본점" },
+    );
+
+    // SCM 파싱은 실패했지만(경고만 남김) 기존 HAPPY_CSV의 저재고 알림 2건은 그대로 처리된다.
+    expect(result.alertCount).toBe(2);
+    expect(result.reconciliation).toEqual([]);
+  });
+
+  it("scmReceiptsDir에 파일이 아직 없으면 조용히 건너뛴다(에러 아님)", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "utf8",
+    );
+
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      { watchDir, snapshotDir, scmReceiptsDir }, // 폴더는 있지만 안이 비어 있음
+    );
+    expect(result.reconciliation).toEqual([]);
+  });
+});
+
 describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
   let dir: string;
   let collectDir: string;

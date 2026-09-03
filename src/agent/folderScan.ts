@@ -19,24 +19,33 @@
  * cron 1회 실행 진입점 — README의 cron/launchd 등록 예시(agent:reorder)와 같은 패턴으로 등록한다.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseCsvText } from "csv-parse/sync";
 import {
   applyPackRounding,
   computeCsvReorderMetrics,
+  computeStockReconciliation,
   type CsvHistoryMetricRow,
   type CsvMetricsOptions,
+  type StockReconciliationRow,
 } from "../core/metrics.js";
+import { mapScmRowsToPurchaseReceipts } from "../core/scmSchema.js";
 import { exportSnapshotCsv } from "../core/snapshotExport.js";
 import type {
   AgentSendStatus,
   Clock,
   NotificationProvider,
   ProductRow,
+  PurchaseAgg,
+  PurchaseReceiptRow,
+  SalesAgg,
+  SalesPeriodAggRow,
+  StoreRow,
   Warehouse,
 } from "../core/types.js";
-import { parseInventoryFile } from "../adapters/csvExcelParser.js";
+import { decodeFileBytes, parseInventoryFile } from "../adapters/csvExcelParser.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { createSystemClock } from "../adapters/systemClock.js";
 import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
@@ -152,7 +161,12 @@ function alertsFrom(
   return alerts;
 }
 
-function renderAlertText(alerts: FolderScanAlertItem[], sourceFile: string, now: Date): string {
+function renderAlertText(
+  alerts: FolderScanAlertItem[],
+  reconciliation: StockReconciliationRow[],
+  sourceFile: string,
+  now: Date,
+): string {
   const lines: string[] = [`저재고 알림 — 스캔 시각 ${now.toISOString()} (원본: ${sourceFile})`];
 
   const byStore = new Map<string, FolderScanAlertItem[]>();
@@ -167,11 +181,141 @@ function renderAlertText(alerts: FolderScanAlertItem[], sourceFile: string, now:
       lines.push(`- ${item.name} (재고 ${item.inStock}): ${item.reason}`);
     }
   }
+
+  if (reconciliation.length > 0) {
+    lines.push("", `[재고 정합성 경고] (${reconciliation.length}건, SPEC §16)`);
+    for (const row of reconciliation) {
+      lines.push(
+        `- ${row.name}: 입고 원장 기준 예상재고 ${row.expectedStock}, 실제 재고 ` +
+          `${row.actualStock} (차이 ${row.discrepancy}) — 도난·파손·실사오차 확인 필요.`,
+      );
+    }
+  }
   return lines.join("\n");
 }
 
 function errorCodeOf(err: unknown): string {
   return err instanceof Error && err.name ? err.name : "UnknownError";
+}
+
+// ── SCM 입고 실적 수동 내보내기 흡수 (지점 모드 전용, SPEC §16) ─────────────
+//
+// 실 Google Sheets API 연동은 채택하지 않는다(2026-09-03 결정) — 서비스 계정 발급은
+// 비개발자 사용자에게 npm install만으로 쓰게 한다는 원칙(SPEC §12)에 정면으로 배치되고,
+// 공개 링크 CSV export는 매입단가 등 민감 정보를 인터넷에 노출한다. 대신 SPEC §12가 이미
+// 정한 "ERP는 CSV/Excel로 내보내기 → 폴더 채널로 투입" 선례를 SCM 시트에도 그대로 적용한다
+// — 사용자가 구글시트를 "파일 > 다운로드 > CSV"로 내보내 이 폴더에 두면, 다음 스캔이
+// T23의 mapScmRowsToPurchaseReceipts로 그대로 읽는다(새 의존성·시크릿 없음).
+
+async function findLatestScmFile(dir: string): Promise<string | null> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const candidateNames = entries
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .filter((name) => /\.csv$/i.test(name)); // XLSX는 이번 스코프 밖(구글시트 내보내기는 CSV가 자연스럽다).
+  if (candidateNames.length === 0) return null;
+
+  const withMtimes = await Promise.all(
+    candidateNames.map(async (name) => {
+      const full = path.join(dir, name);
+      const st = await stat(full);
+      return { fullPath: full, mtimeMs: st.mtimeMs };
+    }),
+  );
+  withMtimes.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (withMtimes.length > 1) {
+    console.warn(
+      `${dir}에 SCM 입고 파일이 ${withMtimes.length}개 있습니다 — 가장 최근에 수정된 ` +
+        `"${path.basename(withMtimes[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
+    );
+  }
+  return withMtimes[0]!.fullPath;
+}
+
+/** 이번 스캔의 재고 파일에 매장이 정확히 하나면 그 매장으로 자동 추론하고, 여럿이면 명시를 요구한다. */
+function resolveScmStoreId(parsedStores: StoreRow[], explicit?: string): string {
+  if (explicit) return explicit;
+  if (parsedStores.length === 1) return parsedStores[0]!.id;
+  throw new Error(
+    `SCM 입고 파일을 어느 매장에 연결할지 알 수 없습니다 — 이번 스캔의 재고 파일에 매장이 ` +
+      `${parsedStores.length}개 있습니다(${parsedStores.map((s) => s.id).join(", ")}). ` +
+      "runFolderScan opts.scmReceiptsStoreId로 명시하세요.",
+  );
+}
+
+/**
+ * scmReceiptsDir에서 최신 CSV를 찾아 파싱·적재한다. **SCM 파싱 실패는 지점 스캔의 핵심
+ * 임무(저재고 알림)를 막지 않는다** — 경고만 남기고 빈 결과로 계속 진행한다(폴더가 없거나
+ * 파일이 아직 없는 정상적인 경우와 같은 취급).
+ */
+async function ingestScmReceipts(
+  scmReceiptsDir: string,
+  storeId: string,
+  warehouse: Warehouse,
+): Promise<PurchaseReceiptRow[]> {
+  let file: string | null;
+  try {
+    file = await findLatestScmFile(scmReceiptsDir);
+  } catch (err) {
+    console.warn(
+      `SCM 입고 폴더(${scmReceiptsDir})를 읽을 수 없어 이번 스캔은 입고 데이터 없이 계속합니다: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return [];
+  }
+  if (!file) return [];
+
+  try {
+    const bytes = await readFile(file);
+    const { text } = decodeFileBytes(bytes);
+    const rawRows = parseCsvText(text, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    }) as unknown[];
+    const receipts = mapScmRowsToPurchaseReceipts(rawRows, storeId);
+    await warehouse.upsertPurchaseReceipts(receipts);
+    return receipts;
+  } catch (err) {
+    console.warn(
+      `SCM 입고 파일(${file}) 처리 실패 — 이번 스캔은 입고 데이터 없이 계속합니다: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return [];
+  }
+}
+
+/** 같은 (storeId,variantId)의 입고를 합산한다 — DB 재조회 없이 이번 스캔 파일 그대로(T17 패턴). */
+function aggregatePurchases(receipts: PurchaseReceiptRow[]): PurchaseAgg[] {
+  const totalsByKey = new Map<string, { storeId: string; variantId: string; qty: number }>();
+  for (const r of receipts) {
+    const key = `${r.storeId}:${r.variantId}`;
+    const existing = totalsByKey.get(key);
+    const qty = Number(r.receivedQty);
+    if (existing) existing.qty += qty;
+    else totalsByKey.set(key, { storeId: r.storeId, variantId: r.variantId, qty });
+  }
+  return [...totalsByKey.values()].map((v) => ({
+    storeId: v.storeId,
+    variantId: v.variantId,
+    receivedQtyRaw: String(v.qty),
+  }));
+}
+
+/** SalesPeriodAggRow[](이번 스캔 재고 파일의 판매이력)를 computeStockReconciliation이 받는
+ * SalesAgg[] 모양으로 옮긴다 — computeCsvReorderMetrics 내부와 같은 매핑(T17). */
+function salesAggFromCsv(salesPeriodAgg: SalesPeriodAggRow[], products: ProductRow[]): SalesAgg[] {
+  const productByVariant = new Map(products.map((p) => [p.variantId, p]));
+  return salesPeriodAgg.map((s) => {
+    const p = productByVariant.get(s.variantId);
+    return {
+      storeId: s.storeId,
+      variantId: s.variantId,
+      name: p?.name ?? s.variantId,
+      category: p?.category ?? null,
+      soldQtyRaw: s.soldQty,
+    };
+  });
 }
 
 // ── 오케스트레이션 ───────────────────────────────────────────────────────
@@ -198,6 +342,13 @@ export interface FolderScanOptions {
   /** live 발송 시 필수. */
   recipient?: string;
   subject?: string;
+  /**
+   * SCM 입고 실적 CSV(구글시트 등에서 수동 내보내기)를 감시할 폴더 — 선택(SPEC §16). 없으면
+   * SCM 입고 적재·재고 정합성 검증을 건너뛴다(기존 동작과 완전히 동일).
+   */
+  scmReceiptsDir?: string;
+  /** scmReceiptsDir의 입고를 귀속시킬 매장. 이번 스캔 재고 파일에 매장이 하나뿐이면 생략 가능. */
+  scmReceiptsStoreId?: string;
 }
 
 export interface FolderScanResult {
@@ -211,6 +362,11 @@ export interface FolderScanResult {
   snapshotPath: string;
   sent: boolean;
   messageId: string | null;
+  /**
+   * SCM 입고 실적 대사 결과(SPEC §16) — scmReceiptsDir 미설정이거나 이번 스캔에 SCM 파일이
+   * 없으면 빈 배열. 실사 재고와 일치하지 않는 행만 담는다(정상 대사는 노이즈라 제외).
+   */
+  reconciliation: StockReconciliationRow[];
 }
 
 /**
@@ -260,14 +416,31 @@ export async function runFolderScan(
   );
   const alerts = alertsFrom(metrics, parsed.products);
 
+  // SCM 입고 실적 흡수 + 재고 정합성 검증(SPEC §16) — scmReceiptsDir 미설정이거나 이번
+  // 스캔에 SCM 파일이 없으면(또는 파싱 실패해도) reconciliation은 그냥 빈 배열이다. SCM
+  // 처리 실패가 위 alerts 판정·발송을 막지 않는다(ingestScmReceipts 자체가 실패를 삼킨다).
+  let reconciliation: StockReconciliationRow[] = [];
+  if (opts.scmReceiptsDir) {
+    const scmStoreId = resolveScmStoreId(parsed.stores, opts.scmReceiptsStoreId);
+    const receipts = await ingestScmReceipts(opts.scmReceiptsDir, scmStoreId, deps.warehouse);
+    if (receipts.length > 0) {
+      const purchases = aggregatePurchases(receipts);
+      const sales = salesAggFromCsv(parsed.salesPeriodAgg, parsed.products);
+      reconciliation = computeStockReconciliation(parsed.inventory, purchases, sales).filter(
+        (r) => r.hasDiscrepancy,
+      );
+    }
+  }
+
   const snapshotFileName = opts.snapshotFileName ?? DEFAULT_SNAPSHOT_FILE_NAME;
   const snapshotPath = path.join(opts.snapshotDir, snapshotFileName);
   await mkdir(opts.snapshotDir, { recursive: true });
   await writeFile(snapshotPath, exportSnapshotCsv(parsed), "utf8");
 
   const itemCount = parsed.inventory.length;
+  const issueCount = alerts.length + reconciliation.length;
 
-  if (alerts.length === 0) {
+  if (issueCount === 0) {
     await deps.warehouse.logAgentSend({
       runId,
       sentAt: now,
@@ -290,11 +463,16 @@ export async function runFolderScan(
       snapshotPath,
       sent: false,
       messageId: null,
+      reconciliation: [],
     };
   }
 
-  const reportText = renderAlertText(alerts, sourceFile, now);
-  const subject = opts.subject ?? `저재고 알림 — ${alerts.length}건`;
+  const reportText = renderAlertText(alerts, reconciliation, sourceFile, now);
+  const subjectParts = [
+    ...(alerts.length > 0 ? [`저재고 ${alerts.length}건`] : []),
+    ...(reconciliation.length > 0 ? [`재고 정합성 경고 ${reconciliation.length}건`] : []),
+  ];
+  const subject = opts.subject ?? `알림 — ${subjectParts.join(", ")}`;
 
   if (!willSend) {
     await deps.warehouse.logAgentSend({
@@ -303,7 +481,7 @@ export async function runFolderScan(
       status: "dry_run",
       recipient: opts.recipient ?? null,
       subject,
-      suggestionCount: alerts.length,
+      suggestionCount: issueCount,
       messageId: null,
       dryRun: true,
       errorCode: null,
@@ -320,6 +498,7 @@ export async function runFolderScan(
       snapshotPath,
       sent: false,
       messageId: null,
+      reconciliation,
     };
   }
 
@@ -336,7 +515,7 @@ export async function runFolderScan(
     status: "sending",
     recipient,
     subject,
-    suggestionCount: alerts.length,
+    suggestionCount: issueCount,
     messageId: null,
     dryRun: false,
     errorCode: null,
@@ -354,7 +533,7 @@ export async function runFolderScan(
       status: "sent",
       recipient,
       subject,
-      suggestionCount: alerts.length,
+      suggestionCount: issueCount,
       messageId: sendResult.messageId,
       dryRun: false,
       errorCode: null,
@@ -370,6 +549,7 @@ export async function runFolderScan(
       snapshotPath,
       sent: true,
       messageId: sendResult.messageId,
+      reconciliation,
     };
   } catch (err) {
     await deps.warehouse.logAgentSend({
@@ -378,7 +558,7 @@ export async function runFolderScan(
       status: "failed",
       recipient,
       subject,
-      suggestionCount: alerts.length,
+      suggestionCount: issueCount,
       messageId: null,
       dryRun: false,
       errorCode: errorCodeOf(err),
@@ -529,11 +709,19 @@ async function runBranchMain(clock: Clock, handle: { warehouse: Warehouse }): Pr
       confirm,
       ...(defaultLowStockThreshold !== undefined ? { defaultLowStockThreshold } : {}),
       ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
+      // SCM 입고 실적(선택, SPEC §16) — 없으면 runFolderScan이 기존 동작과 완전히 동일하게 돈다.
+      ...(process.env["SCM_RECEIPTS_DIR"]
+        ? { scmReceiptsDir: process.env["SCM_RECEIPTS_DIR"] }
+        : {}),
+      ...(process.env["SCM_RECEIPTS_STORE_ID"]
+        ? { scmReceiptsStoreId: process.env["SCM_RECEIPTS_STORE_ID"] }
+        : {}),
     },
   );
   console.log(
     `폴더 스캔 완료(지점) — run_id=${result.runId}, status=${result.status}, ` +
-      `알림 ${result.alertCount}건, 발송 ${result.sent ? "완료" : "안 함"}. 스냅샷: ${result.snapshotPath}`,
+      `알림 ${result.alertCount}건, 재고 정합성 경고 ${result.reconciliation.length}건, ` +
+      `발송 ${result.sent ? "완료" : "안 함"}. 스냅샷: ${result.snapshotPath}`,
   );
 }
 
