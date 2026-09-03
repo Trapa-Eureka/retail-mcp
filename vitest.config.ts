@@ -29,6 +29,13 @@ export default defineConfig({
     // 50k행 성능 가드 자체는 이 값과 별개로 테스트 안에서 자체 BUDGET_MS(10초)를 직접
     // assert한다.
     testTimeout: 20_000,
+    // hookTimeout도 같은 값으로 맞춘다 — PGlite 기동(`createTestWarehouse()`)은 대부분의
+    // 스위트에서 `beforeEach` **hook** 안에서 일어나므로 testTimeout이 아니라 hookTimeout
+    // (기본 10초)이 적용된다. 위에서 testTimeout만 올렸을 때 같은 원인의 플레이크가 hook 쪽에
+    // 그대로 남아 있었다 — 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"
+    // (reorderAgent/mcpTools 등, 전부 createTestWarehouse 줄)로 실패했고 격리 재실행은 통과
+    // (2차 적대적 검수 SR2-MAIL-002 작업 중 관측, 2026-09-04).
+    hookTimeout: 20_000,
     coverage: {
       provider: "v8",
       // core 전용이던 범위를 QA-003(008 검수, TASKS T35)에 맞춰 확장한다 — publish/보안상
