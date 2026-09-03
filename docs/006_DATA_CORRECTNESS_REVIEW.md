@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: CSV/Excel 지점·본사 흐름, snapshot, SCM 대사
 - 판정: **출시 차단 — 정상 테스트를 통과하지만 운영 데이터가 조용히 소실·잔존·중복 통지될 수 있음**
-- 상태: **RESOLVED(T33, 2026-09-03)** — DATA-001~008 전부 해결. 전체 재검수는 T37에서 진행. tombstone/일일 다이제스트 정책은 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2~12.3에, nullable clear/SCM insufficient_data/scm_status/입고 합산은 `docs/DESIGN.md` §12.7에 반영됨.
+- 상태: **RESOLVED(T31 PR #42 — DATA-001~004, T33 PR #44 — DATA-005~008, 2026-09-03)** — DATA-001~008 전부 해결. 전체 재검수는 T37에서 진행. tombstone/일일 다이제스트 정책은 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2~12.3에, nullable clear/SCM insufficient_data/scm_status/입고 합산은 `docs/DESIGN.md` §12.7에 반영됨.
 
 ## DATA-001 — snapshot export가 `포장수량`을 소실함
 

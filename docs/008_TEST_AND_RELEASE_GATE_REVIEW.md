@@ -4,7 +4,7 @@
 - 현재 결과: `npm run check` 통과, 33 files/376 tests 통과
 - coverage: statements 99.66%, branches 94.66%, functions 100%, lines 100% (`src/core`)
 - 판정: **수치상 우수하지만 npm 설치·운영 경계와 공격 시나리오가 게이트 밖에 있음**
-- 상태: **QA-002~006 RESOLVED(T35, 2026-09-03)** — QA-001은 T29에서 이미 해결. 남은 건 T37(008 8단계 release gate 최종 통과 + `prepublishOnly` 연결)뿐이다. 게이트 목록은 `docs/TESTING.md` §8, finding별 테스트 대조는 `docs/010_FINDING_TEST_CROSSREF.md`에 반영됨.
+- 상태: **RESOLVED(T29 PR #40 — QA-001, T35 PR #47 — QA-002~006, 2026-09-03)** — QA-001~006 전부 해결. 남은 건 T37(008 8단계 release gate 최종 통과 + `prepublishOnly` 연결)뿐이다. 게이트 목록은 `docs/TESTING.md` §8, finding별 테스트 대조는 `docs/010_FINDING_TEST_CROSSREF.md`에 반영됨.
 
 ## QA-001 — 테스트는 source tree만 검증하고 실제 tarball을 검증하지 않음
 

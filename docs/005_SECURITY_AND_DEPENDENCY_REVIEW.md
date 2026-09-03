@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: 임의 SQL, 파일 입력/출력, 시크릿, 운영 의존성
 - 판정: **출시 차단 — `explore_sql` 격리 주장이 성립하지 않고 알려진 의존성 취약점 존재**
-- 상태: **부분 RESOLVED(T32, 2026-09-03)** — SEC-001~006 해결, SEC-007(SECURITY.md)도 해결. 전체 재검수는 T37에서 진행. explore_sql 정책 강화는 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.4에, 파일 상한·formula escape·.env 권한·의존성 예외는 `docs/DESIGN.md` §12.6에 반영됨.
+- 상태: **부분 RESOLVED(T30 PR #41 — SEC-001~002, T32 PR #43 — SEC-003~007, 2026-09-03)** — 전체 해결. 전체 재검수는 T37에서 진행. explore_sql 정책 강화는 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.4에, 파일 상한·formula escape·.env 권한·의존성 예외는 `docs/DESIGN.md` §12.6에 반영됨.
 
 ## SEC-001 — READ ONLY 트랜잭션은 부수효과 SELECT를 막지 못함
 
