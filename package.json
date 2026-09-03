@@ -19,6 +19,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "agent:reorder": "tsx src/agent/reorder.ts",
     "agent:folder-scan": "tsx src/agent/folderScan.ts",
+    "onboard": "tsx src/cli/onboard.ts",
     "smoke": "tsx scripts/smoke.ts"
   },
   "devDependencies": {
