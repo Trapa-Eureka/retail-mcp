@@ -1,0 +1,118 @@
+name: CI
+
+# TASKS T35(QA-002~006, OPS-006) — 이 저장소의 첫 CI 워크플로. docs/008이 권장한 release
+# gate(TESTING.md §8)를 매 push/PR에서 실행한다. T37에서 실제 npm publish 워크플로를 추가할
+# 때 이 워크플로를 그대로 전제 조건으로 재사용한다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 패키징 게이트(TASKS T29) + OPS-006 OS/Node matrix — README/DESIGN §12.8가 이미 문서화한
+  # 지원 범위(Node 20+, macOS 검증, Linux 미검증, **Windows 명시적 미검증** — fileLock.ts의
+  # `ps` 기반 OPS-002 보조 신호가 Windows엔 없어 폴백만 함, 매트릭스에 넣지 않는다)를 그대로
+  # 실제로 검증한다. Node 20(engines.node가 밝힌 최소 지원 버전, 2026-09-03 기준 여전히
+  # 보안 패치 지원 중·2027-04 종료)과 22(다음 유지보수 LTS)를 함께 돈다. CI가 Linux
+  # 러너(ubuntu-latest)에서 도는 것 자체로 "Linux 미검증"이 자동으로 해소된다.
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run test
+      - name: verify:pack (OPS-006 — clean tarball install smoke)
+        run: npm run verify:pack
+
+  # QA-002/003 — coverage threshold를 필수 게이트로 승격(core 90/90/90/85 + 위험 모듈별 별도
+  # 기준, vitest.config.ts 참고). 로컬 `npm run check`에는 넣지 않는다(무겁다, TESTING.md §8).
+  coverage:
+    name: coverage thresholds (QA-002/QA-003)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run coverage
+
+  # QA-004 — 실 Postgres 서비스 컨테이너 대상 컴포넌트 테스트(migration/rollback/READ ONLY/
+  # advisory lock/explore_sql timeout). tests/component/**만 대상이고 기본 게이트(가드레일 2)
+  # 와는 완전히 분리돼 있다(vitest.config.ts의 exclude, vitest.component.config.ts 참고).
+  postgres-component:
+    name: postgres component tests (QA-004)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail_mcp
+          POSTGRES_PASSWORD: retail_mcp
+          POSTGRES_DB: retail_mcp_component_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_mcp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:pg-component
+        env:
+          # 매 실행마다 새로 만들어지는 CI 전용 컨테이너 DB다 — 절대 운영/공유 DB를 가리키지
+          # 말 것(tests/component/postgres.component.test.ts 상단 주석 참고).
+          TEST_DATABASE_URL: postgres://retail_mcp:retail_mcp@localhost:5432/retail_mcp_component_test
+
+  # QA-006 — dependency audit(lockfile 기준, fail-open/closed 정책은 src/adapters/
+  # auditLockfile.ts 참고) + 커밋된 시크릿 스캔 + SBOM 생성. tarball 기준 audit(SEC-006
+  # 승인 예외 확인)은 test job의 verify:pack이 이미 매 OS/Node 조합에서 수행한다.
+  audit:
+    name: dependency audit + secret scan (QA-006)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # secret-scan은 git ls-files로 추적 파일 전체를 훑는다.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run audit:lockfile
+      - run: npm run secret-scan
+      - name: SBOM 생성(CycloneDX)
+        # `npm run sbom`(package.json 스크립트, 로컬 편의용)이 아니라 `npm sbom`을 직접
+        # 부른다 — `npm run`은 배너 줄("> pkg@ver sbom\n> npm sbom ...")을 stdout에
+        # 함께 출력해 리다이렉트한 JSON 파일을 깨뜨린다(실측 확인, TASKS T35).
+        run: npm sbom --omit=dev --sbom-format cyclonedx > sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90

@@ -60,4 +60,38 @@ describe("writeFileAtomic (TASKS T31, DATA-004 대응)", () => {
     expect(before).toBe("v1\n");
     expect(await readFile(targetPath, "utf8")).toBe("v2 is longer than v1\n");
   });
+
+  it("쓰기 도중에 반복해서 읽어도 항상 완전한 이전 버전 또는 완전한 새 버전만 보인다 — 부분/섞인 내용은 절대 없다(QA-005 'partial snapshot 동시 read', TASKS T35, 008 대응)", async () => {
+    // 실제 시나리오: 본사가 여러 지점 CSV를 모으는 CSV_COLLECT_DIR을 폴링하는 동안, 다른
+    // 지점의 cron이 정확히 같은 순간 같은 경로에 새 snapshot을 쓸 수 있다. writeFileAtomic이
+    // fsync+rename으로 교체하므로 어느 시점에 읽어도 반은 v1 반은 v2인 내용은 나오면 안 된다.
+    const v1 = "a,b,c\n".repeat(500); // 어느 정도 크기가 있어야 "쓰는 도중" 타이밍을 흔들 여지가 생긴다.
+    const v2 = "x,y,z\n".repeat(700);
+    await writeFileAtomic(targetPath, v1);
+
+    let readCount = 0;
+    let sawV1 = false;
+
+    const reader = (async () => {
+      // rename() 전후로 계속 읽어 "쓰는 도중"을 최대한 많이 관측한다 — writeFileAtomic이
+      // 임시 파일에 쓰고 fsync한 뒤 rename하므로, 이 루프가 보는 targetPath는 항상 v1
+      // 아니면 v2의 완전한 내용이어야 한다(POSIX rename(2)의 원자적 교체 특성).
+      while (readCount < 200) {
+        readCount++;
+        const content = await readFile(targetPath, "utf8").catch(() => null);
+        if (content === null) continue; // rename 찰나에 ENOENT가 날 수도 있다 — 그 자체는 허용(부분 내용이 아니라 "아직 없음"이므로).
+        expect(content === v1 || content === v2).toBe(true);
+        if (content === v1) sawV1 = true;
+      }
+    })();
+
+    const writer = writeFileAtomic(targetPath, v2);
+    await Promise.all([reader, writer]);
+
+    // 최소한 v1을 한 번은 봤어야 의미 있는 레이스였다고 볼 수 있다(그렇지 않으면 reader가
+    // write보다 훨씬 늦게 시작해 아무것도 재현하지 못했을 수 있다) — v2는 위 루프의 각
+    // read에서 이미 완전 일치를 assert했고, write가 끝난 뒤 최종 상태로도 다시 확인한다.
+    expect(sawV1).toBe(true);
+    expect(await readFile(targetPath, "utf8")).toBe(v2);
+  });
 });

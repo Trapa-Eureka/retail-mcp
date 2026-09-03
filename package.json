@@ -52,7 +52,11 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js",
     "prepack": "npm run build",
-    "verify:pack": "tsx scripts/verifyPack.ts"
+    "verify:pack": "tsx scripts/verifyPack.ts",
+    "test:pg-component": "vitest run --config vitest.component.config.ts",
+    "audit:lockfile": "tsx scripts/auditLockfile.ts",
+    "secret-scan": "tsx scripts/secretScan.ts",
+    "sbom": "npm sbom --omit=dev --sbom-format cyclonedx"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

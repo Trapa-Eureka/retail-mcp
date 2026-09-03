@@ -117,9 +117,9 @@ npm run dev                # MCP 서버 연결 후 Claude Code에서 "본점만"
 
 매장명이 이미 필수 컬럼이라 기존 MCP 조회 도구의 지점 필터링이 스키마 변경 없이 그대로 다지점 통합 조회에 쓰인다.
 
-## 운영 신뢰성 (007 검수 OPS-001~006, TASKS T34)
+## 운영 신뢰성 (007 검수 OPS-001~006, TASKS T34/T35)
 
-**지원 환경**: Node.js 20 이상(`engines.node`, CI/개발은 macOS로 검증). Linux는 코드 경로상 문제될 것으로 보이지 않지만(POSIX 파일 락·`ps` 사용) 이 프로젝트가 직접 실행 검증한 적은 아직 없다. **Windows는 검증하지 않았고 알려진 제약이 있다** — 파일 락의 PID 재사용 완화(`fileLock.ts`)가 쓰는 `ps -o lstart=`는 POSIX 전용이라 Windows에서는 이 보조 신호 없이 기존 PID-only 판정으로 자동 폴백한다(에러는 아니다). CI에서 실제 OS/Node 매트릭스로 clean tarball install을 돌리는 건 T35(Postgres 컴포넌트 테스트와 함께 CI 최초 구성)로 넘겼다 — 지금은 `npm run verify:pack`(로컬, 실제 tarball을 새 디렉터리에 `--omit=dev` 설치해 bin 2종 + `npm audit`까지 확인)이 유일한 clean-install 검증이다.
+**지원 환경**: Node.js 20 이상(`engines.node`). CI(`.github/workflows/ci.yml`, TASKS T35)가 `os: [ubuntu-latest, macos-latest] × node: [20, 22]` 매트릭스로 매 push/PR에서 typecheck/lint/format/test + `npm run verify:pack`(clean tarball install)까지 실제로 검증한다. **Windows는 여전히 검증하지 않았고 알려진 제약이 있다** — 파일 락의 PID 재사용 완화(`fileLock.ts`)가 쓰는 `ps -o lstart=`는 POSIX 전용이라 Windows에서는 이 보조 신호 없이 기존 PID-only 판정으로 자동 폴백한다(에러는 아니다).
 
 **PGlite 락 복구**: 같은 임베디드 데이터 디렉터리를 다른 프로세스가 이미 열고 있으면 `FileLockBusyError`로 시작을 거부한다(원인이 된 PID와 조치가 메시지에 포함됨). 그 프로세스가 정말 죽었다면 다음 시작이 자동으로 stale lock을 회수한다 — 사람이 개입해야 하는 경우는 **다른 호스트가 쓴 락**(네트워크 공유 데이터 디렉터리 등 — 이 머신에서 그 프로세스의 생사를 확인할 방법이 없어 자동 회수하지 않는다)뿐이다. 이 경우 에러 메시지가 안내하는 대로 `{데이터 디렉터리}.lock` 파일을 수동으로 지운다(그 호스트의 프로세스가 실제로 끝났는지 먼저 확인할 것).
 

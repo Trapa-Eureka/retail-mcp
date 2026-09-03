@@ -21,6 +21,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  ACCEPTED_ADVISORY_URLS,
+  checkAdvisoriesAgainstAllowlist,
+  extractAdvisoryUrls,
+  type NpmAuditReport,
+} from "../src/core/auditAllowlist.js";
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
 const EXPECTED_DEFAULT_TOOLS = [
@@ -145,13 +151,10 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
  * 대상으로 다시 확인해야 진짜 상태를 안다. 재검토 기한: **2027-03-03**(exceljs가 uuid
  * 의존성을 올렸는지 재확인 — 그때도 안 올렸으면 패치/대체 라이브러리 재검토).
  *
- * 패키지 이름이 아니라 **advisory URL(GHSA ID)**로 비교한다 — `npm audit` 결과 트리는
- * `@trapa-eureka/retail-mcp` 자신도 "영향받음" 루트 항목으로 함께 나열하므로(설치하는
- * 프로젝트마다 이름이 다를 수 있음), 실제 취약점의 정체를 정확히 가리키는 advisory URL로
- * 비교해야 이름 우연 일치/불일치에 흔들리지 않는다.
+ * 판정 로직(advisory URL 추출 + 승인 목록 비교)은 `src/core/auditAllowlist.ts`로 옮겼다
+ * (TASKS T35) — `scripts/auditLockfile.ts`(CI 매 PR, dev lockfile 기준)도 같은 로직이
+ * 필요해져서다. 여기 있던 승인 목록·근거·재검토 기한 주석도 그 파일로 옮겼다.
  */
-const ACCEPTED_ADVISORY_URL = "https://github.com/advisories/GHSA-w5hq-g745-h8pq";
-
 function verifyDependencyAudit(installDir: string): void {
   heading("5) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인");
   let stdout: string;
@@ -168,30 +171,23 @@ function verifyDependencyAudit(installDir: string): void {
     stdout = withStdout.stdout;
   }
 
-  const report = JSON.parse(stdout) as { vulnerabilities?: Record<string, { via?: unknown[] }> };
-  const advisoryUrls = new Set<string>();
-  for (const vuln of Object.values(report.vulnerabilities ?? {})) {
-    for (const via of vuln.via ?? []) {
-      if (typeof via === "object" && via !== null && "url" in via && typeof via.url === "string") {
-        advisoryUrls.add(via.url);
-      }
-    }
-  }
-  const unexpected = [...advisoryUrls].filter((url) => url !== ACCEPTED_ADVISORY_URL);
+  const report = JSON.parse(stdout) as NpmAuditReport;
+  const advisoryUrls = extractAdvisoryUrls(report);
+  const { unexpected, noneFound } = checkAdvisoriesAgainstAllowlist(advisoryUrls);
   if (unexpected.length > 0) {
     throw new Error(
       `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${unexpected.join(", ")} — ` +
         "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
     );
   }
-  if (advisoryUrls.size === 0) {
+  if (noneFound) {
     console.log(
       "취약점 0건 — exceljs/uuid 승인된 예외(SEC-006)가 더 이상 필요 없을 수 있습니다. " +
-        "docs/005와 이 스크립트의 ACCEPTED_ADVISORY_URL을 갱신하세요.",
+        "docs/005와 src/core/auditAllowlist.ts의 ACCEPTED_ADVISORY_URLS를 갱신하세요.",
     );
   } else {
     console.log(
-      `승인된 예외만 확인됨(${ACCEPTED_ADVISORY_URL}) — docs/005 SEC-006, 재검토 기한 2027-03-03.`,
+      `승인된 예외만 확인됨(${ACCEPTED_ADVISORY_URLS.join(", ")}) — docs/005 SEC-006, 재검토 기한 2027-03-03.`,
     );
   }
 }
