@@ -5,6 +5,7 @@ import { createPgWarehouse, createPgliteConnectionProvider } from "../src/adapte
 import { createFixedClock } from "../src/mocks/fixedClock.js";
 import { buildReorderReport } from "../src/agent/reorder.js";
 import {
+  exploreSqlTool,
   inventoryStatusTool,
   reorderSuggestionsTool,
   sellThroughTool,
@@ -14,6 +15,7 @@ import {
   type QueryToolDeps,
 } from "../src/mcp/tools.js";
 import { AdvisoryLockBusyError } from "../src/adapters/advisoryLock.js";
+import { createExploreSqlExecutor } from "../src/adapters/exploreSqlExecutor.js";
 import type { LoyverseClient, LvStore, StoreRow, Warehouse } from "../src/core/types.js";
 
 const STORE_MAIN: StoreRow = { id: "store_main", name: "본점" };
@@ -358,6 +360,60 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
           {},
         ),
       ).rejects.toThrow(AdvisoryLockBusyError);
+    });
+  });
+
+  describe("explore_sql (TASKS T27, 가드레일 4 예외 — 얇은 조립 계층)", () => {
+    it("input을 그대로 executor.execute에 넘기고 결과를 그대로 반환한다", async () => {
+      const calls: Array<[string, unknown]> = [];
+      const executor = {
+        execute: (sql: string, opts?: unknown) => {
+          calls.push([sql, opts]);
+          return Promise.resolve({
+            columns: ["id"],
+            rows: [{ id: "store_main" }],
+            rowCount: 1,
+            truncated: false,
+            timeoutMs: 5000,
+          });
+        },
+      };
+      const result = await exploreSqlTool(
+        { executor },
+        { sql: "select id from stores", limit: 10, timeoutMs: 1000 },
+      );
+      expect(calls).toEqual([["select id from stores", { limit: 10, timeoutMs: 1000 }]]);
+      expect(result.rows).toEqual([{ id: "store_main" }]);
+    });
+
+    it("limit/timeoutMs를 생략하면 executor에 undefined 필드를 안 넘긴다", async () => {
+      const calls: unknown[] = [];
+      const executor = {
+        execute: (_sql: string, opts?: unknown) => {
+          calls.push(opts);
+          return Promise.resolve({
+            columns: [],
+            rows: [],
+            rowCount: 0,
+            truncated: false,
+            timeoutMs: 5000,
+          });
+        },
+      };
+      await exploreSqlTool({ executor }, { sql: "select 1" });
+      expect(calls).toEqual([{}]);
+    });
+
+    it("실제 웨어하우스 대상으로 골든 케이스를 실행한다(검증→READ ONLY 실행 전체 경로)", async () => {
+      const executor = createExploreSqlExecutor(createPgliteConnectionProvider(db));
+      const result = await exploreSqlTool(
+        { executor },
+        { sql: "select id, name from stores order by id" },
+      );
+      expect(result.rows).toEqual([
+        { id: "store_main", name: "본점" },
+        { id: "store_makati", name: "마카티점" },
+      ]);
     });
   });
 });

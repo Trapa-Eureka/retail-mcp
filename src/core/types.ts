@@ -325,6 +325,33 @@ export interface Warehouse {
   logAgentSend(e: AgentSendEntry): Promise<void>;
 }
 
+// ── explore_sql (v0.2 대기열, 가드레일 4 예외 — DESIGN §6이 이름으로 미리 예고해둔 것) ──────
+//
+// 나머지 Warehouse 메서드는 전부 파라미터라이즈드 고정 쿼리다. explore_sql은 유일하게 사용자가
+// 임의 SQL 텍스트를 주는 도구라 별도 인터페이스로 분리했다 — Warehouse 계약("고정 쿼리만")을
+// 이 하나 때문에 흐리지 않기 위해서다. 구현은 adapters/exploreSqlExecutor.ts, 진짜 방어선(BEGIN
+// READ ONLY 트랜잭션)은 그 파일의 문서 주석 참고.
+
+export interface ExploreSqlOptions {
+  /** 결과 최대 행 수. 기본 200, 최대 1000(초과 요청은 자동으로 잘린다, 에러 아님). */
+  limit?: number;
+  /** 쿼리 최대 실행 시간(ms). 기본 5000, 최대 30000. */
+  timeoutMs?: number;
+}
+
+export interface ExploreSqlResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  rowCount: number;
+  /** limit에 걸려 일부만 반환했으면 true. */
+  truncated: boolean;
+  timeoutMs: number;
+}
+
+export interface ExploreSqlExecutor {
+  execute(sql: string, opts?: ExploreSqlOptions): Promise<ExploreSqlResult>;
+}
+
 // ── 알림 (sheet_mcp NotificationProvider 이식 대상과 동일 시그니처) ─────────
 
 export interface OutboundMessage {

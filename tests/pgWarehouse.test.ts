@@ -838,5 +838,18 @@ describe("pgWarehouse (PGlite)", () => {
         await db.exec("reset role");
       }
     });
+
+    it("explore_sql(TASKS T27)도 읽기 전용 role로 정상 동작한다", async () => {
+      const { createExploreSqlExecutor } = await import("../src/adapters/exploreSqlExecutor.js");
+      const executor = createExploreSqlExecutor(createPgliteConnectionProvider(db));
+      await db.exec("set role app_readonly");
+      try {
+        await expect(executor.execute("select * from stores")).resolves.toMatchObject({
+          rowCount: 2,
+        });
+      } finally {
+        await db.exec("reset role");
+      }
+    });
   });
 });

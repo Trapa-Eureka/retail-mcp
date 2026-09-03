@@ -37,6 +37,7 @@ async function setupServer(): Promise<{ client: Client; warehouse: Warehouse; cl
       businessTimezone: BUSINESS_TIMEZONE,
       staleThresholdHours: 24,
       syncToolEnabled: true, // e2e에서는 sync_now까지 시나리오에 포함해야 하므로 켠다.
+      exploreSqlEnabled: false,
     },
     loyverseClient,
     runExclusively: async (fn) => fn(),

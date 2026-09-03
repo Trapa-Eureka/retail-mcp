@@ -300,3 +300,36 @@ T25가 "실 Google Sheets 연동이 없어 의미 없다"며 미룬 재고 정�
 - `agent/folderScan.ts`: `findLatestScmFile`(CSV만 지원), `resolveScmStoreId`, `ingestScmReceipts`(실패 격리), `aggregatePurchases`(DB 재조회 없이 이번 스캔 파일 합산), `salesAggFromCsv`(T17 내부 매핑과 동일 패턴) 추가. `FolderScanOptions.scmReceiptsDir`/`scmReceiptsStoreId`, `FolderScanResult.reconciliation` 추가. `renderAlertText`가 재고 정합성 섹션을 함께 렌더링.
 - `.env.example`: `SCM_RECEIPTS_DIR`/`SCM_RECEIPTS_STORE_ID` 추가.
 - 테스트: `tests/folderScan.test.ts`(새 describe — 미설정 시 기존 동작 동일, 불일치 검출 골든 케이스, 매장 다중일 때 명시 요구, SCM 파싱 실패 격리, 파일 없음 시 조용히 스킵).
+
+## 17. explore_sql — 임의 SELECT 조회 (2026-09-03, v0.2 대기열 마지막 항목)
+
+`docs/TASKS.md` "v0.2 대기열"의 마지막 항목. `docs/DESIGN.md` §6이 "자유 SQL은 v0.2(`explore_sql`, 읽기 전용 롤 전제)"로 이름까지 미리 예고해둔 도구다 — CLAUDE.md 가드레일 4("MCP 질의 도구는 읽기 전용")를 어기는 게 아니라, 그 가드레일이 사전 승인해둔 유일한 예외다. SCM/팩단위와 달리 데이터·시트와 무관한 순수 보안/인프라 설계 항목이라 별도 트리거 없이 착수했다(사용자 확인).
+
+### 설계 — 심층 방어(defense in depth)
+
+이 도구가 실행하는 SQL은 고정 쿼리가 아니라 **사용자가 준 임의 텍스트**라, 파라미터라이즈드 쿼리 원칙이 애초에 적용되지 않는다(파라미터화할 고정된 쿼리 형태 자체가 없다 — 그게 이 기능의 정의다). 그래서 안전장치를 "입력 검증" 한 겹이 아니라 **두 겹**으로 설계했다:
+
+1. **`core/sqlValidator.ts`(1차, UX 계층)** — `select`/`with`로 시작하는 단일 문장만 허용, `insert/update/delete/drop/...` 등 블록리스트를 단어 경계로 검사(주석은 검증 전 제거해 오탐 방지). **완벽하지 않다는 걸 안다** — 블록리스트 우회가 이론상 가능하다. 목적은 "명백히 잘못된 요청"을 실행 전에 빠르고 명확한 에러로 걸러 UX를 개선하는 것뿐이다.
+2. **`adapters/exploreSqlExecutor.ts`의 `BEGIN READ ONLY`(2차, 진짜 방어선)** — 검증을 통과한 SQL도 반드시 이 트랜잭션 모드 안에서만 실행한다. Postgres 엔진 자체가 이 모드의 모든 쓰기 시도(시퀀스 `nextval()` 진행까지 포함)를 거부한다 — 1차 검증기를 우회하는 SQL이 있어도 여기서 최종적으로 막힌다. 테스트로 직접 재현해 증명했다(`nextval()`은 SELECT 구문이라 블록리스트를 통과하지만 READ ONLY 트랜잭션이 거부함, `tests/exploreSqlExecutor.test.ts`). 이 안전성은 **실행하는 DB 롤이 쓰기 권한을 갖고 있어도** 성립한다 — 운영 읽기 전용 롤 분리(README "권한 분리")는 여전히 권장하지만, 이 도구의 안전성 자체가 거기 의존하지는 않는다.
+
+결과 행수 제한은 사용자 SQL을 파싱·재작성하지 않고 바깥에서 서브쿼리로 감싼다(`select * from (<검증된 SQL>) as t limit $1`) — LIMIT은 파라미터 바인딩, `statement_timeout`은 `set_config()`로 파라미터 바인딩해 어느 쪽도 SQL 텍스트에 값을 직접 보간하지 않는다.
+
+### 알려진 한계 — PGlite는 statement_timeout을 집행하지 않는다
+
+스파이크로 직접 확인했다: 임베디드 PGlite(단일 프로세스 WASM Postgres)는 `set_config('statement_timeout', ...)` 호출 자체는 성공하지만, 실제로 오래 걸리는 쿼리를 취소하지 **않는다**(백그라운드 인터럽트 처리가 없는 구조적 한계로 추정) — 실 Postgres/Neon과 다른 동작이다. **영향받는 건 "느린 쿼리를 자동으로 끊는" 기능뿐**이고, 이 도구의 진짜 안전장치인 `BEGIN READ ONLY`(쓰기 차단)는 PGlite에서도 정상 동작을 직접 확인했다 — 안전성에는 영향이 없다. `tests/exploreSqlExecutor.test.ts`에 이 한계를 문서화하고, PGlite에서 실제로 검증 불가능한 "취소 동작"만 테스트에서 뺐다(나머지 timeoutMs 검증·상한 로직은 그대로 테스트).
+
+### 운영 기본값과 노출 범위
+
+- **기본 비활성** — `EXPLORE_SQL_ENABLED=true`일 때만 MCP 도구로 등록된다(`sync_now`의 `SYNC_TOOL_ENABLED`와 같은 패턴, DESIGN §11.4). `sync_now`와 달리 `DATABASE_URL`을 강제하지 않는다 — advisory lock 같은 pg 전용 기능에 의존하지 않아 임베디드 PGlite 경로에서도 그대로 쓸 수 있다.
+- 도구 설명에 사용 가능한 주요 테이블 목록을 명시해 클라이언트가 스키마를 추측하지 않게 한다.
+
+### 구현
+
+- `core/types.ts` — `ExploreSqlOptions`/`ExploreSqlResult`/`ExploreSqlExecutor`. 나머지 `Warehouse` 메서드와 의도적으로 분리된 인터페이스다(고정 쿼리 계약을 이 하나로 흐리지 않기 위해).
+- `core/sqlValidator.ts`(신규, 순수 함수) — `validateReadOnlySql(sql)`.
+- `adapters/exploreSqlExecutor.ts`(신규) — `createExploreSqlExecutor(provider)`. `adapters/pgWarehouse.ts`의 `withSession`을 export해 재사용(같은 acquire/release 패턴).
+- `adapters/warehouseFactory.ts` — `WarehouseHandle`에 `connectionProvider`(pg/pglite 공통, 항상 존재) 추가 — `pgPool`(pg 전용, `sync_now`용)과 같은 위치의 새 필드. explore_sql처럼 Warehouse 계약 밖에서 세션이 필요한 극소수 예외 용도.
+- `mcp/tools.ts` — `exploreSqlTool(deps, input)`(다른 5개 도구와 같은 얇은 조립 계층, 로직은 실행기에 있다).
+- `server.ts` — `ServerConfig.exploreSqlEnabled`, `RegisterToolsDeps.exploreSqlExecutor`, `EXPLORE_SQL_ENABLED=true`일 때만 등록(조립 누락 시 명확한 에러, `sync_now`와 같은 패턴).
+- `.env.example` — `EXPLORE_SQL_ENABLED=false`.
+- 테스트: `tests/sqlValidator.test.ts`(1차 방어선 단위 테스트 — 정상 케이스, 블록리스트, 세미콜론 다중문장, CTE 위장, 주석 오탐 방지, 식별자 부분일치 오탐 방지), `tests/exploreSqlExecutor.test.ts`(2차 방어선 — READ ONLY 실증, LIMIT/캡, 롤백, 존재하지 않는 테이블 에러), `tests/mcpTools.test.ts`(얇은 조립 계층), `tests/server.test.ts`(EXPLORE_SQL_ENABLED 게이팅, `SYNC_TOOL_ENABLED` 테스트와 대칭), `tests/pgWarehouse.test.ts`(T9의 "읽기 전용 role" 테스트에 explore_sql 케이스 추가).
