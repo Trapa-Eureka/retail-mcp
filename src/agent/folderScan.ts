@@ -18,8 +18,8 @@
  *
  * cron 1회 실행 진입점 — README의 cron/launchd 등록 예시(agent:reorder)와 같은 패턴으로 등록한다.
  */
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseCsvText } from "csv-parse/sync";
@@ -45,7 +45,12 @@ import type {
   StoreRow,
   Warehouse,
 } from "../core/types.js";
-import { decodeFileBytes, parseInventoryFile } from "../adapters/csvExcelParser.js";
+import { writeFileAtomic } from "../adapters/atomicFile.js";
+import {
+  decodeFileBytes,
+  parseInventoryFile,
+  type ParsedCsvExcelFile,
+} from "../adapters/csvExcelParser.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { createSystemClock } from "../adapters/systemClock.js";
 import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
@@ -369,6 +374,100 @@ export interface FolderScanResult {
   reconciliation: StockReconciliationRow[];
 }
 
+// ── 일일 다이제스트 watermark (TASKS T31, DATA-003) ─────────────────────────
+//
+// "파일이 안 바뀌었으면 cron이 몇 번을 돌아도 재발송하지 않되, 하루(24시간)가 지나면
+// 같은 내용이라도 다이제스트 1회는 보장한다"(SPEC §18, DESIGN §12.3) — 완전 무음이 아니라
+// "일 1회 상한"이다. `sync_state`(기존 테이블, `resource` 자유 문자열)에
+// `csv_branch_digest:<watchDir 절대경로>` 키로 `{contentHash, lastSentAt}`를 JSON으로 저장한다
+// — 새 스키마를 추가하지 않는다.
+
+const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+interface DigestWatermark {
+  contentHash: string;
+  /** ISO — "마지막으로 이 채널을 실제로 끝까지 처리한 시각"(발송 여부와 무관, 아래 참고). */
+  lastSentAt: string;
+}
+
+function digestResourceKey(watchDir: string): string {
+  return `csv_branch_digest:${path.resolve(watchDir)}`;
+}
+
+/** 손상되거나 형식이 안 맞는 값은 "저장된 게 없다"로 취급한다 — 다음 처리가 새로 덮어쓴다. */
+function parseDigestWatermark(raw: string | null): DigestWatermark | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { contentHash?: unknown }).contentHash === "string" &&
+      typeof (parsed as { lastSentAt?: unknown }).lastSentAt === "string"
+    ) {
+      return parsed as DigestWatermark;
+    }
+  } catch {
+    // 아래에서 null 반환.
+  }
+  return null;
+}
+
+/**
+ * 순수 판정 함수 — 저장된 워터마크가 없거나 내용이 다르면(=이번 스캔이 진짜 새 정보다)
+ * 항상 처리한다. 내용이 같으면 마지막 처리로부터 하루가 지났는지만 본다.
+ */
+function shouldSkipAsUnchanged(
+  stored: DigestWatermark | null,
+  currentHash: string,
+  now: Date,
+): boolean {
+  if (stored === null || stored.contentHash !== currentHash) return false;
+  return now.getTime() - new Date(stored.lastSentAt).getTime() < DIGEST_WINDOW_MS;
+}
+
+async function computeFileContentHash(filePath: string): Promise<string> {
+  const bytes = await readFile(filePath);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * 실제로 이메일을 성공적으로 보낸 시점(`sent`)에만 워터마크를 갱신한다 — `no_suggestions`/
+ * `dry_run`은 애초에 이메일을 안 보내니 다이제스트 판정과 무관하고(호출하지 않는다),
+ * `failed`(발송 실패)에서도 **의도적으로 호출하지 않는다** — 다음 cron 실행이 같은 내용이라도
+ * "아직 성공적으로 보내지 못했다"고 보고 즉시 재시도하게 하기 위해서다(하루 상한은 실패까지
+ * 억제하지 않는다).
+ */
+async function persistDigestWatermark(
+  warehouse: Warehouse,
+  digestResource: string,
+  contentHash: string,
+  now: Date,
+): Promise<void> {
+  const watermark: DigestWatermark = { contentHash, lastSentAt: now.toISOString() };
+  await warehouse.setCursor(digestResource, JSON.stringify(watermark), now);
+}
+
+/**
+ * `parsed`(T16이 검증·변환한 파일 전체)로부터 `Warehouse.deactivateMissingCsvRows()`의
+ * 인자를 만든다(TASKS T31, DATA-002) — `storeIds`는 이 파일이 authoritative하다고 주장하는
+ * 매장 범위, `presentInventory`/`presentSales`는 실제로 이번 스캔에 있었던 (매장,SKU) 키다.
+ */
+function deactivateParamsFrom(parsed: ParsedCsvExcelFile): {
+  storeIds: string[];
+  presentInventory: { storeId: string; variantId: string }[];
+  presentSales: { storeId: string; variantId: string }[];
+} {
+  return {
+    storeIds: parsed.stores.map((s) => s.id),
+    presentInventory: parsed.inventory.map((r) => ({ storeId: r.storeId, variantId: r.variantId })),
+    presentSales: parsed.salesPeriodAgg.map((r) => ({
+      storeId: r.storeId,
+      variantId: r.variantId,
+    })),
+  };
+}
+
 /**
  * 폴더 스캔 1회를 전부 실행한다 — 파싱 → 적재(원자적) → 알림 판정 → (필요시) 발송 → 스냅샷 갱신
  * → 실행 로그. `provider.send()` 호출 전에 반드시 status='sending' 예약 행을 먼저 커밋해
@@ -393,6 +492,15 @@ export async function runFolderScan(
   const now = deps.clock.now();
 
   const sourceFile = await findLatestInventoryFile(opts.watchDir);
+
+  // 일일 다이제스트 판정(TASKS T31, DATA-003)에 쓸 재료만 여기서 준비한다 — 실제 억제
+  // 판단은 "정말 발송을 시도하려는 시점"에서만 한다(아래 willSend 분기). dry_run·
+  // no_suggestions는 애초에 이메일을 보내지 않으니 이 판정과 무관하다 — 반복 실행(수동
+  // 테스트 등)에서 매번 같은 리포트를 다시 보여주는 게 여기서는 오히려 자연스럽다.
+  const contentHash = await computeFileContentHash(sourceFile);
+  const digestResource = digestResourceKey(opts.watchDir);
+  const storedWatermark = parseDigestWatermark(await deps.warehouse.getCursor(digestResource));
+
   const parsed = await parseInventoryFile(sourceFile, now);
 
   // 파싱이 이미 끝나 성공한 데이터만 여기 온다 — 실패했으면 위 줄에서 던져서 아무것도
@@ -403,6 +511,10 @@ export async function runFolderScan(
     await tx.upsertProducts(parsed.products);
     await tx.upsertInventory(parsed.inventory);
     await tx.upsertSalesPeriodAgg(parsed.salesPeriodAgg);
+    // tombstone(TASKS T31, DATA-002) — 이 파일이 parsed.stores 범위의 authoritative 스캔이다.
+    // 같은 트랜잭션 안에서 upsert와 함께 커밋/롤백돼야 "적재는 됐는데 tombstone은 반영 안
+    // 됨" 같은 부분 상태가 안 나온다.
+    await tx.deactivateMissingCsvRows(deactivateParamsFrom(parsed));
   });
 
   const metricsOpts: CsvMetricsOptions = {
@@ -435,7 +547,10 @@ export async function runFolderScan(
   const snapshotFileName = opts.snapshotFileName ?? DEFAULT_SNAPSHOT_FILE_NAME;
   const snapshotPath = path.join(opts.snapshotDir, snapshotFileName);
   await mkdir(opts.snapshotDir, { recursive: true });
-  await writeFile(snapshotPath, exportSnapshotCsv(parsed), "utf8");
+  // atomic write(TASKS T31, DATA-004) — snapshotDir가 본사의 CSV_COLLECT_DIR과 같은 공유
+  // 폴더일 수 있어(SPEC §12 "다지점 헤드오피스 통합 조회"), 쓰는 도중 본사 스캔이 동시에
+  // 읽거나 이 프로세스가 죽어도 잘린 CSV를 보지 않는다.
+  await writeFileAtomic(snapshotPath, exportSnapshotCsv(parsed));
 
   const itemCount = parsed.inventory.length;
   const issueCount = alerts.length + reconciliation.length;
@@ -502,6 +617,37 @@ export async function runFolderScan(
     };
   }
 
+  // 일일 다이제스트 상한(TASKS T31, DATA-003) — 여기부터는 실제로 발송을 시도하는
+  // 경로다(willSend=true, 이슈도 있음). 파일 내용이 마지막 실제 발송 시점과 같고 하루가
+  // 안 지났으면 같은 이메일을 또 보내지 않는다 — 그래도 이번 스캔이 실제로 계산한 alerts/
+  // reconciliation은 결과에 그대로 담아 돌려준다(무슨 내용이 억제됐는지 호출자가 알 수 있게).
+  if (shouldSkipAsUnchanged(storedWatermark, contentHash, now)) {
+    await deps.warehouse.logAgentSend({
+      runId,
+      sentAt: now,
+      status: "unchanged",
+      recipient: opts.recipient ?? null,
+      subject,
+      suggestionCount: issueCount,
+      messageId: null,
+      dryRun: false,
+      errorCode: null,
+    });
+    return {
+      runId,
+      status: "unchanged",
+      sourceFile,
+      scannedAt: now,
+      itemCount,
+      alertCount: alerts.length,
+      alerts,
+      snapshotPath,
+      sent: false,
+      messageId: null,
+      reconciliation,
+    };
+  }
+
   if (!opts.recipient) {
     throw new Error(
       "REPORT_RECIPIENT이 없습니다. 발송받을 이메일 주소를 .env의 REPORT_RECIPIENT에 추가하세요.",
@@ -538,6 +684,7 @@ export async function runFolderScan(
       dryRun: false,
       errorCode: null,
     });
+    await persistDigestWatermark(deps.warehouse, digestResource, contentHash, now);
     return {
       runId,
       status: "sent",
@@ -632,6 +779,10 @@ export async function runConsolidatedScan(
         await tx.upsertProducts(parsed.products);
         await tx.upsertInventory(parsed.inventory);
         await tx.upsertSalesPeriodAgg(parsed.salesPeriodAgg);
+        // tombstone(TASKS T31, DATA-002) — 이 지점 스냅샷 파일 하나가 그 지점의 authoritative
+        // 경계다(DESIGN §12.2). 다른 지점 파일의 storeIds와 겹치지 않는 한(정상적으로는 겹칠
+        // 이유가 없다 — 지점마다 자기 매장만 내보낸다) 서로 영향을 주지 않는다.
+        await tx.deactivateMissingCsvRows(deactivateParamsFrom(parsed));
         // 적재와 watermark를 같은 트랜잭션에 묶는다 — 이 콜백이 끝까지 성공했을 때만 둘 다
         // 커밋되고, 실패하면 둘 다 롤백된다.
         await tx.setCursor(resource, now.toISOString(), now);

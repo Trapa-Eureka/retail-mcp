@@ -799,6 +799,120 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
+  describe("deactivateMissingCsvRows — tombstone (TASKS T31, DATA-002)", () => {
+    beforeEach(async () => {
+      await warehouse.upsertInventory([
+        { storeId: "store_main", variantId: "var_cola", inStock: "40", updatedAt: new Date() },
+        { storeId: "store_main", variantId: "var_chips", inStock: "2", updatedAt: new Date() },
+        { storeId: "store_makati", variantId: "var_cola", inStock: "8", updatedAt: new Date() },
+      ]);
+      await warehouse.upsertSalesPeriodAgg([
+        {
+          storeId: "store_main",
+          variantId: "var_cola",
+          periodStart: new Date("2026-08-01T00:00:00Z"),
+          periodEnd: new Date("2026-08-29T00:00:00Z"),
+          soldQty: "56",
+        },
+        {
+          storeId: "store_main",
+          variantId: "var_chips",
+          periodStart: new Date("2026-08-01T00:00:00Z"),
+          periodEnd: new Date("2026-08-29T00:00:00Z"),
+          soldQty: "5",
+        },
+      ]);
+    });
+
+    it("이번 스캔에 없는 (매장,SKU)는 비활성화되고 queryStock/querySalesPeriodAgg 기본 결과에서 빠진다", async () => {
+      // store_main 스캔인데 var_chips가 이번 파일에 더 이상 없다고 가정.
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: ["store_main"],
+        presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
+        presentSales: [{ storeId: "store_main", variantId: "var_cola" }],
+      });
+
+      const stock = await warehouse.queryStock({ storeId: "store_main" });
+      expect(stock.map((s) => s.variantId).sort()).toEqual(["var_cola"]);
+
+      const sales = await warehouse.querySalesPeriodAgg({
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+      });
+      expect(sales.map((s) => s.variantId)).toEqual(["var_cola"]);
+    });
+
+    it("물리 삭제가 아니다 — 비활성화된 행도 DB에는 그대로 남아 있다", async () => {
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: ["store_main"],
+        presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
+        presentSales: [],
+      });
+
+      const { rows } = await db.query<{ count: string }>(
+        "select count(*)::text as count from inventory_levels where store_id = 'store_main' and variant_id = 'var_chips'",
+      );
+      expect(rows[0]?.count).toBe("1");
+    });
+
+    it("다시 파일에 나타나면 일반 upsert 경로가 자동으로 재활성화한다", async () => {
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: ["store_main"],
+        presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
+        presentSales: [],
+      });
+      expect(await warehouse.queryStock({ storeId: "store_main" })).toHaveLength(1);
+
+      await warehouse.upsertInventory([
+        { storeId: "store_main", variantId: "var_chips", inStock: "3", updatedAt: new Date() },
+      ]);
+
+      const stock = await warehouse.queryStock({ storeId: "store_main" });
+      expect(stock.map((s) => s.variantId).sort()).toEqual(["var_chips", "var_cola"]);
+    });
+
+    it("storeIds 범위 밖의 다른 매장 데이터는 건드리지 않는다(본사 통합 모드의 지점별 독립)", async () => {
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: ["store_main"],
+        presentInventory: [], // store_main엔 아무것도 없다고 극단적으로 가정
+        presentSales: [],
+      });
+
+      // store_makati의 var_cola는 storeIds 범위 밖이라 그대로 active여야 한다.
+      const makatiStock = await warehouse.queryStock({ storeId: "store_makati" });
+      expect(makatiStock.map((s) => s.variantId)).toEqual(["var_cola"]);
+    });
+
+    it("presentSales가 비어 있으면 그 매장의 기존 sales_period_agg 전부가 비활성화된다(이 스캔이 판매이력 없음을 authoritative하게 보고)", async () => {
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: ["store_main"],
+        presentInventory: [
+          { storeId: "store_main", variantId: "var_cola" },
+          { storeId: "store_main", variantId: "var_chips" },
+        ],
+        presentSales: [],
+      });
+
+      const sales = await warehouse.querySalesPeriodAgg({
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+      });
+      expect(sales).toEqual([]);
+      // inventory는 여전히 active(재고는 이번 스캔에 있었다) — 판매만 없어진 것과 구분된다.
+      expect(await warehouse.queryStock({ storeId: "store_main" })).toHaveLength(2);
+    });
+
+    it("storeIds가 빈 배열이면 아무것도 건드리지 않는다", async () => {
+      await warehouse.deactivateMissingCsvRows({
+        storeIds: [],
+        presentInventory: [],
+        presentSales: [],
+      });
+      const stock = await warehouse.queryStock({ storeId: "store_main" });
+      expect(stock.map((s) => s.variantId).sort()).toEqual(["var_chips", "var_cola"]);
+    });
+  });
+
   describe("읽기 전용 역할 분리", () => {
     beforeEach(async () => {
       await db.exec("create role app_readonly");

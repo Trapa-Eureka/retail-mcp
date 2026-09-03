@@ -22,7 +22,10 @@ export interface SnapshotSource {
   salesPeriodAgg: SalesPeriodAggRow[];
 }
 
-/** SPEC §12 고정 템플릿의 열 순서 그대로 — T15 `csvRowSchema`가 검증할 헤더와 정확히 일치해야 한다. */
+/** SPEC §12 고정 템플릿의 열 순서 그대로 — T15 `csvRowSchema`가 검증할 헤더와 정확히 일치해야 한다.
+ * `포장수량`은 T24가 §14용으로 추가한 선택 컬럼 — 착수 중 발견(006 DATA-001, TASKS T31):
+ * 여기 export에서 빠져 있어 지점 snapshot → 본사 통합 왕복에서 packSize가 조용히 null로
+ * 바뀌었다. 지점 알림은 팩 단위로 올림하는데 본사 통합 조회는 그 정보를 잃는 결함이었다. */
 const COLUMNS = [
   "매장명",
   "상품명",
@@ -32,6 +35,7 @@ const COLUMNS = [
   "판매기간시작일",
   "판매기간종료일",
   "저재고임계치",
+  "포장수량",
 ] as const;
 
 function csvKey(storeId: string, variantId: string): string {
@@ -69,6 +73,8 @@ export function exportSnapshotCsv(source: SnapshotSource): string {
         product?.lowStockThreshold !== undefined && product.lowStockThreshold !== null
           ? product.lowStockThreshold
           : "",
+      포장수량:
+        product?.packSize !== undefined && product.packSize !== null ? product.packSize : "",
     };
   });
 

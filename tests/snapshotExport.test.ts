@@ -20,6 +20,7 @@ describe("exportSnapshotCsv", () => {
         sku: "SKU-COLA",
         category: null,
         lowStockThreshold: "10",
+        packSize: "24",
       },
     ];
     const salesPeriodAgg: SalesPeriodAggRow[] = [
@@ -35,9 +36,9 @@ describe("exportSnapshotCsv", () => {
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg });
     const [header, dataLine] = csv.trim().split("\n");
     expect(header).toBe(
-      "매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일,저재고임계치",
+      "매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일,저재고임계치,포장수량",
     );
-    expect(dataLine).toBe("본점,코카콜라 500ml,SKU-COLA,40,56,2026-08-01,2026-08-29,10");
+    expect(dataLine).toBe("본점,코카콜라 500ml,SKU-COLA,40,56,2026-08-01,2026-08-29,10,24");
   });
 
   it("판매이력 없는 품목은 판매 관련 컬럼이 빈칸이다(조용히 0을 쓰지 않는다)", () => {
@@ -56,7 +57,25 @@ describe("exportSnapshotCsv", () => {
 
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
     const [, dataLine] = csv.trim().split("\n");
-    expect(dataLine).toBe("본점,Piattos,SKU-CHIPS,2,,,,");
+    expect(dataLine).toBe("본점,Piattos,SKU-CHIPS,2,,,,,");
+  });
+
+  it("포장수량(팩사이즈)이 exported CSV에 포함된다(006 DATA-001 대응, TASKS T31)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
+    ];
+    const products: ProductRow[] = [
+      {
+        variantId: "SKU-COLA",
+        itemId: "SKU-COLA",
+        name: "코카콜라 500ml",
+        sku: "SKU-COLA",
+        category: null,
+        packSize: "24",
+      },
+    ];
+    const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
+    expect(csv).toContain("24");
   });
 
   it("매장명이 exported CSV에 포함된다", () => {
@@ -89,6 +108,7 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
         판매기간시작일: "2026-08-01",
         판매기간종료일: "2026-08-29",
         저재고임계치: "10",
+        포장수량: "24",
       },
       {
         매장명: "본점",
@@ -102,6 +122,7 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
         SKU: "SKU-COLA",
         재고수량: "8",
         저재고임계치: "10", // 같은 SKU-COLA는 같은 임계치여야 한다(T16 일관성 검증).
+        포장수량: "24", // 같은 이유로 포장수량도 SKU-COLA는 모든 행에서 동일해야 한다.
       },
     ];
 

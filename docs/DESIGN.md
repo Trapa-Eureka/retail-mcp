@@ -258,6 +258,8 @@ SPEC §18이 확정한 정책의 구현 계약이다.
 - **소비 측 계약**: 재주문 계산(`computeReorderMetrics`/`computeCsvReorderMetrics`), 저재고 알림, 기본 MCP 조회는 `active=true` 행만 본다. `inventory_status` 등 진단 목적 조회에는 비활성 포함 옵션을 열어둘 수 있다(구현 시 결정).
 - **본사 통합 모드 격리**: tombstone 판정은 지점별 독립 트랜잭션 안에서만 그 지점의 이전 상태와 비교한다 — 다른 지점의 (매장,SKU)를 이번 지점 스캔의 누락으로 오판하지 않는다.
 
+**구현 완료(T31)**: `migrations/006_tombstone_active_flag.sql`(`inventory_levels`/`sales_period_agg`에 `active boolean not null default true` + `(store_id, active)` 인덱스). `Warehouse.deactivateMissingCsvRows({storeIds, presentInventory, presentSales})`(신규) — `unnest($2::text[], $3::text[])`로 "이번 스캔에 있는 (매장,SKU) 키 집합"을 만들어 그 밖의 기존 active 행만 `active=false`로 갱신한다(물리 삭제 없음). `upsertInventoryOn`/`upsertSalesPeriodAggOn`은 항상 `active=true`로 upsert해 재등장 시 자동 재활성화를 보장하고, `queryStockOn`/`querySalesPeriodAggOn`은 `active=true`만 반환한다 — Loyverse 경로(`sales_lines`/`etl/sync.ts`)는 tombstone을 호출하지 않으므로 기존 동작과 완전히 동일하다. `agent/folderScan.ts`가 `runFolderScan`/`runConsolidatedScan` 양쪽의 authoritative 트랜잭션 안에서(업서트와 같은 트랜잭션) `deactivateMissingCsvRows`를 호출한다 — `presentInventory`는 이번 파일의 모든 재고 행, `presentSales`는 판매이력 있는 행만(둘이 다를 수 있다).
+
 ### 12.3 파일 idempotency + 일일 다이제스트 (DATA-003/004, TASKS T31)
 
 SPEC §18이 확정한 정책의 구현 계약이다.
@@ -267,6 +269,15 @@ SPEC §18이 확정한 정책의 구현 계약이다.
 - **판정 로직**: (1) content hash가 이전과 다르면 무조건 처리하고 발송 여부는 기존 이슈 유무로 판단, 발송 시 `lastSentAt` 갱신. (2) content hash가 같으면, 사업장 타임존 기준 `lastSentAt`으로부터 24시간(또는 로컬 자정 경계 — 구현 시 확정)이 지났는지 확인 — 안 지났으면 `unchanged`로 조용히 종료(발송 없음, 로그만), 지났으면 같은 내용이라도 다이제스트 1회 발송 후 `lastSentAt` 갱신.
 - **SCM 대사 결과와의 관계**: DATA-007(SCM 실패 상태 노출)과 연동 — SCM 처리 실패도 "이슈"로 취급해 하루 다이제스트에 포함될 수 있게 한다(완전 무음 방지).
 - **atomic snapshot write**: `folderScan.ts`의 snapshot export는 고정 파일명(`snapshot.csv`)에 직접 `writeFile`하지 않고, 같은 디렉터리의 임시 파일(`snapshot.csv.tmp-<runId>`)에 쓴 뒤 `fsync` 후 `rename`으로 교체한다(POSIX rename은 원자적). 본사 수집 프로세스는 확장자가 `.tmp-*`인 파일을 무시한다(ready marker 대신 임시 파일명 자체를 신호로 쓴다 — 새 파일 형식을 추가하지 않는다).
+
+**구현 완료(T31)**:
+
+- `src/adapters/atomicFile.ts`(신규) — `writeFileAtomic(targetPath, content, {mode?})`. 임시 파일명은 `<targetPath>.tmp-<pid>-<타임스탬프>-<난수>`(접미사 방식) — `folderScan.ts`의 `listInventoryFiles()`가 이미 `/\.(csv|xlsx)$/i`로 파일명이 그 확장자로 "끝나는" 파일만 골라내므로, 이 이름은 별도 필터 없이 자연히 제외된다. `folderScan.ts`의 snapshot 쓰기가 이 유틸리티를 쓴다 — `.env` 쓰기(SEC-005)는 T32에서 같은 유틸리티를 재사용할 예정이다.
+- `migrations/007_agent_send_log_unchanged_status.sql` — `agent_send_log.status`에 `unchanged`를 추가(기존 check 제약 재생성). `AgentSendStatus`에 `"unchanged"` 추가.
+- **판정 로직 확정(위 설계안에서 정제)**: content hash + `sync_state` 워터마크(`csv_branch_digest:<watchDir 절대경로>`)는 설계 그대로다. 다만 **적용 범위를 실제 발송 시도 경로로 좁혔다** — `no_suggestions`/`dry_run`은 이메일을 애초에 안 보내므로 억제 판정과 무관하게 항상 그대로 처리한다(워터마크도 갱신하지 않는다). `willSend=true`이고 `issueCount>0`인, "정말 이메일을 보내려는" 경로에서만 `shouldSkipAsUnchanged()`를 확인한다. 이렇게 좁힌 이유: 착수 중 기존 가드레일 1 회귀 테스트("SEND_MODE=live && confirm 둘 다일 때만 실제 발송한다")가 같은 파일·같은 시각으로 두 번 연속 `runFolderScan`을 호출하는데, 초기 구현(파싱 이전에 전부 건너뛰는 방식)은 dry-run 성격의 첫 호출까지 워터마크에 반영해버려 사람이 dry-run으로 반복 확인하는 정상적 사용까지 억제해버렸다 — DATA-003이 실제로 막으려는 건 "cron이 반복 실행하며 하는 실제 이메일 스팸"이지 사람의 반복 수동 확인이 아니다.
+- 워터마크는 **성공적으로 이메일을 보낸(`sent`) 시점에만** 갱신한다 — `failed`(실제 발송 실패)에서는 갱신하지 않아, 다음 실행이 같은 날·같은 내용이어도 즉시 재시도할 수 있다(하루 상한이 실패까지 억제하면 안 된다).
+- 억제된 실행도 `status="unchanged"`로 이번 스캔이 실제로 계산한 `alerts`/`reconciliation`을 결과에 그대로 담아 반환한다 — 무엇이 억제됐는지 호출자가 알 수 있다.
+- 테스트: `tests/atomicFile.test.ts`(신규), `tests/folderScan.test.ts`(다이제스트 억제/24시간 경과 후 재발송/내용 변경 시 미억제/발송 실패 시 미억제/dry_run 무관 — 5 tests, tombstone 3 tests).
 
 ### 12.4 explore_sql 격리 확정 — role 강제 + PGlite 재검토 (SEC-001/002, TASKS T30)
 

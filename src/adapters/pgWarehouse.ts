@@ -100,13 +100,18 @@ export async function withSession<T>(
 // ── SQL 헬퍼 ────────────────────────────────────────────────────────────
 
 /** rowCount개 행 × colCount개 컬럼의 `($1,$2), ($3,$4), ...` VALUES 절을 만든다. */
-function buildValuesPlaceholders(rowCount: number, colCount: number): string {
+/**
+ * `literalSuffix`(선택)는 매 행에 그대로 덧붙는 SQL 리터럴이다 — 사용자 입력이 아니라
+ * 호출자가 코드에 고정으로 박아 넣는 상수(예: `, true`)에만 쓴다. 파라미터 바인딩 원칙을
+ * 깨는 게 아니라, 매 행마다 파라미터를 하나씩 더 만들 필요가 없는 상수를 위한 지름길이다.
+ */
+function buildValuesPlaceholders(rowCount: number, colCount: number, literalSuffix = ""): string {
   const rows: string[] = [];
   let idx = 1;
   for (let r = 0; r < rowCount; r++) {
     const cols: string[] = [];
     for (let c = 0; c < colCount; c++) cols.push(`$${idx++}`);
-    rows.push(`(${cols.join(", ")})`);
+    rows.push(`(${cols.join(", ")}${literalSuffix})`);
   }
   return rows.join(", ");
 }
@@ -184,11 +189,14 @@ async function upsertInventoryOn(session: DbSession, rows: InventoryRow[]): Prom
   if (rows.length === 0) return;
   const params: unknown[] = [];
   for (const r of rows) params.push(r.storeId, r.variantId, r.inStock, r.updatedAt.toISOString());
+  // active(TASKS T31, DATA-002 tombstone) — upsert되는 행은 항상 active=true다. 이 upsert
+  // 경로 자체가 "지금 이 소스가 이 행을 현재 상태로 보고한다"는 뜻이라, 이전에 tombstone(비활성)
+  // 처리됐던 행이 다시 나타나면 여기서 자동 재활성화된다(별도 reactivate 메서드 불필요).
   await session.query(
-    `insert into inventory_levels (store_id, variant_id, in_stock, updated_at)
-     values ${buildValuesPlaceholders(rows.length, 4)}
+    `insert into inventory_levels (store_id, variant_id, in_stock, updated_at, active)
+     values ${buildValuesPlaceholders(rows.length, 4, ", true")}
      on conflict (store_id, variant_id) do update set
-       in_stock = excluded.in_stock, updated_at = excluded.updated_at`,
+       in_stock = excluded.in_stock, updated_at = excluded.updated_at, active = true`,
     params,
   );
 }
@@ -225,14 +233,69 @@ async function upsertSalesPeriodAggOn(
       r.soldQty,
     );
   }
+  // active(TASKS T31, DATA-002 tombstone) — upsertInventoryOn과 같은 이유로 항상 true.
   await session.query(
-    `insert into sales_period_agg (store_id, variant_id, period_start, period_end, sold_qty)
-     values ${buildValuesPlaceholders(rows.length, 5)}
+    `insert into sales_period_agg (store_id, variant_id, period_start, period_end, sold_qty, active)
+     values ${buildValuesPlaceholders(rows.length, 5, ", true")}
      on conflict (store_id, variant_id) do update set
        period_start = excluded.period_start,
        period_end = excluded.period_end,
-       sold_qty = excluded.sold_qty`,
+       sold_qty = excluded.sold_qty,
+       active = true`,
     params,
+  );
+}
+
+/**
+ * tombstone(TASKS T31, DATA-002) — `storeIds` 범위 안에서 이번 스캔에 없는 (매장,SKU)
+ * `inventory_levels`/`sales_period_agg` 행을 `active=false`로만 표시한다(물리 삭제 없음).
+ * `unnest($2::text[], $3::text[])`로 "이번 스캔에 있는 (매장,SKU) 키 집합"을 만들어 그 안에
+ * 없는 행만 골라낸다 — present 목록이 비어 있으면(예: 판매이력 있는 행이 이번 스캔에 하나도
+ * 없음) `storeIds` 범위의 기존 active 행 전부가 대상이 된다(그 매장들에 대해 이 스캔이
+ * "판매이력 없음"을 authoritative하게 보고했다는 뜻이라 올바른 동작이다).
+ */
+async function deactivateMissingCsvRowsOn(
+  session: DbSession,
+  params: {
+    storeIds: string[];
+    presentInventory: { storeId: string; variantId: string }[];
+    presentSales: { storeId: string; variantId: string }[];
+  },
+): Promise<void> {
+  if (params.storeIds.length === 0) return;
+
+  await session.query(
+    `update inventory_levels
+     set active = false
+     where store_id = any($1::text[])
+       and active = true
+       and not exists (
+         select 1 from unnest($2::text[], $3::text[]) as present(store_id, variant_id)
+         where present.store_id = inventory_levels.store_id
+           and present.variant_id = inventory_levels.variant_id
+       )`,
+    [
+      params.storeIds,
+      params.presentInventory.map((k) => k.storeId),
+      params.presentInventory.map((k) => k.variantId),
+    ],
+  );
+
+  await session.query(
+    `update sales_period_agg
+     set active = false
+     where store_id = any($1::text[])
+       and active = true
+       and not exists (
+         select 1 from unnest($2::text[], $3::text[]) as present(store_id, variant_id)
+         where present.store_id = sales_period_agg.store_id
+           and present.variant_id = sales_period_agg.variant_id
+       )`,
+    [
+      params.storeIds,
+      params.presentSales.map((k) => k.storeId),
+      params.presentSales.map((k) => k.variantId),
+    ],
   );
 }
 
@@ -387,7 +450,8 @@ async function querySalesPeriodAggOn(session: DbSession, q: SalesAggQuery): Prom
        spa.sold_qty::text as sold_qty_raw
      from sales_period_agg spa
      join products p on p.variant_id = spa.variant_id
-     where spa.period_start < $2 and spa.period_end > $1
+     where spa.active = true
+       and spa.period_start < $2 and spa.period_end > $1
        and ($3::text is null or spa.store_id = $3)
        and ($4::text is null or p.category = $4)`,
     [q.periodStart.toISOString(), q.periodEnd.toISOString(), q.storeId ?? null, q.category ?? null],
@@ -417,7 +481,8 @@ async function queryStockOn(session: DbSession, q: StockQuery): Promise<StockRow
        il.updated_at as updated_at
      from inventory_levels il
      join products p on p.variant_id = il.variant_id
-     where ($1::text is null or il.store_id = $1)
+     where il.active = true
+       and ($1::text is null or il.store_id = $1)
        and ($2::text[] is null or il.variant_id = any($2::text[]))
        and ($3::text is null or p.category = $3)`,
     [q.storeId ?? null, q.variantIds ?? null, q.category ?? null],
@@ -557,6 +622,7 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     queryStock: (q) => queryStockOn(session, q),
     queryStores: (storeId) => queryStoresOn(session, storeId),
     queryProducts: (variantIds) => queryProductsOn(session, variantIds),
+    deactivateMissingCsvRows: (params) => deactivateMissingCsvRowsOn(session, params),
     logAgentSend: (e) => logAgentSendOn(session, e),
   };
 }
@@ -606,6 +672,8 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),
     queryProducts: (variantIds) =>
       withSession(provider, (session) => queryProductsOn(session, variantIds)),
+    deactivateMissingCsvRows: (params) =>
+      withSession(provider, (session) => deactivateMissingCsvRowsOn(session, params)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
   };
 }
