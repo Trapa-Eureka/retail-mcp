@@ -92,9 +92,10 @@ T12는 완료(DONE)됐다 — 착수 중 스코프가 "리네임"에서 "데이�
 - 완료 기준: [x] `DATABASE_URL` 미설정 시 임베디드 PGlite로 기동 + 첫 실행 자동 마이그레이션 [x] `DATABASE_URL` 설정 시 기존 pg.Pool 경로 회귀 없음 [x] 임베디드 경로가 이미 열려 있으면(T13 락 보유 중) 명확한 에러로 거부 [x] server.ts/agent/reorder.ts 중복 로직 제거 [x] check 통과
 - **완료**: 신설 `src/adapters/warehouseFactory.ts`의 `createWarehouseFromEnv()`가 공용 팩토리다. 곁들여 `scripts/migrate.ts`의 러너 핵심 로직(`loadMigrations`/`runMigrations`/executor)을 `src/adapters/migrationRunner.ts`로 옮겼다 — advisoryLock.ts와 같은 이유(src가 scripts에 의존하는 잘못된 방향 회피)로, `src/mocks/pglite.ts`도 이제 여기서 가져온다(`scripts/migrate.ts`는 CLI 껍데기로 재export). `ServerConfig`에서 쓰이지 않던 `databaseUrl` 필드는 제거— 실제로 쓰는 곳이 pg.Pool 생성 한 줄뿐이었고 그 로직이 팩토리로 옮겨가며 무의미해졌다. `SYNC_TOOL_ENABLED=true`인데 `DATABASE_URL`이 없으면 `resolveServerConfig`가 명확한 에러로 시작을 거부한다(`sync_now`의 advisory lock은 pg 전용, DESIGN §11.4) — 임베디드 PGlite 경로에서는 `sync_now`를 못 쓴다. `.env.example`에 `RETAIL_MCP_DATA_DIR`, `.gitignore`에 `.retail-mcp/` 추가.
 
-### T15 (레인 C) — CSV/Excel 컬럼 스키마 · 상태: TODO
+### T15 (레인 C) — CSV/Excel 컬럼 스키마 · 상태: DONE(2026-09-03)
 - 목표: SPEC §12 "컬럼 구성" 고정 템플릿을 `core/`에 zod 스키마로 정의(필수: 매장명/상품명/SKU/재고수량, 선택: 판매수량+기간/단가+통화/저재고임계치). 판매이력 있음/없음 모드를 판정하는 순수 함수 포함.
-- 완료 기준: [ ] 필수 컬럼 누락 시 zod 파싱 실패 + 원인 명시 [ ] 판매수량은 있는데 기간이 없는 등 불일치 케이스 거부 [ ] 판매이력 모드 판정 골든 케이스 테스트 [ ] check 통과
+- 완료 기준: [x] 필수 컬럼 누락 시 zod 파싱 실패 + 원인 명시 [x] 판매수량은 있는데 기간이 없는 등 불일치 케이스 거부 [x] 판매이력 모드 판정 골든 케이스 테스트 [x] check 통과
+- **완료**: `src/core/csvSchema.ts` — `csvRowSchema`(zod), `parseCsvRow()`(실패 시 원인을 모두 모은 에러), `salesHistoryModeOf()`. 컬럼명은 SPEC §12 표의 한글 그대로 키로 써서 어댑터(T16) 매핑 실수를 줄인다. 빈 셀("")을 `blankToUndefined`로 먼저 걸러내는 게 핵심 — 이게 없으면 `z.coerce.number()`가 빈 재고수량/판매수량 칸을 조용히 0으로 바꿔버려 "칸을 비웠다"와 "0을 채웠다"를 구분 못 하고, 판매이력 모드 판정(T17이 쓸 예정)이 깨진다. 판매수량↔기간 상호 필수, 단가↔통화 상호 필수(SPEC §9)도 `superRefine`으로 검증. (매장명, SKU) 유일성처럼 행 하나로 판단 못 하는 검증은 T16(여러 행 순회) 몫으로 남겨뒀다.
 
 ### T16 (레인 C) — CSV/Excel 파서 어댑터 · 상태: TODO · 의존: T12, T15
 - 목표: `src/adapters/csvExcelParser.ts` — CSV/XLSX 파일을 읽어 인코딩 자동감지(UTF-8/CP949/EUC-KR 등, 신뢰도 낮으면 무음 처리 대신 명시적 에러/경고 반환), T15 스키마로 검증, 도메인 행 타입(`StoreRow`/`ProductRow`/`InventoryRow`/`SalesPeriodAggRow`, T12)으로 변환하는 함수 생성. `LoyverseClient`는 구현하지 않는다(T12 결정 — CSV에는 영수증 단위 데이터가 없다). 네트워크 호출 없음.
