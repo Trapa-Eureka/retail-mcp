@@ -104,12 +104,12 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [ ] 대형/압축폭탄 XLSX·대량 CSV에 대한 파일 크기·행·셀 길이 상한 테스트(SEC-003)
 - [ ] `npm audit --omit=dev` 0건 또는 근거·만료일이 기록된 승인된 예외(SEC-006)
 
-**데이터 정확성 게이트 (TASKS T31, T33)**
+**데이터 정확성 게이트 (TASKS T31 — 완료, T33)**
 
-- [ ] snapshot export → import 왕복 시 `포장수량` 보존(DATA-001)
-- [ ] authoritative 스캔에서 사라진 SKU/매장이 tombstone 처리되고 재주문·저재고 계산에서 제외됨(DATA-002)
-- [ ] 동일 파일로 cron을 반복 실행해도 재발송이 없고, 마지막 발송으로부터 하루가 지나면 변경 없이도 다이제스트 1회가 발송됨(DATA-003)
-- [ ] snapshot 파일 쓰기 도중 프로세스가 죽어도 이전 정상 snapshot이 손상되지 않음(atomic write, DATA-004)
+- [x] snapshot export → import 왕복 시 `포장수량` 보존(DATA-001) — `tests/snapshotExport.test.ts`
+- [x] authoritative 스캔에서 사라진 SKU/매장이 tombstone 처리되고 재주문·저재고 계산에서 제외됨(DATA-002) — `tests/pgWarehouse.test.ts`(`deactivateMissingCsvRows`), `tests/folderScan.test.ts`(tombstone e2e)
+- [x] 동일 파일로 cron을 반복 실행해도 재발송이 없고, 마지막 발송으로부터 하루가 지나면 변경 없이도 다이제스트 1회가 발송됨(DATA-003) — `tests/folderScan.test.ts`(일일 다이제스트 5 tests, 적용 범위는 실제 발송 시도로 한정 — DESIGN §12.3)
+- [x] snapshot 파일 쓰기 도중 프로세스가 죽어도 이전 정상 snapshot이 손상되지 않음(atomic write, DATA-004) — `tests/atomicFile.test.ts`
 - [ ] SCM 기초재고·기간 불일치 시 `insufficient_data`로 표시되고 거짓 discrepancy가 발생하지 않음(DATA-006)
 - [ ] SCM 처리 실패가 결과/이메일에 `scm_status`로 노출됨(DATA-007)
 - [ ] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008)

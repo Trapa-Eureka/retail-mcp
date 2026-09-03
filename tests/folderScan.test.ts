@@ -418,6 +418,261 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
   });
 });
 
+describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
+  let dir: string;
+  let watchDir: string;
+  let snapshotDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-folderscan-tombstone-"));
+    watchDir = join(dir, "watch");
+    snapshotDir = join(dir, "snapshot");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(watchDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("두 번째 스캔 파일에서 사라진 SKU는 DB에서 비활성화되고 조회에서 빠진다", async () => {
+    const { warehouse } = await makeWarehouse();
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: createMockNotificationProvider(),
+    };
+
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+    expect(
+      (await warehouse.queryStock({ storeId: "본점" })).map((s) => s.variantId).sort(),
+    ).toEqual(["SKU-CHIPS", "SKU-COLA"]);
+
+    // 두 번째 스캔 — SKU-CHIPS가 파일에서 사라졌다(판매 중단/폐기 흉내).
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "utf8",
+    );
+    const second = await runFolderScan(deps, { watchDir, snapshotDir });
+
+    const stock = await warehouse.queryStock({ storeId: "본점" });
+    expect(stock.map((s) => s.variantId)).toEqual(["SKU-COLA"]);
+    // 알림 판정도 비활성화된 SKU-CHIPS를 더 이상 보지 않는다(itemCount는 이번 파일의 행
+    // 수만 센다 — DB 전체 상태가 아니라 이번 스캔이 실제로 처리한 행 수).
+    expect(second.itemCount).toBe(1);
+  });
+
+  it("사라졌던 SKU가 다시 나타나면 다음 스캔에서 자동으로 재활성화된다", async () => {
+    const { warehouse } = await makeWarehouse();
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: createMockNotificationProvider(),
+    };
+
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+    expect((await warehouse.queryStock({ storeId: "본점" })).map((s) => s.variantId)).toEqual([
+      "SKU-COLA",
+    ]);
+
+    // 세 번째 스캔 — SKU-CHIPS가 다시 나타났다(재입고 흉내).
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,7\n본점,Piattos,SKU-CHIPS,5\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+
+    const stock = await warehouse.queryStock({ storeId: "본점" });
+    expect(stock.map((s) => s.variantId).sort()).toEqual(["SKU-CHIPS", "SKU-COLA"]);
+  });
+
+  it("비활성화된 행도 물리 삭제되지 않고 DB에 남아 있다(감사 목적)", async () => {
+    const { warehouse, db } = await makeWarehouse();
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: createMockNotificationProvider(),
+    };
+
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "utf8",
+    );
+    await runFolderScan(deps, { watchDir, snapshotDir });
+
+    const { rows } = await db.query<{ count: string }>(
+      "select count(*)::text as count from inventory_levels where variant_id = 'SKU-CHIPS'",
+    );
+    expect(rows[0]?.count).toBe("1");
+  });
+});
+
+describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () => {
+  let dir: string;
+  let watchDir: string;
+  let snapshotDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-folderscan-digest-"));
+    watchDir = join(dir, "watch");
+    snapshotDir = join(dir, "snapshot");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(watchDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("파일이 안 바뀌었고 같은 날이면 두 번째 live 실행은 재발송하지 않는다(status=unchanged)", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    const notificationProvider = createMockNotificationProvider();
+    const deps = { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider };
+    const opts = {
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    };
+
+    const first = await runFolderScan(deps, { ...opts, runId: "run-1" });
+    expect(first.status).toBe("sent");
+    expect(notificationProvider.sent).toHaveLength(1);
+
+    const second = await runFolderScan(deps, { ...opts, runId: "run-2" });
+    expect(second.status).toBe("unchanged");
+    expect(second.sent).toBe(false);
+    // 이번 스캔이 실제로 계산한 alerts는 그대로 결과에 담겨 있다 — 무엇이 억제됐는지 알 수 있다.
+    expect(second.alerts.map((a) => a.variantId).sort()).toEqual(["SKU-CHIPS", "SKU-COLA"]);
+    expect(notificationProvider.sent).toHaveLength(1); // 두 번째는 실제로 안 나감
+  });
+
+  it("파일이 안 바뀌었어도 하루(24시간)가 지나면 같은 내용으로 다이제스트를 다시 보낸다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    const notificationProvider = createMockNotificationProvider();
+    const opts = {
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    };
+
+    const first = await runFolderScan(
+      { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider },
+      { ...opts, runId: "run-1" },
+    );
+    expect(first.status).toBe("sent");
+
+    const nextDayIso = new Date(
+      new Date(NOW_ISO).getTime() + 24 * 60 * 60 * 1000 + 1,
+    ).toISOString();
+    const second = await runFolderScan(
+      { warehouse, clock: createFixedClock(nextDayIso), notificationProvider },
+      { ...opts, runId: "run-2" },
+    );
+    expect(second.status).toBe("sent");
+    expect(notificationProvider.sent).toHaveLength(2);
+  });
+
+  it("파일 내용이 바뀌면 같은 날 안에도 억제하지 않고 다시 보낸다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    const notificationProvider = createMockNotificationProvider();
+    const deps = { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider };
+    const opts = {
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    };
+
+    await runFolderScan(deps, { ...opts, runId: "run-1" });
+
+    // 재고수량이 바뀐 새 내용 — content hash가 달라진다.
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      HAPPY_CSV.replace("SKU-COLA,10,560", "SKU-COLA,3,560"),
+      "utf8",
+    );
+    const second = await runFolderScan(deps, { ...opts, runId: "run-2" });
+    expect(second.status).toBe("sent");
+    expect(notificationProvider.sent).toHaveLength(2);
+  });
+
+  it("발송 실패(failed)는 워터마크를 갱신하지 않아 같은 날 바로 재시도할 수 있다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    const failingProvider = createMockNotificationProvider({ failFor: ["owner@example.com"] });
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: failingProvider,
+    };
+    const opts = {
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    };
+
+    await expect(runFolderScan(deps, { ...opts, runId: "run-1" })).rejects.toThrow();
+
+    // 같은 파일, 같은 날짜, 실패 직후 재시도 — 억제되지 않고 다시 시도해야 한다(그리고
+    // 여전히 실패한다, failFor가 유지되므로).
+    await expect(runFolderScan(deps, { ...opts, runId: "run-2" })).rejects.toThrow();
+  });
+
+  it("dry_run 반복 실행은 다이제스트 판정과 무관하다 — 매번 같은 리포트를 그대로 다시 보여준다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: createMockNotificationProvider(),
+    };
+    const opts = { watchDir, snapshotDir, sendMode: "dry_run" as const };
+
+    const first = await runFolderScan(deps, { ...opts, runId: "run-1" });
+    const second = await runFolderScan(deps, { ...opts, runId: "run-2" });
+    expect(first.status).toBe("dry_run");
+    expect(second.status).toBe("dry_run"); // "unchanged"가 아니다 — dry_run은 억제 대상이 아님.
+    expect(second.alerts).toEqual(first.alerts);
+  });
+});
+
 describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
   let dir: string;
   let collectDir: string;

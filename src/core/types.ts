@@ -232,7 +232,13 @@ export interface StockRow {
 
 // ── 에이전트 발송 로그 (DESIGN §11.5) ──────────────────────────────────────
 
-export type AgentSendStatus = "no_suggestions" | "dry_run" | "sending" | "sent" | "failed";
+/**
+ * `unchanged`(TASKS T31, DATA-003) — CSV/Excel 지점 스캔에서 파일 content hash가 마지막
+ * 발송 시점과 같고 하루 다이제스트 상한(24시간)에도 안 걸리면 이 상태로 종료한다(발송·
+ * 요약·스냅샷 재작성 없이 조용히). Loyverse 경로(agent/reorder.ts)는 이 상태를 쓰지 않는다.
+ */
+export type AgentSendStatus =
+  "no_suggestions" | "dry_run" | "sending" | "sent" | "failed" | "unchanged";
 
 export interface AgentSendEntry {
   /**
@@ -322,6 +328,22 @@ export interface Warehouse {
    * 팩 단위 반올림)에 쓴다. `variantIds`를 생략하면 전체, 빈 배열이면 빈 결과.
    */
   queryProducts(variantIds?: string[]): Promise<ProductRow[]>;
+  /**
+   * CSV/Excel authoritative 스캔에서 이번 파일에 없는 (매장,SKU) `inventory_levels`/
+   * `sales_period_agg` 행을 비활성화한다(tombstone, DATA-002, TASKS T31) — 물리 삭제 없음,
+   * `active=false`로만 표시하고 이력은 보존한다. `queryStock`/`querySalesPeriodAgg`는
+   * `active=true` 행만 반환한다. 다시 파일에 나타나면 `upsertInventory`/
+   * `upsertSalesPeriodAgg`(항상 `active=true`로 쓴다)가 자동으로 재활성화한다.
+   * `storeIds`는 이번 스캔이 대표하는 매장 범위(tombstone 판정 경계) — 그 밖의 매장 데이터는
+   * 절대 건드리지 않는다(본사 통합 모드의 지점별 독립 트랜잭션 원칙과 일치). `presentInventory`/
+   * `presentSales`는 이번 스캔에서 실제로 파싱된 (매장,SKU) 키 — 재고는 모든 행이, 판매는
+   * 판매이력 있는 행만 해당한다(두 세트가 다를 수 있다).
+   */
+  deactivateMissingCsvRows(params: {
+    storeIds: string[];
+    presentInventory: { storeId: string; variantId: string }[];
+    presentSales: { storeId: string; variantId: string }[];
+  }): Promise<void>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
 }
 
