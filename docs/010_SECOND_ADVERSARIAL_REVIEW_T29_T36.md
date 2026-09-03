@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 3/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
+- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 4/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록. **후속(2026-09-04, SR2-MAIL-002 작업 중 관측)**: 같은 원인(PGlite 기동 지연)이 `vitest.config.ts`의 `hookTimeout`(기본 10초) 쪽에 그대로 남아 있었다 — `createTestWarehouse()`는 대부분 `beforeEach` hook 안에서 실행돼 `testTimeout`(이미 20초)이 아니라 `hookTimeout`이 적용된다. 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"로 실패(격리 재실행은 통과). `hookTimeout: 20_000`으로 맞췄다.
 
 ## 실행 검증
@@ -89,6 +89,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: checkout은 `fetch-depth: 0`이지만 scanner는 `git ls-files`의 현재 tree만 읽는다. commit history/diff object는 검사하지 않는다.
 - 영향: PR의 이전 commit에 secret을 넣었다가 마지막 commit에서 지우면 scanner는 통과하지만 secret은 Git history에 남아 원격에서 열람 가능하다.
 - 수정 기준: PR base~head commit/diff와 새 blob을 검사하거나 검증된 history-aware scanner를 병행한다. 설명도 실제 범위와 일치시킨다.
+- **RESOLVED**: `src/adapters/secretScanGit.ts`(신규) `scanGitRange(repoRoot, base, head)` — `base..head` 범위의 **모든 커밋** 각각의 트리를 `git ls-tree -r`로 열어 base 트리에 없던 blob을 전부 `git cat-file -p`로 읽어 기존 순수 판정 함수(`scanContentForSecrets`)에 넣는다. endpoint diff가 아니라 커밋별 트리를 보므로 "중간 커밋에 넣고 마지막 커밋에서 지운" 케이스가 그 중간 커밋의 blob에서 잡힌다(blob oid로 중복 제거, 심볼릭 링크·서브모듈 제외, 트리 스캔과 같은 `SKIP_EXTENSIONS`). 발견 라벨은 `경로@커밋8자`로 "현재 트리엔 없지만 히스토리에 남아 있다"를 바로 알 수 있게 했다. `scripts/secretScan.ts`는 `--range=<base>..<head>`(`parseNamedArg` 재사용)를 받으면 트리 스캔에 **더해** 범위 스캔을 실행하고, base를 찾을 수 없으면(첫 push/force push의 all-zero SHA, 얕은 clone → `UnknownBaseError`) 조용히 0건 처리하지 않고 "건너뜀"을 명시 출력한 뒤 트리 스캔만으로 판정한다. `ci.yml`은 pull_request에 `base.sha..head.sha`(merge commit이 아닌 실제 head), push에 `event.before..sha`를 넘기고, "추적 파일 전체를 훑는다"고 범위를 과장하던 `fetch-depth` 주석을 실제 범위대로 고쳤다. `SECURITY.md` CI 게이트 문장에 히스토리 범위 명시. `tests/secretScanGit.test.ts` — 임시 git 저장소에 "넣은 커밋 → 지운 커밋"을 실제로 만들어 `git ls-files`는 시크릿 파일이 없고 범위 스캔은 정확히 그 커밋 라벨로 1건 잡는 것을 assert(네트워크 0, 로컬 git만), blob 중복 제거·base==head·all-zero base·없는 base·확장자 스킵까지 6개.
 
 ### SR2-SEC-004 — 파일 읽기 실패를 조용히 무시하는 fail-open
 
