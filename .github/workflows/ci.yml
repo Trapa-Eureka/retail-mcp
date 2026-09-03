@@ -108,14 +108,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # secret-scan은 git ls-files로 추적 파일 전체를 훑는다.
+          # SR2-SEC-003(2차 적대적 검수) — secret-scan의 히스토리 범위 모드(`--range`)가
+          # base..head 사이 모든 커밋의 트리를 열어야 하므로 전체 히스토리가 필요하다. 예전 주석은
+          # "추적 파일 전체를 훑는다"였는데 그건 현재 트리(git ls-files)만 뜻해 실제 검사 범위를
+          # 과장했다 — 중간 커밋에 넣고 지운 시크릿은 전혀 보지 않았다.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run audit:lockfile
-      - run: npm run secret-scan
+      - name: secret-scan (현재 트리 + PR/push 히스토리 범위, SR2-SEC-003)
+        # pull_request: base 브랜치 tip..PR head(merge commit이 아니라 실제 head — merge commit의
+        # blob은 어차피 부분집합). push: 직전 tip..새 tip. base가 all-zero(첫 push/force push)면
+        # 스크립트가 범위 스캔을 "건너뜀"으로 명시하고 트리 스캔만으로 판정한다.
+        env:
+          SCAN_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          SCAN_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: npm run secret-scan -- --range="$SCAN_BASE..$SCAN_HEAD"
       - name: SBOM 생성(CycloneDX)
         # `npm run sbom`(package.json 스크립트, 로컬 편의용)이 아니라 `npm sbom`을 직접
         # 부른다 — `npm run`은 배너 줄("> pkg@ver sbom\n> npm sbom ...")을 stdout에
