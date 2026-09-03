@@ -5,6 +5,7 @@ import {
   computeCsvReorderMetrics,
   computeReorderMetrics,
   computeSellThrough,
+  computeStockReconciliation,
   daysOfCover,
   isStockoutRisk,
   reorderQty,
@@ -16,6 +17,7 @@ import { createFixedClock } from "../src/mocks/fixedClock.js";
 import type {
   InventoryRow,
   ProductRow,
+  PurchaseAgg,
   SalesAgg,
   SalesPeriodAggRow,
   StockRow,
@@ -435,5 +437,106 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     const thresholdRow = row as CsvThresholdMetricRow;
     expect(thresholdRow.inStock).toBe(0);
     expect(thresholdRow.warnings.some((w) => w.includes("음수"))).toBe(true);
+  });
+});
+
+// SCM 시트 연동 재고 정합성/정통 셀스루 (SPEC §13) — P001 골든 숫자는 사용자가 제공한 실제
+// 샘플 구글시트("입출고내역"·"재고현황" 탭, 2026-09-03 확인)에서 그대로 가져왔다: 7월 입고
+// 30, 출고(판매) 21(=8+13), 재고현황 탭의 현재재고 9. 기초재고는 그 시트의 원장이 2026-07-01
+// 부터 시작하므로 0으로 둔다.
+describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케이스)", () => {
+  it("P001: 정통 셀스루 = 21/(0+30) = 0.7, 원장 예상재고와 실사재고가 일치(불일치 없음)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P001", inStock: "9", updatedAt: new Date() },
+    ];
+    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P001", receivedQtyRaw: "30" }];
+    const sales: SalesAgg[] = [
+      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "21" },
+    ];
+
+    const [row] = computeStockReconciliation(inventory, purchases, sales);
+
+    expect(row?.sellThroughTraditional).toBeCloseTo(0.7, 10);
+    expect(row?.expectedStock).toBe(9);
+    expect(row?.actualStock).toBe(9);
+    expect(row?.discrepancy).toBe(0);
+    expect(row?.hasDiscrepancy).toBe(false);
+    expect(row?.warnings).toEqual([]);
+  });
+
+  it("실사 재고가 원장 예상치와 다르면 discrepancy·hasDiscrepancy·경고로 드러난다", () => {
+    // 원장상 예상재고는 P001과 동일하게 9여야 하지만, 실사는 7 — 도난/파손/오차 등 2개 불일치.
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P999", inStock: "7", updatedAt: new Date() },
+    ];
+    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P999", receivedQtyRaw: "30" }];
+    const sales: SalesAgg[] = [
+      { storeId: "본사", variantId: "P999", name: "테스트 상품", category: null, soldQtyRaw: "21" },
+    ];
+
+    const [row] = computeStockReconciliation(inventory, purchases, sales);
+
+    expect(row?.expectedStock).toBe(9);
+    expect(row?.actualStock).toBe(7);
+    expect(row?.discrepancy).toBe(-2);
+    expect(row?.hasDiscrepancy).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("다릅니다"))).toBe(true);
+  });
+
+  it("기초재고를 명시하면(openingStock) 정통 셀스루·예상재고 계산에 반영된다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P002", inStock: "35", updatedAt: new Date() },
+    ];
+    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P002", receivedQtyRaw: "20" }];
+    const sales: SalesAgg[] = [
+      {
+        storeId: "본사",
+        variantId: "P002",
+        name: "저소음 키보드",
+        category: null,
+        soldQtyRaw: "5",
+      },
+    ];
+
+    const [row] = computeStockReconciliation(inventory, purchases, sales, {
+      openingStock: { "본사:P002": 20 },
+    });
+
+    expect(row?.openingStock).toBe(20);
+    expect(row?.sellThroughTraditional).toBeCloseTo(5 / 40, 10); // 5/(20+20)
+    expect(row?.expectedStock).toBe(35); // 20+20-5
+    expect(row?.discrepancy).toBe(0);
+  });
+
+  it("입고·판매 둘 다 0이면(분모 0) 정통 셀스루는 null이다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P005", inStock: "0", updatedAt: new Date() },
+    ];
+    const [row] = computeStockReconciliation(inventory, [], []);
+    expect(row?.sellThroughTraditional).toBeNull();
+    expect(row?.expectedStock).toBe(0);
+    expect(row?.discrepancy).toBe(0);
+  });
+
+  it("실사 재고 데이터가 없으면 actualStock/discrepancy는 null이고 경고를 남긴다", () => {
+    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P003", receivedQtyRaw: "15" }];
+    const [row] = computeStockReconciliation([], purchases, []);
+    expect(row?.actualStock).toBeNull();
+    expect(row?.discrepancy).toBeNull();
+    expect(row?.hasDiscrepancy).toBe(false); // null은 불일치로 표시하지 않는다(대사 불가와 구분).
+    expect(row?.warnings.some((w) => w.includes("대사할 수 없습니다"))).toBe(true);
+  });
+
+  it("환불이 판매를 초과해 순판매량이 음수면 0으로 계산하고 경고를 남긴다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P001", inStock: "5", updatedAt: new Date() },
+    ];
+    const sales: SalesAgg[] = [
+      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "-3" },
+    ];
+    const [row] = computeStockReconciliation(inventory, [], sales);
+    expect(row?.soldQtyRaw).toBe(-3);
+    expect(row?.soldQty).toBe(0);
+    expect(row?.warnings.some((w) => w.includes("환불"))).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import { createTestWarehouse } from "../src/mocks/pglite.js";
 import { createPgWarehouse, createPgliteConnectionProvider } from "../src/adapters/pgWarehouse.js";
 import type {
   InventoryRow,
+  PurchaseReceiptRow,
   SalesLineRow,
   SalesPeriodAggRow,
   StoreRow,
@@ -134,6 +135,116 @@ describe("pgWarehouse (PGlite)", () => {
       );
       expect(rows[0]?.count).toBe("1");
       expect(rows[0]?.sold_qty).toBe("99");
+    });
+
+    it("upsertPurchaseReceipts를 같은 (store,variant,received_at)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+      const row: PurchaseReceiptRow = {
+        storeId: "store_main",
+        variantId: "var_cola",
+        receivedAt: new Date("2026-07-01"),
+        receivedQty: "30",
+        unitCost: "12000",
+        currency: "KRW",
+        vendor: "스마트유통",
+      };
+      await warehouse.upsertPurchaseReceipts([row]);
+      await warehouse.upsertPurchaseReceipts([{ ...row, receivedQty: "99" }]);
+
+      const { rows } = await db.query<{ count: string; received_qty: string }>(
+        "select count(*)::text as count, max(received_qty) as received_qty from purchase_receipts where store_id = 'store_main' and variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.count).toBe("1");
+      expect(rows[0]?.received_qty).toBe("99");
+    });
+
+    it("upsertPurchaseReceipts는 존재하지 않는 매장/상품을 참조하면 거부한다 (FK)", async () => {
+      await expect(
+        warehouse.upsertPurchaseReceipts([
+          {
+            storeId: "no_such_store",
+            variantId: "no_such_variant",
+            receivedAt: new Date("2026-07-01"),
+            receivedQty: "1",
+          },
+        ]),
+      ).rejects.toThrow();
+    });
+
+    it("unit_cost만 있고 currency가 없으면(또는 반대) DB 제약으로 거부한다", async () => {
+      await expect(
+        warehouse.upsertPurchaseReceipts([
+          {
+            storeId: "store_main",
+            variantId: "var_cola",
+            receivedAt: new Date("2026-07-01"),
+            receivedQty: "1",
+            unitCost: "12000",
+            currency: null,
+          },
+        ]),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe("purchase_receipts / queryPurchaseAgg (SCM 시트 연동, SPEC §13)", () => {
+    beforeEach(async () => {
+      const rows: PurchaseReceiptRow[] = [
+        {
+          storeId: "store_main",
+          variantId: "var_cola",
+          receivedAt: new Date("2026-08-05"),
+          receivedQty: "30",
+          unitCost: "12000",
+          currency: "KRW",
+          vendor: "스마트유통",
+        },
+        {
+          storeId: "store_main",
+          variantId: "var_cola",
+          receivedAt: new Date("2026-08-20"),
+          receivedQty: "10",
+        },
+        {
+          storeId: "store_makati",
+          variantId: "var_cola",
+          receivedAt: new Date("2026-08-05"),
+          receivedQty: "5",
+        },
+      ];
+      await warehouse.upsertPurchaseReceipts(rows);
+    });
+
+    it("기간·매장 내 입고수량을 querySalesAgg와 대칭인 모양으로 합산해 반환한다", async () => {
+      const result = await warehouse.queryPurchaseAgg({
+        storeId: "store_main",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+      });
+      expect(result).toEqual([
+        { storeId: "store_main", variantId: "var_cola", receivedQtyRaw: "40" }, // 30+10
+      ]);
+    });
+
+    it("매장 필터가 적용된다", async () => {
+      const result = await warehouse.queryPurchaseAgg({
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"),
+        storeId: "store_makati",
+      });
+      expect(result).toEqual([
+        { storeId: "store_makati", variantId: "var_cola", receivedQtyRaw: "5" },
+      ]);
+    });
+
+    it("질의 기간 밖의 입고는 제외한다", async () => {
+      const result = await warehouse.queryPurchaseAgg({
+        storeId: "store_main",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-10T00:00:00Z"), // 08-20 입고는 범위 밖
+      });
+      expect(result).toEqual([
+        { storeId: "store_main", variantId: "var_cola", receivedQtyRaw: "30" },
+      ]);
     });
   });
 

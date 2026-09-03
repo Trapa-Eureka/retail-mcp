@@ -8,6 +8,7 @@ import type {
   InventoryRow,
   Numeric,
   ProductRow,
+  PurchaseAgg,
   SalesAgg,
   SalesPeriodAggRow,
   StockRow,
@@ -472,4 +473,128 @@ export function computeCsvReorderMetrics(
   }
 
   return [...historyRows, ...noHistoryRows];
+}
+
+// ── SCM 연동: 재고 정합성 검증 / 정통 셀스루 (SPEC §13) ─────────────────────
+//
+// 정통 정의(판매÷(기초재고+입고))는 재고가 보존되는 한(기초재고+입고−판매=기말재고이라는
+// 항등식) §2 근사식(판매÷(판매+기말재고))과 대수적으로 항상 같은 값이다 — 두 식의 분모
+// (기초재고+입고, 기말재고+판매)가 그 항등식으로 서로 같기 때문이다. 그래서 이 함수의 진짜
+// 가치는 "더 정확한 셀스루 숫자"가 아니라, 입고 원장으로 계산한 예상 재고와 POS/CSV가
+// 보고한 실제(실사) 재고를 대사(reconciliation)해 그 항등식이 실제로 깨지는 지점 — 도난·
+// 파손·실사오차 등 원장에 안 잡히는 변동 — 을 찾는 것이다.
+
+export interface StockReconciliationOptions {
+  /**
+   * 기초재고 — 계산 대상 기간 시작 시점의 실사 재고. 키는 `${storeId}:${variantId}`. 없는
+   * 키는 0으로 간주한다(SCM 원장을 그 시점부터 새로 시작한 경우와 같은 취급 — 온보딩 시
+   * 1회 실사값을 입력받는 흐름은 이후 태스크에서 다룬다).
+   */
+  openingStock?: Record<string, number>;
+}
+
+export interface StockReconciliationRow {
+  storeId: string;
+  variantId: string;
+  name: string;
+  openingStock: number;
+  /** 기간 내 입고수량 합계(원시값). */
+  receivedQtyRaw: number;
+  /** 기간 내 원시 순판매량(환불 포함, 음수 가능). */
+  soldQtyRaw: number;
+  /** 계산에 사용한 판매량 = max(0, soldQtyRaw). */
+  soldQty: number;
+  /** 정통 셀스루 = soldQty/(openingStock+receivedQtyRaw). 분모 0이면 null. */
+  sellThroughTraditional: number | null;
+  /** 원장 기준 예상 재고 = openingStock + receivedQtyRaw − soldQtyRaw(음수 클램프 없음 —
+   * 음수 자체가 원장 이상 신호다). */
+  expectedStock: number;
+  /** POS/CSV가 보고한 실제 재고. 데이터가 없으면 null(대사 불가). */
+  actualStock: number | null;
+  /** actualStock − expectedStock. actualStock이 없으면 null. */
+  discrepancy: number | null;
+  hasDiscrepancy: boolean;
+  warnings: string[];
+}
+
+/**
+ * 재고 정합성(SCM 입고 원장 vs 실제 재고)과 정통 셀스루를 함께 계산한다. `purchases`는
+ * `Warehouse.queryPurchaseAgg`(또는 그 기간에 맞게 미리 집계한) 결과, `sales`는
+ * `querySalesAgg`/`querySalesPeriodAgg` 어느 채널이든 같은 `SalesAgg[]` 모양이면 된다.
+ * (storeId, variantId) 기준으로 세 입력의 키를 합집합해 조인한다.
+ */
+export function computeStockReconciliation(
+  inventory: InventoryRow[],
+  purchases: PurchaseAgg[],
+  sales: SalesAgg[],
+  opts: StockReconciliationOptions = {},
+): StockReconciliationRow[] {
+  const openingStockByKey = opts.openingStock ?? {};
+  const stockByKey = new Map(inventory.map((r) => [`${r.storeId}:${r.variantId}`, r]));
+  const purchasesByKey = new Map(purchases.map((p) => [`${p.storeId}:${p.variantId}`, p]));
+  const salesByKey = new Map(sales.map((s) => [`${s.storeId}:${s.variantId}`, s]));
+  const keys = new Set<string>([
+    ...stockByKey.keys(),
+    ...purchasesByKey.keys(),
+    ...salesByKey.keys(),
+  ]);
+
+  const rows: StockReconciliationRow[] = [];
+  for (const key of keys) {
+    const [storeId, variantId] = key.split(":") as [string, string];
+    const stockRow = stockByKey.get(key);
+    const purchaseAgg = purchasesByKey.get(key);
+    const salesAgg = salesByKey.get(key);
+    const warnings: string[] = [];
+
+    const openingStock = openingStockByKey[key] ?? 0;
+
+    const receivedQtyRaw = purchaseAgg
+      ? parseNumeric(purchaseAgg.receivedQtyRaw, "receivedQtyRaw")
+      : 0;
+
+    const soldQtyRaw = salesAgg ? parseNumeric(salesAgg.soldQtyRaw, "soldQtyRaw") : 0;
+    const soldQty = Math.max(0, soldQtyRaw);
+    if (soldQtyRaw < 0) {
+      warnings.push(
+        `환불이 판매를 초과해 기간 순판매량이 음수(${soldQtyRaw})입니다 — 계산에는 0을 사용했습니다.`,
+      );
+    }
+
+    const expectedStock = openingStock + receivedQtyRaw - soldQtyRaw;
+    const denom = openingStock + receivedQtyRaw;
+    const sellThroughTraditional = denom === 0 ? null : soldQty / denom;
+
+    let actualStock: number | null = null;
+    if (stockRow) {
+      actualStock = parseNumeric(stockRow.inStock, "inStock");
+    } else {
+      warnings.push("현재고 데이터가 없어 실사 재고와 대사할 수 없습니다.");
+    }
+
+    const discrepancy = actualStock === null ? null : actualStock - expectedStock;
+    if (discrepancy !== null && discrepancy !== 0) {
+      warnings.push(
+        `입고 원장으로 계산한 예상 재고(${expectedStock})와 실제 재고(${actualStock})가 ` +
+          `${discrepancy}만큼 다릅니다 — 도난·파손·실사오차 등 원장에 안 잡히는 변동을 확인하세요.`,
+      );
+    }
+
+    rows.push({
+      storeId,
+      variantId,
+      name: salesAgg?.name ?? variantId,
+      openingStock,
+      receivedQtyRaw,
+      soldQtyRaw,
+      soldQty,
+      sellThroughTraditional,
+      expectedStock,
+      actualStock,
+      discrepancy,
+      hasDiscrepancy: discrepancy !== null && discrepancy !== 0,
+      warnings,
+    });
+  }
+  return rows;
 }
