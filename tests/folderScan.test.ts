@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runFolderScan } from "../src/agent/folderScan.js";
+import { runConsolidatedScan, runFolderScan } from "../src/agent/folderScan.js";
 import { createTestWarehouse } from "../src/mocks/pglite.js";
 import { createPgWarehouse, createPgliteConnectionProvider } from "../src/adapters/pgWarehouse.js";
 import { createFixedClock } from "../src/mocks/fixedClock.js";
@@ -217,5 +217,97 @@ describe("runFolderScan", () => {
 
     const stock = await warehouse.queryStock({});
     expect(stock).toHaveLength(3); // 6이 아니라 3 — 재적재돼도 행이 늘지 않는다.
+  });
+});
+
+describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
+  let dir: string;
+  let collectDir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-consolidated-"));
+    collectDir = join(dir, "collect");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(collectDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("지점 2개 스냅샷을 매장명으로 필터링해 통합 조회할 수 있다(SPEC §5 '본점만' 예시와 동일 동작)", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(
+      join(collectDir, "본점.csv"),
+      `매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(collectDir, "마카티점.csv"),
+      `매장명,상품명,SKU,재고수량\n마카티점,생수 500ml,SKU-WATER,20\n`,
+      "utf8",
+    );
+
+    const result = await runConsolidatedScan(
+      { warehouse, clock: createFixedClock(NOW_ISO) },
+      { collectDir },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.files).toHaveLength(2);
+    expect(result.files.every((f) => f.status === "success")).toBe(true);
+
+    // 기존 MCP 도구가 쓰는 것과 같은 queryStock({storeId}) 필터링이 스키마 변경 없이 그대로 된다.
+    const mainStoreOnly = await warehouse.queryStock({ storeId: "본점" });
+    expect(mainStoreOnly).toHaveLength(1);
+    expect(mainStoreOnly[0]?.variantId).toBe("SKU-COLA");
+
+    const all = await warehouse.queryStock({});
+    expect(all).toHaveLength(2);
+  });
+
+  it("한 지점 스냅샷이 파싱 실패해도 다른 지점 데이터·watermark에는 영향이 없다", async () => {
+    const { warehouse } = await makeWarehouse();
+    // 본점: 매장명이 비어 있어 T15 검증에서 실패한다.
+    await writeFile(
+      join(collectDir, "본점.csv"),
+      `매장명,상품명,SKU,재고수량\n,코카콜라 500ml,SKU-COLA,10\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(collectDir, "마카티점.csv"),
+      `매장명,상품명,SKU,재고수량\n마카티점,생수 500ml,SKU-WATER,20\n`,
+      "utf8",
+    );
+
+    const result = await runConsolidatedScan(
+      { warehouse, clock: createFixedClock(NOW_ISO) },
+      { collectDir },
+    );
+
+    expect(result.ok).toBe(false);
+    const failed = result.files.find((f) => f.file === "본점.csv");
+    const succeeded = result.files.find((f) => f.file === "마카티점.csv");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBeTruthy();
+    expect(succeeded?.status).toBe("success");
+
+    // 실패한 지점의 데이터는 전혀 적재되지 않았다 — 성공한 지점만 있다.
+    const stock = await warehouse.queryStock({});
+    expect(stock).toHaveLength(1);
+    expect(stock[0]?.storeId).toBe("마카티점");
+
+    // watermark(sync_state)도 성공한 지점만 기록된다.
+    const syncState = await warehouse.getSyncState();
+    const resources = syncState.map((s) => s.resource);
+    expect(resources).toContain("csv_branch:마카티점.csv");
+    expect(resources).not.toContain("csv_branch:본점.csv");
+  });
+
+  it("수집 폴더가 비어 있으면 명확한 에러를 던진다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await expect(
+      runConsolidatedScan({ warehouse, clock: createFixedClock(NOW_ISO) }, { collectDir }),
+    ).rejects.toThrow(/지점 스냅샷 파일/);
   });
 });
