@@ -243,5 +243,28 @@ UTF-8을 기본 가정하지 않는다. 한국어 윈도우 엑셀 저장은 CP9
 - `core/metrics.ts` — **`reorderQty()` 자체는 건드리지 않는다.** 그 대신:
   - `roundToPackMultiple(reorderQtyValue, packSize)` — §2의 5개 순수 수식과 나란한 순수 함수. `packSize`가 없으면 반올림 없이 그대로 반환(`packCount: null` — "팩 단위가 없다"와 "팩이 0개 필요하다"를 구분). 제안량이 0이면 `packSize`가 있어도 1팩으로 올리지 않는다(0팩).
   - `applyPackRounding(rows, products)` — `computeReorderMetrics`(또는 `computeCsvReorderMetrics`의 history 행)가 만든 배열에 `(storeId,variantId)`로 조인한 `ProductRow.packSize`를 적용한다. TASKS T17이 `computeCsvReorderMetrics`로 `computeReorderMetrics`를 감싼 것과 같은 패턴 — 원본 함수는 변경 없음.
-- **CSV/Excel 템플릿에도 선택 컬럼으로 추가했다** — `core/csvSchema.ts`에 `포장수량`(optional, 0 초과)을 추가하고 `adapters/csvExcelParser.ts`가 `저재고임계치`와 같은 방식으로 같은 SKU의 값 일관성을 검증해 `ProductRow.packSize`로 변환한다. 기존 템플릿(이 컬럼이 없는 파일)은 그대로 통과한다 — 하위 호환. **T18 폴더 스캔의 실제 발주 알림 로직에 `applyPackRounding`을 연결하는 건 이번 스코프 밖**(에이전트 배선 제외, T23과 동일한 결정) — 지금은 파싱 결과가 `packSize`를 담아 나른다는 것까지만 보장한다.
+- **CSV/Excel 템플릿에도 선택 컬럼으로 추가했다** — `core/csvSchema.ts`에 `포장수량`(optional, 0 초과)을 추가하고 `adapters/csvExcelParser.ts`가 `저재고임계치`와 같은 방식으로 같은 SKU의 값 일관성을 검증해 `ProductRow.packSize`로 변환한다. 기존 템플릿(이 컬럼이 없는 파일)은 그대로 통과한다 — 하위 호환. **T18 폴더 스캔·에이전트·MCP 도구에 실제로 연결하는 건 T25로 이어졌다** — 아래 §15 참고(이 절 작성 당시엔 스코프 밖이었으나 이후 착수됨).
 - 테스트: `tests/metrics.test.ts`(`roundToPackMultiple`/`applyPackRounding` describe — 골든 케이스는 §13 시트가 자체적으로 미리 계산해둔 8개 품목의 `계산 제안량→최종 발주량/발주 팩수` 값을 그대로 사용), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts`(`pack_size` upsert·coalesce).
+
+## 15. MCP 도구·에이전트 배선 (2026-09-03, T23/T24 후속)
+
+T23·T24가 각각 미룬 "MCP 도구·에이전트 배선"의 **팩 단위 반올림(§14) 부분**을 착수한다. 재고 정합성 검증(§13)은 이 절에서 다루지 않는다 — 아래 "이번에 안 하는 것" 참고.
+
+### 배선 대상
+
+- **`agent/reorder.ts`의 `buildReorderReport()`(Loyverse 경로)** — `computeReorderMetrics` 결과를 새로 추가한 `Warehouse.queryProducts(variantIds)`로 조회한 `ProductRow.packSize`와 `applyPackRounding()`으로 조인해, `ReorderLineItem`에 `packSize`/`finalOrderQty`/`packCount`를 채운다. `reorder_suggestions` MCP 도구는 `buildReorderReport()`를 그대로 재사용하므로(T9 결정) **별도 도구 코드 변경 없이 자동으로 같이 배선된다** — "도구 결과 = 에이전트 리포트" 회귀 가드가 그대로 유지된다.
+- **`agent/folderScan.ts`의 CSV 채널 알림** — `computeCsvReorderMetrics`의 history 모드 행에 `applyPackRounding()`을 적용해(CSV 파싱 결과가 이미 `ProductRow.packSize`를 담고 있다, T24), 저재고 알림에 "제안수량 → 최종 발주량(N팩)"을 표시한다. no_history 모드는 판매이력이 없어 재주문 제안량 자체가 없으므로(T17 설계) 대상이 아니다.
+- **신규 `Warehouse.queryProducts(variantIds?)`** — Loyverse 경로는 `ProductRow`를 메모리에 들고 있지 않고(products는 sync 시 DB로 upsert되고 끝) `queryStock`/`querySalesAgg`도 `name`/`category`만 select한다 — `packSize`를 다시 읽어올 방법이 아예 없었다는 걸 착수 중 발견했다. 읽기 전용 조회이므로 가드레일 4("웨어하우스 쓰기는 ETL 경로만")에 저촉되지 않는다.
+
+### 이번에 안 하는 것
+
+- **재고 정합성 검증(§13, `computeStockReconciliation`)은 MCP·에이전트 어디에도 연결하지 않는다.** 이유: 이 계산은 `Warehouse.queryPurchaseAgg`(SCM 입고 실적)를 입력으로 받는데, 실 Google Sheets 연동(§13에서 미룬 항목)이 없는 지금은 `purchase_receipts`가 운영 환경에서 항상 비어 있다 — 그 상태로 계산을 돌리면 "입고 0건"을 실제 입고 이력으로 오인해 모든 품목에 대해 `discrepancy`(불일치)가 거짓으로 잡힌다. 의미 없는 경고를 자동 노출하는 대신, 이 도구는 실 Google Sheets 연동과 함께(그때는 `purchase_receipts`에 실제 데이터가 있다) 노출하기로 미룬다.
+- 새 MCP 조회 도구를 추가하지 않는다 — 기존 6개 도구(`reorder_suggestions` 포함) 재사용만으로 이번 배선이 끝난다.
+
+### 구현
+
+- `core/types.ts` — `Warehouse.queryProducts(variantIds?: string[])`(전체 `ProductRow[]` 조회, variantIds 생략 시 전체·빈 배열이면 빈 결과), `ReorderLineItem`에 `packSize`/`finalOrderQty`/`packCount` 필드 추가(선택이 아니라 필수 — `buildReorderReport()`가 이제 항상 채운다).
+- `adapters/pgWarehouse.ts` — `queryProductsOn` 구현.
+- `agent/reorder.ts` — `buildReorderReport()`에서 `queryProducts` + `applyPackRounding` 호출, `renderReportText`/`renderReportHtml`에 `formatOrderQty()` 헬퍼로 팩 단위 반올림 표시("42 → 최종 발주량 48(2팩, 팩당 24개)").
+- `agent/folderScan.ts` — `alertsFrom()`이 `products: ProductRow[]`를 추가로 받아 history 모드 행에 팩 단위 반올림을 적용, `FolderScanAlertItem`에 `reorderQty`/`finalOrderQty`/`packCount`(선택 필드 — no_history 모드는 없음) 추가.
+- 테스트: `tests/pgWarehouse.test.ts`(`queryProducts`), `tests/reorderAgent.test.ts`(packSize 있는 golden case), `tests/claudeSummarizer.test.ts`(리포트 타입 갱신), `tests/folderScan.test.ts`(CSV 알림에 팩 단위 반올림 반영/미반영 각각). 기존 `tests/mcpTools.test.ts`/`tests/e2e.test.ts`의 "도구=에이전트 완전 동일" 회귀 가드는 두 경로가 같은 함수를 재사용하므로 코드 변경 없이 그대로 통과한다.

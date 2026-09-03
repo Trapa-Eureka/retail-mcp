@@ -86,6 +86,55 @@ describe("runFolderScan", () => {
     expect(snapshotContent).toContain("마카티점");
   });
 
+  it("포장수량(SPEC §14/TASKS T25)이 있으면 알림에 최종 발주량·발주 팩수가 포함된다", async () => {
+    const { warehouse } = await makeWarehouse();
+    const csvWithPackSize = `매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일,포장수량
+본점,코카콜라 500ml,SKU-COLA,10,560,2026-08-01,2026-08-29,24
+`;
+    await writeFile(join(watchDir, "inventory.csv"), csvWithPackSize, "utf8");
+
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      { watchDir, snapshotDir },
+    );
+
+    expect(result.alertCount).toBe(1);
+    const [alert] = result.alerts;
+    // avgDailySales=20(560/28일), inStock=10 → reorderQty=ceil(21*20-10)=410 → 24개입 팩으로
+    // 올리면 ceil(410/24)=18팩=432개.
+    expect(alert?.reorderQty).toBe(410);
+    expect(alert?.finalOrderQty).toBe(432);
+    expect(alert?.packCount).toBe(18);
+    expect(alert?.reason).toContain("최종 발주량 432(18팩)");
+  });
+
+  it("포장수량이 없으면(낱개 매입) 알림에 제안수량만 표시되고 finalOrderQty는 undefined다", async () => {
+    const { warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+
+    const result = await runFolderScan(
+      {
+        warehouse,
+        clock: createFixedClock(NOW_ISO),
+        notificationProvider: createMockNotificationProvider(),
+      },
+      { watchDir, snapshotDir },
+    );
+
+    const cola = result.alerts.find((a) => a.variantId === "SKU-COLA");
+    expect(cola?.packCount).toBeNull();
+    expect(cola?.finalOrderQty).toBe(cola?.reorderQty);
+    expect(cola?.reason).not.toContain("최종 발주량");
+
+    // no_history 모드(SKU-CHIPS)는 애초에 reorderQty 개념이 없다.
+    const chips = result.alerts.find((a) => a.variantId === "SKU-CHIPS");
+    expect(chips?.reorderQty).toBeUndefined();
+  });
+
   it("SEND_MODE=live && confirm 둘 다일 때만 실제 발송한다(가드레일 1)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_STALE_THRESHOLD_HOURS, computeFreshness } from "../core/freshness.js";
 import {
   DEFAULT_WINDOW_DAYS,
+  applyPackRounding,
   calendarWindow,
   computeReorderMetrics,
   type ReorderOptions,
@@ -100,9 +101,14 @@ export async function buildReorderReport(
   };
   const metrics = computeReorderMetrics(salesAgg, stock, metricsOpts);
 
+  // 팩 단위 반올림(SPEC §14, TASKS T25) — reorderQty() 계산 자체는 위에서 이미 끝났고, 그
+  // 결과를 ProductRow.packSize와 조인해 감싸기만 한다(computeReorderMetrics는 무변경).
+  const products = await deps.warehouse.queryProducts(metrics.map((row) => row.variantId));
+  const packRounded = applyPackRounding(metrics, products);
+
   const warnings = new Set<string>();
   const itemsByStore = new Map<string, ReorderLineItem[]>();
-  for (const row of metrics) {
+  for (const row of packRounded) {
     for (const w of row.warnings) warnings.add(`[${row.storeId}:${row.variantId}] ${w}`);
     if (row.reorderQty <= 0) continue;
     const items = itemsByStore.get(row.storeId) ?? [];
@@ -113,6 +119,9 @@ export async function buildReorderReport(
       avgDailySales: row.avgDailySales,
       daysOfCover: row.daysOfCover,
       reorderQty: row.reorderQty,
+      packSize: row.packSize,
+      finalOrderQty: row.finalOrderQty,
+      packCount: row.packCount,
     });
     itemsByStore.set(row.storeId, items);
   }
@@ -156,6 +165,12 @@ function formatCover(daysOfCover: number | null): string {
   return daysOfCover === null ? "∞" : daysOfCover.toFixed(1);
 }
 
+/** packSize가 없으면(낱개 매입) 계산량만, 있으면 "27개 → 최종 발주량 48개(2팩)"까지 표시한다. */
+function formatOrderQty(item: ReorderLineItem): string {
+  if (item.packSize === null || item.packCount === null) return `${item.reorderQty}`;
+  return `${item.reorderQty} → 최종 발주량 ${item.finalOrderQty}(${item.packCount}팩, 팩당 ${item.packSize}개)`;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -180,7 +195,7 @@ export function renderReportText(report: ReorderReport, summary: string | null):
     for (const item of store.items) {
       lines.push(
         `- ${item.name}: 현재고 ${item.inStock}, 일평균판매 ${item.avgDailySales.toFixed(2)}, ` +
-          `재고커버 ${formatCover(item.daysOfCover)}일, 제안수량 ${item.reorderQty}`,
+          `재고커버 ${formatCover(item.daysOfCover)}일, 제안수량 ${formatOrderQty(item)}`,
       );
     }
   }
@@ -206,7 +221,7 @@ export function renderReportHtml(report: ReorderReport, summary: string | null):
       parts.push(
         `<tr><td>${escapeHtml(item.name)}</td><td>${item.inStock}</td>` +
           `<td>${item.avgDailySales.toFixed(2)}</td><td>${formatCover(item.daysOfCover)}</td>` +
-          `<td>${item.reorderQty}</td></tr>`,
+          `<td>${escapeHtml(formatOrderQty(item))}</td></tr>`,
       );
     }
     parts.push("</table>");
