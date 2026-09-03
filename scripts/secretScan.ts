@@ -27,13 +27,22 @@ const SKIP_EXTENSIONS = new Set([
   ".pdf",
 ]);
 
+/**
+ * `src/core/secretScan.ts`의 패턴 매칭 자체를 검증하는 파일 — 일부러 표시 없는 가짜 값을
+ * 그대로 담고 있어야 한다(줄에 fake/example류 마커를 붙이면 그 assertion 자체가 무의미해
+ * 진다). 그래서 이 파일 하나만 이름으로 스캔에서 제외한다(실제로 CI에서 자기 자신을
+ * 발견해 걸린 적이 있다 — TASKS T35).
+ */
+const SELF_EXCLUDE = new Set(["tests/secretScan.test.ts"]);
+
 function listTrackedFiles(): string[] {
   const stdout = execFileSync("git", ["ls-files"], { cwd: REPO_ROOT, encoding: "utf8" });
   return stdout
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .filter((file) => !SKIP_EXTENSIONS.has(path.extname(file).toLowerCase()));
+    .filter((file) => !SKIP_EXTENSIONS.has(path.extname(file).toLowerCase()))
+    .filter((file) => !SELF_EXCLUDE.has(file));
 }
 
 async function main(): Promise<void> {
