@@ -9,17 +9,18 @@ import { describeTarget } from "../src/cli/migrate.js";
 
 describe("describeTarget(SR2-REL-001)", () => {
   it("host·port·db명만 남기고 자격증명(user/password)은 뺀다", () => {
-    expect(
-      describeTarget("postgres://myuser:mysecretpassword@ep-example.neon.tech:5432/mydb"),
-    ).toBe("ep-example.neon.tech:5432/mydb");
+    const url = "postgres://myuser:mysecretpassword@ep-example.neon.tech:5432/mydb"; // secretscan-allow: 테스트 픽스처, 실제 키 아님
+    expect(describeTarget(url)).toBe("ep-example.neon.tech:5432/mydb");
   });
 
   it("포트가 없으면 포트 없이 표시한다", () => {
-    expect(describeTarget("postgres://user:pw@db.example.com/mydb")).toBe("db.example.com/mydb");
+    const url = "postgres://user:pw@db.example.com/mydb"; // secretscan-allow: 테스트 픽스처, 실제 키 아님
+    expect(describeTarget(url)).toBe("db.example.com/mydb");
   });
 
   it("자격증명이 결과 문자열 어디에도 남지 않는다", () => {
-    const result = describeTarget("postgres://very-secret-user:very-secret-password@host/db");
+    const url = "postgres://very-secret-user:very-secret-password@host/db"; // secretscan-allow: 테스트 픽스처, 실제 키 아님
+    const result = describeTarget(url);
     expect(result).not.toContain("very-secret-user");
     expect(result).not.toContain("very-secret-password");
   });
