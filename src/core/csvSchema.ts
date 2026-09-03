@@ -11,6 +11,7 @@
  * 확인한다.
  */
 import { z } from "zod";
+import { unescapeCsvFormulaPrefix } from "./csvSafety.js";
 
 /** 빈 문자열(셀이 비어 있음)을 "값 없음"으로 취급한다 — 필수 컬럼이면 required 에러로,
  * 선택 컬럼이면 undefined로 이어진다. 이게 없으면 z.coerce.number()가 ""를 0으로 바꿔
@@ -20,13 +21,20 @@ function blankToUndefined(v: unknown): unknown {
   return v;
 }
 
+/** blankToUndefined 다음, trim 다음에 formula-injection escape(SEC-004, TASKS T32 —
+ * `core/csvSafety.ts`)를 역으로 벗겨낸다. trim을 먼저 해야 사람이 스냅샷 CSV를 열어 앞에
+ * 실수로 공백을 남겨도(`  '=foo`) 접두사 판정이 흔들리지 않는다. 매장명·상품명·SKU처럼
+ * 사람이 채우는 자유 텍스트 컬럼에만 적용 — 통화 코드 등 다른 문자열 컬럼은 형식이 고정돼
+ * 애초에 위험 접두사가 나올 수 없다. */
 function requiredTrimmedString(label: string) {
   return z.preprocess(
-    blankToUndefined,
-    z
-      .string({ error: `${label}은(는) 필수 컬럼입니다.` })
-      .trim()
-      .min(1, `${label}이(가) 비어 있습니다.`),
+    (v) => {
+      const afterBlank = blankToUndefined(v);
+      return typeof afterBlank === "string"
+        ? unescapeCsvFormulaPrefix(afterBlank.trim())
+        : afterBlank;
+    },
+    z.string({ error: `${label}은(는) 필수 컬럼입니다.` }).min(1, `${label}이(가) 비어 있습니다.`),
   );
 }
 

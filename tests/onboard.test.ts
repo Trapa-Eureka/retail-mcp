@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   collectOnboardAnswers,
   envUpdatesFor,
   mergeEnvFile,
+  writeEnvFile,
   type AskFn,
   type OnboardAnswers,
 } from "../src/cli/onboard.js";
@@ -140,6 +141,48 @@ describe("mergeEnvFile", () => {
     const existing = "DATABASE_URL=postgres://existing\n";
     const result = mergeEnvFile(existing, { DATABASE_URL: undefined });
     expect(result).toContain("DATABASE_URL=postgres://existing");
+  });
+});
+
+describe("writeEnvFile (SEC-005, TASKS T32)", () => {
+  let dir: string;
+  let envPath: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-onboard-env-"));
+    envPath = join(dir, ".env");
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("새 .env 파일을 0600 권한으로 만든다", async () => {
+    await writeEnvFile(envPath, "DATABASE_URL=postgres://x\n");
+    const info = await stat(envPath);
+    // macOS/Linux 기준 — Windows CI에서는 이 비트가 의미가 달라 별도 매트릭스에서 재검토한다
+    // (atomicFile.test.ts와 동일한 캐비어트, TASKS T34 OPS-006).
+    expect(info.mode & 0o777).toBe(0o600);
+    expect(await readFile(envPath, "utf8")).toBe("DATABASE_URL=postgres://x\n");
+  });
+
+  it("기존 .env가 더 느슨한 권한이어도 다시 쓰면 0600으로 교체된다", async () => {
+    await writeFile(envPath, "DATABASE_URL=postgres://old\n", { mode: 0o644 });
+    expect((await stat(envPath)).mode & 0o777).toBe(0o644);
+
+    await writeEnvFile(envPath, "DATABASE_URL=postgres://new\n");
+
+    const info = await stat(envPath);
+    expect(info.mode & 0o777).toBe(0o600);
+    expect(await readFile(envPath, "utf8")).toBe("DATABASE_URL=postgres://new\n");
+  });
+
+  it("쓰기 도중 죽어도(임시 파일만 실패) 기존 .env는 손상되지 않는다 — atomic 교체", async () => {
+    await writeFile(envPath, "DATABASE_URL=postgres://before\n");
+    await chmod(envPath, 0o600);
+    await writeEnvFile(envPath, "DATABASE_URL=postgres://after\n");
+    // rename 하나로 교체되므로 중간 상태 없이 최종 내용만 보인다(atomicFile.ts 계약).
+    expect(await readFile(envPath, "utf8")).toBe("DATABASE_URL=postgres://after\n");
   });
 });
 

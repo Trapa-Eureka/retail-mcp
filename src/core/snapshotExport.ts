@@ -12,6 +12,7 @@
  * (csvExcelParser.ts의 "알려진 스코프 경계" 참고).
  */
 import { stringify } from "csv-stringify/sync";
+import { escapeCsvFormulaPrefix } from "./csvSafety.js";
 import type { InventoryRow, ProductRow, SalesPeriodAggRow } from "./types.js";
 
 /** T19가 소비하는 최소 입력 — T16의 `ParsedCsvExcelFile`과 같은 모양이지만(stores는 export에
@@ -62,9 +63,12 @@ export function exportSnapshotCsv(source: SnapshotSource): string {
     const product = productByVariant.get(inv.variantId);
     const sales = salesByKey.get(csvKey(inv.storeId, inv.variantId));
     return {
-      매장명: inv.storeId,
-      상품명: product?.name ?? inv.variantId,
-      SKU: inv.variantId,
+      // formula injection escape(SEC-004, TASKS T32) — 사람이 Excel/Sheets로 이 스냅샷을
+      // 직접 열 수도 있다(core/csvSafety.ts 문서 참고). 재수입(csvSchema.ts
+      // requiredTrimmedString)이 정확히 대칭으로 벗겨내 왕복 데이터는 그대로 보존된다.
+      매장명: escapeCsvFormulaPrefix(inv.storeId),
+      상품명: escapeCsvFormulaPrefix(product?.name ?? inv.variantId),
+      SKU: escapeCsvFormulaPrefix(inv.variantId),
       재고수량: inv.inStock,
       판매수량: sales?.soldQty ?? "",
       판매기간시작일: sales ? formatDateUtc(sales.periodStart) : "",

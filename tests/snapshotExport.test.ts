@@ -94,6 +94,26 @@ describe("exportSnapshotCsv", () => {
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
     expect(csv).toContain("마카티점");
   });
+
+  it("매장명·상품명·SKU가 수식 접두사(=/+/-/@)로 시작하면 escape한다(005 SEC-004, TASKS T32)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "=SUM(A1)", variantId: "+SKU-EVIL", inStock: "1", updatedAt: NOW },
+    ];
+    const products: ProductRow[] = [
+      {
+        variantId: "+SKU-EVIL",
+        itemId: "+SKU-EVIL",
+        name: "@HYPERLINK(A1)",
+        sku: "+SKU-EVIL",
+        category: null,
+      },
+    ];
+    const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
+    const [, dataLine] = csv.trim().split("\n");
+    // csv-stringify는 값에 콤마·큰따옴표·개행이 있을 때만 큰따옴표로 감싼다 — escape된 값
+    // 자체("'=..." 등)엔 그런 문자가 없어 quoting 없이 그대로 나온다.
+    expect(dataLine).toBe("'=SUM(A1),'@HYPERLINK(A1),'+SKU-EVIL,1,,,,,");
+  });
 });
 
 describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데이터와 일치", () => {
@@ -141,6 +161,36 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
 
     expect(roundTripped).toEqual(original);
+  });
+
+  it("수식 접두사로 시작하는 매장명·상품명·SKU도 왕복 후 원래 값 그대로 복원된다(SEC-004, TASKS T32)", () => {
+    const rawRows = [
+      {
+        매장명: "=SUM(A1)",
+        상품명: "+HYPERLINK(evil.com)",
+        SKU: "@cmd|'/c calc'",
+        재고수량: "5",
+      },
+    ];
+
+    const original = mapRowsToDomain(rawRows, NOW);
+    // export가 escape하므로 사람이 이 CSV를 Excel/Sheets로 직접 열어도 수식으로 실행되지 않는다.
+    const csv = exportSnapshotCsv(original);
+    expect(csv).toContain("'=SUM(A1)");
+    expect(csv).toContain("'+HYPERLINK(evil.com)");
+    expect(csv).toContain("'@cmd");
+
+    const reparsedRawRows = parseCsvText(csv, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    }) as unknown[];
+    const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
+
+    // 왕복 후 escape 접두사 없이 원래 도메인 데이터와 완전히 일치해야 한다(machine 재수입 경로).
+    expect(roundTripped).toEqual(original);
+    expect(roundTripped.stores[0]?.id).toBe("=SUM(A1)");
+    expect(roundTripped.products[0]?.name).toBe("+HYPERLINK(evil.com)");
   });
 
   it("행 하나만 있어도 T15 스키마로 재파싱 가능하다(csvRowSchema와 정확히 호환)", () => {

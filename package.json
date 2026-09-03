@@ -19,6 +19,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
   "bin": {
     "retail-mcp": "dist/server.js",
     "retail-mcp-onboard": "dist/cli/onboard.js"
