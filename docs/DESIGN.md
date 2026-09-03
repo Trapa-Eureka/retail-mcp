@@ -297,3 +297,15 @@ SPEC §18의 정책 확정을 구현 계약으로 옮긴다. §6/§17의 2단계
 ### 12.5 원자적 파일 쓰기 — 공통 유틸리티 (DATA-004, TASKS T31)
 
 12.3의 atomic snapshot write와 SEC-005(`.env` 0600 원자 쓰기)가 같은 패턴(임시 파일 → flush → rename)을 필요로 한다 — `src/adapters/atomicFile.ts`(신규, 순수 IO 유틸리티)로 공용화한다: `writeFileAtomic(path, content, { mode? })`. `onboard.ts`의 `.env` 쓰기와 `folderScan.ts`의 snapshot 쓰기가 이 유틸리티를 공유한다.
+
+### 12.6 파일·시크릿 보안 — 상한, formula escape, 권한, 의존성 예외 (SEC-003~007, TASKS T32)
+
+**파일 크기·행 수·셀 길이 상한(SEC-003)** — `src/adapters/fileLimits.ts`: 파일 20MB, 행 100,000, 셀 10,000자. CSV는 평문이라 파일 크기 상한 하나로 충분하다(압축 증폭이 없어 디스크 크기가 곧 메모리 상한). XLSX는 zip 압축이라 다르다 — 원래는 `ExcelJS.stream.xlsx.WorkbookReader`(진짜 스트리밍, 행마다 상한을 검사해 초과 즉시 나머지 압축 데이터를 안 읽는다)로 구현했으나, 테스트를 여러 파일과 동시 실행하면 같은 픽스처를 읽는데도 ExcelJS 내부 레이스로 추정되는 예외가 간헐적으로 재현됐다(`docs/005` SEC-003 상세). 재고 파일을 못 읽는 장애가 압축폭탄보다 훨씬 흔하고 치명적이라 판단해, 검증 안 된 스트리밍 경로 대신 기존 buffered `workbook.xlsx.readFile` + "읽은 직후 상한 확인"으로 되돌렸다 — **잔여 위험**(파일 전체가 이미 메모리에 풀린 뒤에야 확인, shared-strings 캐시는 그보다도 먼저 펼쳐짐)을 코드 주석에 정직하게 남겨뒀다. 실사용 시나리오(매장 재고, 수만 행 이하)에서는 파일 크기 상한 자체가 이미 낮아 실질 위험은 작다고 판단 — 스트리밍 리더가 ExcelJS 쪽에서 안정화되면 재검토(T33+).
+
+**CSV formula injection escape(SEC-004)** — 계약: 스냅샷 CSV(`snapshotExport.ts`)는 "사람도 열 수 있는 CSV"로 취급한다(consolidated 모드의 기계 재수입 입력이면서, 지점 담당자가 확인차 직접 열 수도 있음). `src/core/csvSafety.ts` — 매장명·상품명·SKU가 `=`/`+`/`-`/`@`로 시작하면 export 시 앞에 `'`를 붙인다. **재수입은 `snapshotExport.ts` 전용이 아니라 `core/csvSchema.ts`의 `requiredTrimmedString`(매장명·상품명·SKU 공통)에서 벗겨낸다** — 우리 자신이 만든 스냅샷이 아닌 원본 CSV/XLSX 입력에도 동일하게 적용돼, 파일 출처와 무관하게 대칭적인 왕복이 보장된다(같은 접두사 조건일 때만 벗겨내므로 원래부터 `'`로 시작하는 값을 잘못 건드리지 않는다).
+
+**`.env` 파일 권한(SEC-005)** — `src/cli/onboard.ts`의 `writeEnvFile()`이 `writeFileAtomic(path, content, { mode: 0o600 })`을 호출한다(12.5의 공용 유틸리티 재사용). 별도의 "기존 파일 권한 검사·보정" 로직이 필요 없다 — POSIX `rename(2)`은 대상 경로의 예전 inode를 완전히 새 inode로 교체하므로, 새로 쓴 임시 파일이 0o600이면 rename 후 결과 파일도 항상 0o600이다(기존 파일이 더 느슨한 권한이었어도).
+
+**의존성 취약점 — 승인된 예외(SEC-006)**: `package.json`에 `overrides: { uuid: "^11.1.1" }`을 추가했지만, **이 override는 dev 체크아웃(레포를 직접 `npm install`할 때)에만 적용되고 이 패키지를 다른 프로젝트가 의존성으로 설치할 때는 적용되지 않는다** — npm 자체의 동작(다른 패키지 매니저도 대체로 동일)이라 이 프로젝트가 고칠 수 없다. 실제 게시될 tarball을 완전히 새 프로젝트에 설치해 직접 검증(착수 중 발견)한 결과 `uuid@8.3.2`가 그대로 해석됨을 확인했다. exceljs는 `uuid`의 `v4()`를 인자 없이만 호출해(advisory가 문제 삼는 `buf` 인자 있는 v3/v5/v6 경로를 타지 않음) 실질 위험은 낮다고 판단, 대체 라이브러리 전면 교체는 43개 XLSX 테스트가 걸린 안정 경로를 흔들 만큼의 가치가 없다고 보고 **승인된 예외**로 남겼다(근거: `docs/005` SEC-006, 재검토 기한 2027-03-03). `scripts/verifyPack.ts`(release gate)에 5단계로 `npm audit` 검사를 추가해 — 실제 tarball을 설치한 디렉터리 기준으로, advisory URL이 이 예외 하나뿐인지 매번 확인한다(다른/새 취약점이 나타나면 release gate가 실패한다).
+
+**`SECURITY.md`(SEC-007)**: 지원 버전(배포 전이라 `main`만), 응답 목표, GitHub 비공개 보안 권고 신고 채널, 이 프로젝트의 알려진 보안 설계 경계 요약을 담아 레포 루트에 신설. README 문서 맵에 링크.

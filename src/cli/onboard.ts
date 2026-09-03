@@ -15,6 +15,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
+import { writeFileAtomic } from "../adapters/atomicFile.js";
 import { isMainModule } from "../adapters/mainModule.js";
 import { exportSnapshotCsv } from "../core/snapshotExport.js";
 
@@ -229,6 +230,19 @@ async function readExistingEnv(): Promise<string> {
 }
 
 /**
+ * `.env`에 원자적으로 0o600 권한으로 쓴다(SEC-005, TASKS T32) — DATABASE_URL·이메일 주소
+ * 등 민감정보가 담기므로 소유자만 읽기/쓰기 가능해야 한다. `writeFileAtomic`은 임시 파일을
+ * 0o600으로 새로 만든 뒤 rename으로 교체하므로, 기존 `.env`가 더 느슨한 권한이었어도(예:
+ * umask로 만들어진 0o644) rename 후에는 새 inode의 권한(0o600)으로 항상 교체된다 — 별도
+ * "기존 파일 권한 검사·보정" 단계 없이 매 온보딩 실행이 곧 보정이다(rename(2)이 대상 경로의
+ * 예전 inode를 완전히 새 inode로 교체하기 때문 — 예전 파일의 권한이 새 inode로 넘어오지
+ * 않는다). `main()`과 분리해둬 실제 readline 없이 직접 테스트할 수 있다.
+ */
+export async function writeEnvFile(envPath: string, content: string): Promise<void> {
+  await writeFileAtomic(envPath, content, { mode: 0o600 });
+}
+
+/**
  * `rl.question()`을 반복 호출하는 대신 `rl`의 비동기 이터레이터에서 한 줄씩 꺼내는 `AskFn`을
  * 만든다.
  *
@@ -259,8 +273,8 @@ async function main(): Promise<void> {
 
     const existingEnv = await readExistingEnv();
     const merged = mergeEnvFile(existingEnv, envUpdatesFor(answers));
-    await writeFile(ENV_PATH, merged, "utf8");
-    console.log(`설정을 ${ENV_PATH}에 저장했습니다.`);
+    await writeEnvFile(ENV_PATH, merged);
+    console.log(`설정을 ${ENV_PATH}에 저장했습니다(권한 0600).`);
 
     if (answers.mode === "branch") {
       const { mkdir } = await import("node:fs/promises");

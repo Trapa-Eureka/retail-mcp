@@ -46,6 +46,7 @@ import type {
   Warehouse,
 } from "../core/types.js";
 import { writeFileAtomic } from "../adapters/atomicFile.js";
+import { assertFileSizeWithinLimit } from "../adapters/fileLimits.js";
 import {
   decodeFileBytes,
   parseInventoryFile,
@@ -271,6 +272,10 @@ async function ingestScmReceipts(
   if (!file) return [];
 
   try {
+    // SCM 입고 CSV도 파싱 전 크기 상한을 거친다(SEC-003, TASKS T32) — 이 함수는 실패를
+    // 삼켜 경고만 남기고 계속 진행하므로(위 doc 참고), 상한 위반도 같은 catch에서 자연히
+    // "이번 스캔은 입고 데이터 없이 계속" 경로로 처리된다.
+    await assertFileSizeWithinLimit(file);
     const bytes = await readFile(file);
     const { text } = decodeFileBytes(bytes);
     const rawRows = parseCsvText(text, {
@@ -426,7 +431,11 @@ function shouldSkipAsUnchanged(
   return now.getTime() - new Date(stored.lastSentAt).getTime() < DIGEST_WINDOW_MS;
 }
 
+/** 다이제스트 해시 계산도 원본 재고 파일을 통째로 읽는다 — `parseInventoryFile`이 같은
+ * 검사를 하기 전에 먼저 호출되므로(runFolderScan 순서 참고), 크기 상한(SEC-003, TASKS T32)을
+ * 여기서도 확인해야 대형 파일이 해시 계산 단계에서부터 메모리를 잡아먹지 않는다. */
 async function computeFileContentHash(filePath: string): Promise<string> {
+  await assertFileSizeWithinLimit(filePath);
   const bytes = await readFile(filePath);
   return createHash("sha256").update(bytes).digest("hex");
 }

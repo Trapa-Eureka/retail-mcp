@@ -132,6 +132,70 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
   console.log(".env + 예시 템플릿 CSV 생성 확인됨");
 }
 
+/**
+ * SEC-006(005 검수, TASKS T32)의 "근거·만료일이 기록된 승인된 예외" — exceljs@4.4.0이 고정한
+ * `uuid@^8.3.0`은 GHSA-w5hq-g745-h8pq(uuid v3/v5/v6에 buf를 넘길 때의 bounds check 결함,
+ * 영향 범위 "<11.1.1")에 걸린다. exceljs는 `uuidv4()`를 인자 없이만 호출해(v4, buf 없음 —
+ * `node_modules/exceljs/lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`로 확인) 실제
+ * 취약 코드 경로를 타지 않는다. package.json의 `overrides`로 dev 체크아웃의 uuid는
+ * 11.1.1로 올렸지만 **npm의 `overrides`는 이 패키지가 다른 프로젝트의 의존성으로 설치될 때는
+ * 적용되지 않는다** — 실제 게시되는 tarball을 이 스크립트처럼 완전히 새 프로젝트에 설치해
+ * 직접 확인한 결과 uuid@8.3.2가 그대로 해석됐다(착수 중 발견). 그래서 dev 체크아웃의
+ * `npm audit`만으로는 이 결함이 가려진다 — 여기서 **실제 tarball을 설치한 디렉터리**를
+ * 대상으로 다시 확인해야 진짜 상태를 안다. 재검토 기한: **2027-03-03**(exceljs가 uuid
+ * 의존성을 올렸는지 재확인 — 그때도 안 올렸으면 패치/대체 라이브러리 재검토).
+ *
+ * 패키지 이름이 아니라 **advisory URL(GHSA ID)**로 비교한다 — `npm audit` 결과 트리는
+ * `@trapa-eureka/retail-mcp` 자신도 "영향받음" 루트 항목으로 함께 나열하므로(설치하는
+ * 프로젝트마다 이름이 다를 수 있음), 실제 취약점의 정체를 정확히 가리키는 advisory URL로
+ * 비교해야 이름 우연 일치/불일치에 흔들리지 않는다.
+ */
+const ACCEPTED_ADVISORY_URL = "https://github.com/advisories/GHSA-w5hq-g745-h8pq";
+
+function verifyDependencyAudit(installDir: string): void {
+  heading("5) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인");
+  let stdout: string;
+  try {
+    stdout = execFileSync("npm", ["audit", "--omit=dev", "--json"], {
+      cwd: installDir,
+      encoding: "utf8",
+    });
+  } catch (err) {
+    // npm audit는 취약점이 있으면 0이 아닌 종료 코드로 끝난다 — JSON 리포트 자체는 그래도
+    // stdout에 담겨 있다(execFileSync가 던지는 에러 객체가 들고 있다).
+    const withStdout = err as { stdout?: unknown };
+    if (typeof withStdout.stdout !== "string") throw err;
+    stdout = withStdout.stdout;
+  }
+
+  const report = JSON.parse(stdout) as { vulnerabilities?: Record<string, { via?: unknown[] }> };
+  const advisoryUrls = new Set<string>();
+  for (const vuln of Object.values(report.vulnerabilities ?? {})) {
+    for (const via of vuln.via ?? []) {
+      if (typeof via === "object" && via !== null && "url" in via && typeof via.url === "string") {
+        advisoryUrls.add(via.url);
+      }
+    }
+  }
+  const unexpected = [...advisoryUrls].filter((url) => url !== ACCEPTED_ADVISORY_URL);
+  if (unexpected.length > 0) {
+    throw new Error(
+      `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${unexpected.join(", ")} — ` +
+        "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
+    );
+  }
+  if (advisoryUrls.size === 0) {
+    console.log(
+      "취약점 0건 — exceljs/uuid 승인된 예외(SEC-006)가 더 이상 필요 없을 수 있습니다. " +
+        "docs/005와 이 스크립트의 ACCEPTED_ADVISORY_URL을 갱신하세요.",
+    );
+  } else {
+    console.log(
+      `승인된 예외만 확인됨(${ACCEPTED_ADVISORY_URL}) — docs/005 SEC-006, 재검토 기한 2027-03-03.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const workDir = await mkdtemp(path.join(tmpdir(), "retail-mcp-verify-pack-"));
   const installDir = path.join(workDir, "install");
@@ -142,6 +206,7 @@ async function main(): Promise<void> {
     await installFresh(tarballPath, installDir);
     await verifyMcpServerBin(installDir);
     await verifyOnboardBin(installDir);
+    verifyDependencyAudit(installDir);
     heading("전부 통과");
     console.log(`tarball fresh-install 검증 완료 (임시 디렉터리: ${workDir})`);
   } finally {

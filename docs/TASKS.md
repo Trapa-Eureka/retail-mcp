@@ -251,9 +251,13 @@ v0.2 대기열(T23~T27) 완료 직후, npm publish 준비에 들어가기 전에
   - 테스트: `tests/snapshotExport.test.ts`(packSize round-trip), `tests/atomicFile.test.ts`(신규 6 tests), `tests/pgWarehouse.test.ts`(tombstone describe 7 tests), `tests/folderScan.test.ts`(tombstone e2e 3 tests + 일일 다이제스트 5 tests).
   - `npm run check` 통과(typecheck/lint/format:check 전부 통과, 테스트 427/427).
 
-### T32 — 파일·시크릿 보안 P1 (SEC-003~007) · 상태: TODO · 의존: T31
+### T32 — 파일·시크릿 보안 P1 (SEC-003~007) · 상태: DONE(2026-09-03) · 의존: T31
 - 목표: XLSX/CSV 입력 크기·행·셀 길이 한도, snapshot CSV의 spreadsheet formula injection 방어, `.env` 파일 권한(0600) + 원자 쓰기, `exceljs`/`uuid` 의존성 취약점 대응, `SECURITY.md` 신설.
-- 완료 기준: [ ] 파일 크기/행 수/셀 길이 상한 정의 + 초과 시 원인 포함 에러 [ ] snapshot export에서 `=`/`+`/`-`/`@`로 시작하는 값 escape + round-trip 테스트 [ ] `.cli/onboard.ts`의 `.env` 쓰기를 0600 + 임시파일→rename으로 변경 [ ] `npm audit --omit=dev` moderate 2건(exceljs/uuid) 해결 또는 근거·만료일 있는 승인된 예외 기록 [ ] `SECURITY.md`(지원 버전, 비공개 신고 채널) 추가 [ ] `npm run check` 통과
+- 완료 기준: [x] 파일 크기/행 수/셀 길이 상한 정의 + 초과 시 원인 포함 에러 [x] snapshot export에서 `=`/`+`/`-`/`@`로 시작하는 값 escape + round-trip 테스트 [x] `cli/onboard.ts`의 `.env` 쓰기를 0600 + 임시파일→rename으로 변경 [x] `npm audit --omit=dev` moderate 2건(exceljs/uuid) 해결 또는 근거·만료일 있는 승인된 예외 기록 [x] `SECURITY.md`(지원 버전, 비공개 신고 채널) 추가 [x] `npm run check` 통과
+- **완료**: `src/adapters/fileLimits.ts`(신규, SEC-003) — 파일 20MB·행 100,000·셀 10,000자 상한. **착수 중 발견**: `ExcelJS.stream.xlsx.WorkbookReader`(진짜 스트리밍)로 처음 구현했으나 테스트를 여러 파일과 동시 실행하면 ExcelJS 내부 레이스로 추정되는 예외가 간헐적으로 재현돼(`docs/005` SEC-003 상세), 검증된 buffered `workbook.xlsx.readFile` + "읽은 직후 상한 확인"으로 되돌리고 잔여 위험을 코드에 정직하게 기록. `src/core/csvSafety.ts`(신규, SEC-004) — 매장명·상품명·SKU의 `=`/`+`/`-`/`@` 접두사를 export 시 `'`로 escape, `csvSchema.ts`의 `requiredTrimmedString`(모든 입력 경로 공통)에서 대칭적으로 unescape. `cli/onboard.ts`의 `writeEnvFile()`이 T31의 `writeFileAtomic()`을 `{mode:0o600}`으로 재사용(SEC-005) — rename(2)의 inode 교체 특성상 기존 파일의 느슨한 권한도 매번 자동 보정됨. `package.json`에 `overrides: {uuid: "^11.1.1"}` 추가했지만 **착수 중 발견**: npm의 `overrides`는 dev 체크아웃에만 적용되고 이 패키지를 설치하는 다른 프로젝트에는 적용 안 됨(실제 tarball을 새 프로젝트에 설치해 직접 검증) — exceljs의 실제 uuid 호출 경로(인자 없는 `v4()`)가 advisory와 무관함을 코드로 확인하고 **승인된 예외**로 문서화(SEC-006, 재검토 기한 2027-03-03), `scripts/verifyPack.ts`에 5단계로 실제 tarball 설치 기준 `npm audit` 검사 추가(advisory URL 화이트리스트, 새 취약점 나타나면 release gate 실패). `SECURITY.md`(신규, SEC-007) — 지원 버전·응답 목표·GitHub 비공개 신고 채널·알려진 보안 설계 경계.
+  - 테스트: `tests/fileLimits.test.ts`(신규 8 tests), `tests/csvExcelParser.test.ts`(+4 통합 테스트, CSV/XLSX 각각 행 수·셀 길이 초과), `tests/csvSafety.test.ts`(신규 6 tests), `tests/snapshotExport.test.ts`(+2 formula escape/왕복), `tests/onboard.test.ts`(+3 `writeEnvFile` 0600/보정/atomic).
+  - `docs/005`에 SEC-003~007 해결 근거 기록, `docs/DESIGN.md` §12.6 신설, `docs/TESTING.md` §8 보안 게이트 항목 전부 체크.
+  - `npm run check` 통과(typecheck/lint/format:check 전부 통과, 테스트 453/453 — `tests/performance.test.ts`의 5초 예산이 전체 스위트 동시 실행 부하에서 1건 초과 관찰됐으나 단독 재실행 시 통과, 세션 내 반복 관찰된 환경 플레이키로 실코드 회귀 아님). `npm run verify:pack` 별도 통과(5단계 audit 검사 포함).
 
 ### T33 — SCM/필드 정합성 P1 (DATA-005~008) · 상태: TODO · 의존: T32
 - 목표: nullable 필드(팩사이즈·저재고임계치)의 명시적 clear 지원, SCM 대사의 기초재고 0/기간 불일치를 `insufficient_data`로 표시, SCM 처리 실패 상태를 결과/이메일에 노출, 같은 날짜 복수 입고 합산.

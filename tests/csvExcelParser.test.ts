@@ -1,10 +1,14 @@
-import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import ExcelJS from "exceljs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   decodeFileBytes,
   mapRowsToDomain,
   parseInventoryFile,
 } from "../src/adapters/csvExcelParser.js";
+import { MAX_CELL_LENGTH, MAX_ROWS } from "../src/adapters/fileLimits.js";
 
 const FIXTURES_DIR = "tests/fixtures/csvExcel";
 const NOW = new Date("2026-09-03T00:00:00Z");
@@ -73,6 +77,61 @@ describe("parseInventoryFile", () => {
 
   it("지원하지 않는 확장자는 명시적으로 거부한다", async () => {
     await expect(parseInventoryFile("inventory.txt", NOW)).rejects.toThrow(/지원하지 않는/);
+  });
+});
+
+describe("parseInventoryFile — 크기/행 수/셀 길이 상한(SEC-003, TASKS T32)", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "retail-mcp-csvexcel-limits-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("CSV — 행 수가 상한을 넘으면 도메인 검증 전에 거부한다", async () => {
+    const header = "매장명,상품명,SKU,재고수량\n";
+    const rows = Array.from({ length: MAX_ROWS + 1 }, (_, i) => `본점,상품${i},SKU-${i},1`).join(
+      "\n",
+    );
+    const p = join(dir, "too-many-rows.csv");
+    await writeFile(p, header + rows + "\n", "utf8");
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/행.*상한|상한.*행/);
+  });
+
+  it("CSV — 셀 값이 상한보다 길면 거부한다", async () => {
+    const p = join(dir, "long-cell.csv");
+    const longValue = "x".repeat(MAX_CELL_LENGTH + 1);
+    await writeFile(p, `매장명,상품명,SKU,재고수량\n본점,${longValue},SKU-1,1\n`, "utf8");
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/셀 값이 너무 깁니다/);
+  });
+
+  it("XLSX — 상한을 넘는 대량 행을 거부한다(buffered 판정 — csvExcelParser.ts 문서의 잔여 위험 참고)", async () => {
+    const p = join(dir, "too-many-rows.xlsx");
+    const writer = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: p });
+    const sheet = writer.addWorksheet("Sheet1");
+    sheet.addRow(["매장명", "상품명", "SKU", "재고수량"]).commit();
+    for (let i = 0; i < MAX_ROWS + 1; i++) {
+      sheet.addRow(["본점", `상품${i}`, `SKU-${i}`, 1]).commit();
+    }
+    sheet.commit();
+    await writer.commit();
+
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/행.*상한|상한.*행/);
+  });
+
+  it("XLSX — 셀 값이 상한보다 길면 거부한다", async () => {
+    const p = join(dir, "long-cell.xlsx");
+    const writer = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: p });
+    const sheet = writer.addWorksheet("Sheet1");
+    sheet.addRow(["매장명", "상품명", "SKU", "재고수량"]).commit();
+    sheet.addRow(["본점", "x".repeat(MAX_CELL_LENGTH + 1), "SKU-1", 1]).commit();
+    sheet.commit();
+    await writer.commit();
+
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/셀 값이 너무 깁니다/);
   });
 });
 
