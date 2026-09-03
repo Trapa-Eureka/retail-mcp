@@ -75,13 +75,47 @@ async function createEmbeddedWarehouse(dataDir: string): Promise<WarehouseHandle
       warehouse,
       kind: "pglite",
       connectionProvider,
+      // OPS-001(005 검수, TASKS T34) — 예전엔 `await db.close(); await lock.release();` 순서라
+      // db.close()가 reject하면 release가 아예 실행되지 않았다. 락이 안 풀리면 프로세스가
+      // 죽지 않는 한(또는 사람이 수동으로 지우지 않는 한) 다음 실행이 계속 막힌다 — 그래서
+      // release는 항상(db.close() 성공/실패 무관) 시도한다. 두 정리 작업이 각각 독립적으로
+      // 실패할 수 있어(예: PGlite 내부 오류 + 그 사이 락 파일이 다른 프로세스에 의해 지워짐)
+      // 하나만 던지면 다른 원인이 조용히 사라진다 — 둘 다 실패하면 AggregateError로 둘 다
+      // 보존한다.
       async close() {
-        await db.close();
-        await lock.release();
+        const errors: unknown[] = [];
+        try {
+          await db.close();
+        } catch (err) {
+          errors.push(err);
+        }
+        try {
+          await lock.release();
+        } catch (err) {
+          errors.push(err);
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) {
+          throw new AggregateError(
+            errors,
+            "웨어하우스 종료 중 오류가 여러 개 발생했습니다(db.close()와 lock.release() 둘 다 " +
+              "실패) — errors 배열의 각 원인을 확인하세요.",
+          );
+        }
       },
     };
   } catch (err) {
-    await lock.release();
+    // 초기화(마이그레이션 등) 실패 시에도 락은 항상 풀어야 한다 — 여기서 release()가 또
+    // 실패하면(OPS-001과 같은 원칙) 원래 원인(err)을 조용히 가리지 않도록 둘 다 보존한다.
+    try {
+      await lock.release();
+    } catch (releaseErr) {
+      throw new AggregateError(
+        [err, releaseErr],
+        "임베디드 웨어하우스 초기화 실패 + 락 해제도 실패했습니다 — errors 배열의 각 원인을 확인하세요.",
+        { cause: releaseErr },
+      );
+    }
     throw err;
   }
 }

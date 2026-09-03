@@ -224,6 +224,35 @@ describe("runFolderScan", () => {
     expect(stock.some((s) => s.variantId === "SKU-OLD")).toBe(false);
   });
 
+  it("mtime이 동일한 파일이 여럿이면 파일명 기준으로 결정론적으로 고른다(OPS-003, 006 검수, TASKS T34)", async () => {
+    const { warehouse } = await makeWarehouse();
+    const aCsv = `매장명,상품명,SKU,재고수량\n본점,A상품,SKU-A,1\n`;
+    const zCsv = `매장명,상품명,SKU,재고수량\n본점,Z상품,SKU-Z,1\n`;
+    await writeFile(join(watchDir, "a-inventory.csv"), aCsv, "utf8");
+    await writeFile(join(watchDir, "z-inventory.csv"), zCsv, "utf8");
+    // 두 파일의 mtime을 완전히 동일하게 맞춘다 — OS readdir 순서에 의존하면 실행마다 다른
+    // 파일이 선택될 수 있는 상황을 실제로 재현한다.
+    const { utimes } = await import("node:fs/promises");
+    const tiedMtime = new Date("2026-08-01T00:00:00Z");
+    await utimes(join(watchDir, "a-inventory.csv"), tiedMtime, tiedMtime);
+    await utimes(join(watchDir, "z-inventory.csv"), tiedMtime, tiedMtime);
+
+    // 동시 실행이 아니라 순차 반복 — 이 테스트가 재현하려는 건 "OS readdir 순서에 의존하지
+    // 않고 매번 같은 파일을 고른다"는 것이지 동시성 자체가 아니다(동시 스캔은 다른 관심사).
+    for (let i = 0; i < 3; i++) {
+      const result = await runFolderScan(
+        {
+          warehouse,
+          clock: createFixedClock(NOW_ISO),
+          notificationProvider: createMockNotificationProvider(),
+        },
+        { watchDir, snapshotDir },
+      );
+      // 경로 역순 정렬 — "z-inventory.csv"가 "a-inventory.csv"보다 사전순으로 뒤라 먼저 온다.
+      expect(result.sourceFile).toContain("z-inventory.csv");
+    }
+  });
+
   it("XLSX 파일도 스캔할 수 있다(T16 픽스처 재사용)", async () => {
     const { warehouse } = await makeWarehouse();
     await copyFile("tests/fixtures/csvExcel/inventory.xlsx", join(watchDir, "inventory.xlsx"));
@@ -703,6 +732,44 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     // 같은 파일, 같은 날짜, 실패 직후 재시도 — 억제되지 않고 다시 시도해야 한다(그리고
     // 여전히 실패한다, failFor가 유지되므로).
     await expect(runFolderScan(deps, { ...opts, runId: "run-2" })).rejects.toThrow();
+  });
+
+  it("발송 결과가 불확실하면(AmbiguousSendError) failed가 아니라 unknown으로 기록된다(OPS-004, TASKS T34)", async () => {
+    const { db, warehouse } = await makeWarehouse();
+    await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+    // 실제 resendProvider.ts가 타임아웃 시 던지는 것과 같은 모양(.name)의 에러를 흉내낸다.
+    const ambiguousProvider = {
+      channel: "email" as const,
+      send: () => {
+        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        err.name = "AmbiguousSendError";
+        return Promise.reject(err);
+      },
+    };
+    const deps = {
+      warehouse,
+      clock: createFixedClock(NOW_ISO),
+      notificationProvider: ambiguousProvider,
+    };
+    const opts = {
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+      runId: "run-ambiguous",
+    };
+
+    await expect(runFolderScan(deps, opts)).rejects.toThrow(/타임아웃/);
+
+    const { rows } = await db.query<{ status: string }>(
+      "select status from agent_send_log where run_id = $1",
+      ["run-ambiguous"],
+    );
+    // 'sending' 예약 행이 'unknown'으로 갱신된다(행이 늘지 않는다 — pgWarehouse.ts의
+    // logAgentSendOn이 "unknown"도 "sent"/"failed"와 같이 update 대상으로 처리해야 한다).
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("unknown");
   });
 
   it("dry_run 반복 실행은 다이제스트 판정과 무관하다 — 매번 같은 리포트를 그대로 다시 보여준다", async () => {

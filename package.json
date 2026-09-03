@@ -44,6 +44,7 @@
     "format:check": "prettier --check .",
     "dev": "tsx src/server.ts",
     "migrate": "tsx scripts/migrate.ts",
+    "cleanup": "tsx scripts/cleanup.ts",
     "agent:reorder": "tsx src/agent/reorder.ts",
     "agent:folder-scan": "tsx src/agent/folderScan.ts",
     "onboard": "tsx src/cli/onboard.ts",

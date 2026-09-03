@@ -116,14 +116,17 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [x] SCM 처리 실패가 결과/이메일에 `scmStatus`로 노출됨(DATA-007) — `tests/folderScan.test.ts`
 - [x] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008) — `tests/scmSchema.test.ts`
 
-**운영 신뢰성 게이트 (TASKS T34)**
+**운영 신뢰성 게이트 (TASKS T34 — 완료)**
 
-- [ ] `db.close()` 실패 시에도 파일 락이 해제됨(OPS-001)
-- [ ] latest file 동률(mtime 동일) 시 결정론적으로 처리됨(OPS-003)
-- [ ] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음(OPS-004)
+- [x] `db.close()` 실패 시에도 파일 락이 해제됨(OPS-001) — `tests/warehouseFactory.test.ts`(db.close() 실패 시 release 확인, 둘 다 실패 시 AggregateError)
+- [x] PID 재사용이 stale lock으로 정확히 판별되고, 다른 호스트가 쓴 락은 자동 회수되지 않음(OPS-002) — `tests/fileLock.test.ts`(신규 describe 6 tests)
+- [x] latest file 동률(mtime 동일) 시 결정론적으로 처리됨(OPS-003) — `tests/folderScan.test.ts`(`utimes`로 mtime을 강제로 맞춘 뒤 반복 스캔해도 항상 같은 파일 선택 확인)
+- [x] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음, Idempotency-Key 전달(OPS-004) — `tests/resendProvider.test.ts`, `tests/pgWarehouse.test.ts`, `tests/folderScan.test.ts`
+- [x] 구조화 로그가 JSON으로 파싱 가능하고, 보존 기간 지난 `agent_send_log`/`inventory_snapshots` 행이 `npm run cleanup`으로 정리됨(OPS-005) — `tests/structuredLog.test.ts`, `tests/pgWarehouse.test.ts`(신규 describe 4 tests)
 
 **Postgres 계약 게이트 (TASKS T35, CI 전용)**
 
 - [ ] CI service Postgres에서 migration, transaction rollback, READ ONLY role, advisory lock cleanup, explore_sql timeout을 component test(QA-004) — PGlite와 실 Postgres의 이미 알려진 차이(§17 statement_timeout 미집행 등)가 실 Postgres에서는 재현되지 않음을 별도로 확인한다.
+- [ ] CI matrix에 최소 지원 OS/Node LTS로 `npm run verify:pack`(clean tarball install) 포함(007 OPS-006, T34에서 이관)
 
 이 절의 각 항목은 007/008이 지적한 "376개 테스트가 통과해도 게시된 패키지가 실행 불가능하거나 공격에 취약할 수 있다"는 간극을 메우기 위한 것이다 — §1~§7의 기존 게이트를 대체하지 않고 추가한다.

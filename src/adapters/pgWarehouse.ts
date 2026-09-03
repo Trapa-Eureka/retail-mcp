@@ -585,7 +585,11 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
     e.errorCode,
   ];
 
-  if (e.status === "sent" || e.status === "failed") {
+  // OPS-004(TASKS T34) — "unknown"도 "sending" 예약을 마무리 짓는 최종 상태다(성공/실패
+  // 여부를 못 밝혔을 뿐, 그 시도 자체는 끝났다) — "sent"/"failed"와 같은 행을 갱신해야
+  // 한다. 여기 빠뜨리면 sending 예약 행은 그대로 남고 별도 insert 행이 새로 생겨(아래
+  // catch-all insert 경로) 같은 run_id에 행이 두 개 남는다.
+  if (e.status === "sent" || e.status === "failed" || e.status === "unknown") {
     const { rows } = await session.query<{ id: string }>(
       "select id from agent_send_log where run_id = $1 and status = 'sending' order by id desc limit 1",
       [e.runId],
@@ -626,6 +630,50 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
   }
 }
 
+/**
+ * 007 OPS-005(TASKS T34) — `scripts/cleanup.ts`(사람 전용) 전용. `dryRun`이면 실제로
+ * 지우지 않고 대상 행 수만 센다(삭제는 되돌릴 수 없어 기본은 항상 dry-run이 되도록 스크립트
+ * 쪽에서 `--confirm` 이중 게이트를 둔다 — SEND_MODE와 같은 패턴). `DbSession.query`가
+ * `rowCount`를 노출하지 않아 실제 삭제는 `returning`으로 지운 행 수를 센다.
+ */
+async function deleteOldInventorySnapshotsOn(
+  session: DbSession,
+  before: Date,
+  dryRun: boolean,
+): Promise<number> {
+  if (dryRun) {
+    const { rows } = await session.query<{ count: string }>(
+      "select count(*)::text as count from inventory_snapshots where snapped_at < $1",
+      [before.toISOString()],
+    );
+    return Number(rows[0]?.count ?? "0");
+  }
+  const { rows } = await session.query<{ deleted: number }>(
+    "delete from inventory_snapshots where snapped_at < $1 returning 1 as deleted",
+    [before.toISOString()],
+  );
+  return rows.length;
+}
+
+async function deleteOldAgentSendLogOn(
+  session: DbSession,
+  before: Date,
+  dryRun: boolean,
+): Promise<number> {
+  if (dryRun) {
+    const { rows } = await session.query<{ count: string }>(
+      "select count(*)::text as count from agent_send_log where sent_at < $1",
+      [before.toISOString()],
+    );
+    return Number(rows[0]?.count ?? "0");
+  }
+  const { rows } = await session.query<{ deleted: number }>(
+    "delete from agent_send_log where sent_at < $1 returning 1 as deleted",
+    [before.toISOString()],
+  );
+  return rows.length;
+}
+
 // ── 고정 session에 바인딩된 Warehouse (transaction() 안에서 재사용) ─────────
 
 function buildWarehouseOnSession(session: DbSession): Warehouse {
@@ -651,6 +699,10 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     queryProducts: (variantIds) => queryProductsOn(session, variantIds),
     deactivateMissingCsvRows: (params) => deactivateMissingCsvRowsOn(session, params),
     logAgentSend: (e) => logAgentSendOn(session, e),
+    deleteOldInventorySnapshots: (before, opts) =>
+      deleteOldInventorySnapshotsOn(session, before, opts?.dryRun ?? false),
+    deleteOldAgentSendLog: (before, opts) =>
+      deleteOldAgentSendLogOn(session, before, opts?.dryRun ?? false),
   };
 }
 
@@ -702,5 +754,13 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     deactivateMissingCsvRows: (params) =>
       withSession(provider, (session) => deactivateMissingCsvRowsOn(session, params)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
+    deleteOldInventorySnapshots: (before, opts) =>
+      withSession(provider, (session) =>
+        deleteOldInventorySnapshotsOn(session, before, opts?.dryRun ?? false),
+      ),
+    deleteOldAgentSendLog: (before, opts) =>
+      withSession(provider, (session) =>
+        deleteOldAgentSendLogOn(session, before, opts?.dryRun ?? false),
+      ),
   };
 }

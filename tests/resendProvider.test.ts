@@ -60,6 +60,24 @@ describe("createResendEmailProvider — 요청 형태", () => {
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com" });
     expect(provider.channel).toBe("email");
   });
+
+  it("idempotencyKey가 있으면 Idempotency-Key 헤더로 전달한다(OPS-004, TASKS T34)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_1" }));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    await provider.send({ ...MSG, idempotencyKey: "run-abc-123" });
+    const init = (fetchImpl.mock.calls[0] as [string, RequestInit])[1];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Idempotency-Key"]).toBe("run-abc-123");
+  });
+
+  it("idempotencyKey가 없으면 헤더 자체를 생략한다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_1" }));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    await provider.send(MSG);
+    const init = (fetchImpl.mock.calls[0] as [string, RequestInit])[1];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Idempotency-Key"]).toBeUndefined();
+  });
 });
 
 describe("createResendEmailProvider — 실패 처리", () => {
@@ -86,6 +104,32 @@ describe("createResendEmailProvider — 실패 처리", () => {
       timeoutMs: 20,
     });
     await expect(provider.send(MSG)).rejects.toThrow(/타임아웃/);
+  });
+
+  it("타임아웃 에러의 name은 AmbiguousSendError다(OPS-004, TASKS T34 — 호출자가 failed/unknown을 구분하는 신호)", async () => {
+    const fetchImpl = vi.fn().mockReturnValue(new Promise<Response>(() => {}));
+    const provider = createResendEmailProvider({
+      apiKey: "k",
+      from: "a@b.com",
+      fetchImpl,
+      timeoutMs: 20,
+    });
+    await expect(provider.send(MSG)).rejects.toMatchObject({ name: "AmbiguousSendError" });
+  });
+
+  it("fetch 자체가 실패(타임아웃이 아님)하면 name은 AmbiguousSendError가 아니다 — Resend에 요청이 닿지도 못했을 가능성이 높다", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).not.toBe("AmbiguousSendError");
+  });
+
+  it("HTTP 오류 응답(요청은 도달)은 AmbiguousSendError가 아니다 — 확실한 실패다", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ message: "bad" }, 422));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect((err as Error).name).not.toBe("AmbiguousSendError");
   });
 
   describe("환경변수 누락", () => {

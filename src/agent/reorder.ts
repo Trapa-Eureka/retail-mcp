@@ -34,6 +34,7 @@ import type {
 import { createClaudeSummarizer } from "../adapters/claudeSummarizer.js";
 import { createLoyverseClientFromEnv } from "../adapters/loyverseClient.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
+import { logStructured } from "../adapters/structuredLog.js";
 import { createSystemClock } from "../adapters/systemClock.js";
 import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
 import { syncAll } from "../etl/sync.js";
@@ -270,6 +271,11 @@ function errorCodeOf(err: unknown): string {
   return err instanceof Error && err.name ? err.name : "UnknownError";
 }
 
+/** OPS-004(007 검수, TASKS T34) — agent/folderScan.ts와 동일한 판정. */
+function isAmbiguousSendError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AmbiguousSendError";
+}
+
 /**
  * DESIGN §7 흐름 전체(요약 → 이중 게이트 발송 → 로깅)를 실행한다. LLM(summarizer) 실패는
  * 발송을 막지 않는다 — 표만으로 계속 진행한다. 실제 발송(SEND_MODE=live && confirm)에서는
@@ -379,6 +385,9 @@ export async function runReorderAgent(
       subject,
       text: reportText,
       html: renderReportHtml(report, summary),
+      // OPS-004 — folderScan.ts와 동일: runId를 idempotency key로 써 사람이 같은 runId로
+      // 재시도해도 중복 발송되지 않는다(resendProvider.ts 문서 참고).
+      idempotencyKey: runId,
     });
     await deps.warehouse.logAgentSend({
       runId,
@@ -405,7 +414,7 @@ export async function runReorderAgent(
     await deps.warehouse.logAgentSend({
       runId,
       sentAt: deps.clock.now(),
-      status: "failed",
+      status: isAmbiguousSendError(err) ? "unknown" : "failed",
       recipient,
       subject,
       suggestionCount,
@@ -480,6 +489,14 @@ async function main(): Promise<void> {
       `재주문 에이전트 실행 완료 — run_id=${result.runId}, status=${result.status}, ` +
         `제안 ${result.suggestionCount}건, 발송 ${result.sent ? "완료" : "안 함"}.`,
     );
+    // OPS-005(007 검수, TASKS T34) — 사람이 읽는 위 줄과 별개로 파싱 가능한 한 줄을 남긴다.
+    logStructured({
+      event: "reorder_agent_completed",
+      runId: result.runId,
+      status: result.status,
+      suggestionCount: result.suggestionCount,
+      sent: result.sent,
+    });
   } finally {
     await handle.close();
   }

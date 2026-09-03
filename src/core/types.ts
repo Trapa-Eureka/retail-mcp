@@ -252,8 +252,15 @@ export interface StockRow {
  * 발송 시점과 같고 하루 다이제스트 상한(24시간)에도 안 걸리면 이 상태로 종료한다(발송·
  * 요약·스냅샷 재작성 없이 조용히). Loyverse 경로(agent/reorder.ts)는 이 상태를 쓰지 않는다.
  */
+/**
+ * `unknown`(007 OPS-004, TASKS T34) — 발송 요청이 타임아웃돼 "이미 발송됐을 수도, 안 됐을
+ * 수도" 있는 경우 전용 — `failed`(확실히 실패)와 구분한다. `NotificationProvider`가 이
+ * 애매함을 감지하면 `AmbiguousSendError`(`.name`)를 던지고, 에이전트가 그걸 보고
+ * `status: "unknown"`으로 기록한다. 사람이 발송처 대시보드로 실제 발송 여부를 확인한 뒤
+ * 재시도 여부를 판단해야 한다 — 자동 재시도 로직은 이 프로젝트에 없다(그 자체가 정책).
+ */
 export type AgentSendStatus =
-  "no_suggestions" | "dry_run" | "sending" | "sent" | "failed" | "unchanged";
+  "no_suggestions" | "dry_run" | "sending" | "sent" | "failed" | "unchanged" | "unknown";
 
 export interface AgentSendEntry {
   /**
@@ -360,6 +367,16 @@ export interface Warehouse {
     presentSales: { storeId: string; variantId: string }[];
   }): Promise<void>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
+
+  /**
+   * 보존 기간 정책(007 OPS-005, TASKS T34) — `snapped_at`/`sent_at`이 `before`보다 오래된
+   * 행을 지운다(또는 `dryRun`이면 지울 대상 행 수만 센다). `inventory_snapshots`/
+   * `agent_send_log`는 감사·로그 테이블이지 가드레일 4의 "비즈니스 데이터"(stores/products/
+   * sales/inventory)가 아니다 — `scripts/cleanup.ts`(사람 전용 실행) 용도로만 노출한다.
+   * 삭제(또는 셀 대상) 행 수를 반환한다.
+   */
+  deleteOldInventorySnapshots(before: Date, opts?: { dryRun?: boolean }): Promise<number>;
+  deleteOldAgentSendLog(before: Date, opts?: { dryRun?: boolean }): Promise<number>;
 }
 
 // ── explore_sql (v0.2 대기열, 가드레일 4 예외 — DESIGN §6이 이름으로 미리 예고해둔 것) ──────
@@ -396,6 +413,14 @@ export interface OutboundMessage {
   subject: string;
   text: string;
   html?: string;
+  /**
+   * 007 OPS-004(TASKS T34) — 이 발송 시도를 식별하는 안정적 키(에이전트가 `runId`를 그대로
+   * 준다). Resend는 `Idempotency-Key` 헤더로 24시간 내 같은 키의 재요청을 중복 발송 없이
+   * dedupe한다(resend.com API 문서 확인, 2026-09-03) — 타임아웃 후 사람이 같은 runId로
+   * 수동 재시도해도 실제로는 한 통만 나간다. Provider가 지원하지 않으면(예: MockNotification
+   * Provider) 그냥 무시해도 된다.
+   */
+  idempotencyKey?: string;
 }
 
 export interface SendResult {

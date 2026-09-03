@@ -40,6 +40,7 @@ npm install
 cp .env.example .env  # 값 채우기 — 아래 "운영 배포 절차" 참고
 npm run check          # typecheck + lint + test — 공통 게이트
 npm run migrate         # (최초 1회, 사람 실행) DATABASE_URL에 스키마 적용
+npm run cleanup         # (사람 실행, 기본 dry-run) 보존 기간 지난 로그/스냅샷 정리 — 아래 "운영 신뢰성"
 npm run smoke           # (사람 실행) 실 Loyverse+DB로 sync→조회 3종→에이전트 dry-run 확인
 npm run dev             # MCP 서버 stdio 실행 (Claude Code: claude mcp add, DESIGN §9)
 npm run agent:reorder   # 재주문 에이전트 1회 실행 (기본 SEND_MODE=dry_run)
@@ -115,6 +116,22 @@ npm run dev                # MCP 서버 연결 후 Claude Code에서 "본점만"
 ```
 
 매장명이 이미 필수 컬럼이라 기존 MCP 조회 도구의 지점 필터링이 스키마 변경 없이 그대로 다지점 통합 조회에 쓰인다.
+
+## 운영 신뢰성 (007 검수 OPS-001~006, TASKS T34)
+
+**지원 환경**: Node.js 20 이상(`engines.node`, CI/개발은 macOS로 검증). Linux는 코드 경로상 문제될 것으로 보이지 않지만(POSIX 파일 락·`ps` 사용) 이 프로젝트가 직접 실행 검증한 적은 아직 없다. **Windows는 검증하지 않았고 알려진 제약이 있다** — 파일 락의 PID 재사용 완화(`fileLock.ts`)가 쓰는 `ps -o lstart=`는 POSIX 전용이라 Windows에서는 이 보조 신호 없이 기존 PID-only 판정으로 자동 폴백한다(에러는 아니다). CI에서 실제 OS/Node 매트릭스로 clean tarball install을 돌리는 건 T35(Postgres 컴포넌트 테스트와 함께 CI 최초 구성)로 넘겼다 — 지금은 `npm run verify:pack`(로컬, 실제 tarball을 새 디렉터리에 `--omit=dev` 설치해 bin 2종 + `npm audit`까지 확인)이 유일한 clean-install 검증이다.
+
+**PGlite 락 복구**: 같은 임베디드 데이터 디렉터리를 다른 프로세스가 이미 열고 있으면 `FileLockBusyError`로 시작을 거부한다(원인이 된 PID와 조치가 메시지에 포함됨). 그 프로세스가 정말 죽었다면 다음 시작이 자동으로 stale lock을 회수한다 — 사람이 개입해야 하는 경우는 **다른 호스트가 쓴 락**(네트워크 공유 데이터 디렉터리 등 — 이 머신에서 그 프로세스의 생사를 확인할 방법이 없어 자동 회수하지 않는다)뿐이다. 이 경우 에러 메시지가 안내하는 대로 `{데이터 디렉터리}.lock` 파일을 수동으로 지운다(그 호스트의 프로세스가 실제로 끝났는지 먼저 확인할 것).
+
+**이메일 발송 재시도**: Resend 요청이 타임아웃되면(네트워크 응답 유실) "발송됐는지 알 수 없음"으로 `agent_send_log.status='unknown'`에 남는다(확실한 실패인 `failed`와 구분) — 자동으로 재시도하지 않는다. 사람이 Resend 대시보드에서 실제 발송 여부를 확인한 뒤, 재시도가 필요하면 **같은 run_id**로 다시 실행한다 — Resend에 `Idempotency-Key`로 run_id를 그대로 전달하므로 재시도해도 실제로는 중복 발송되지 않는다(24시간 이내).
+
+**보존 정책**: `agent_send_log`(실행 1회당 1행)와 `inventory_snapshots`(Loyverse 동기화마다 전체 재고 스냅샷)는 장기 운영 시 무제한으로 늘어난다. `npm run cleanup`(사람 전용, `CLEANUP_RETENTION_DAYS` 기본 90일)이 보존 기간보다 오래된 행을 지운다 — `npm run migrate`와 같은 이중 게이트: 기본은 dry-run(대상 행 수만 출력), 실제로 지우려면 `npm run cleanup -- --confirm`. 자동 실행 스케줄(cron 등)은 이 프로젝트가 대신 등록하지 않는다 — 위 "cron / launchd 등록 예시"와 같은 패턴으로 직접 추가한다.
+
+**백업/복구**: 임베디드 PGlite는 데이터가 `RETAIL_MCP_DATA_DIR`(기본 `.retail-mcp/data/`) 아래 일반 파일이다 — 프로세스를 멈춘 뒤 그 디렉터리를 통째로 복사하면 백업이고, 새 위치에 복원해 같은 환경변수로 가리키면 복구다(진행 중 쓰기와 겹치지 않도록 반드시 프로세스를 멈춘 뒤 복사할 것 — 파일 락이 있어도 파일시스템 레벨 복사 중 충돌까지는 막지 않는다). `DATABASE_URL`(Neon/Supabase 등)을 쓰면 백업/복구는 그 서비스의 관리형 백업 기능을 그대로 쓴다(이 프로젝트가 별도로 구현하지 않는다).
+
+**구조화 로그**: `agent:folder-scan`/`agent:reorder`는 사람이 읽는 완료 로그 줄과 별개로, 실행마다 파싱 가능한 JSON 한 줄(`{event, runId, status, ...}`)을 stdout에 추가로 남긴다(`src/adapters/structuredLog.ts`) — 로그 수집기나 알림 스크립트가 정규식 없이 이 줄만 골라 읽을 수 있다. MCP 서버(`server.ts`)는 stdout이 프로토콜 전용이라 이 로그를 쓰지 않는다.
+
+**종료 코드 계약**: 두 CLI(`agent:folder-scan`, `agent:reorder`)는 실행이 끝까지 완료되면(발견된 이슈·발송 여부와 무관) `0`, 처리되지 않은 예외로 중단되면 `1`을 반환한다 — cron/launchd가 실패를 알림으로 연결할 때 이 계약을 기준으로 삼는다.
 
 ## 상태
 

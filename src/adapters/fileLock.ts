@@ -8,7 +8,10 @@
  * 락 파일은 보호 대상 디렉터리 밖에 둔다(`{targetPath}.lock`) — PGlite 데이터 디렉터리
  * 안에 낯선 파일을 넣지 않기 위해서다.
  */
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { hostname as osHostname } from "node:os";
 import path from "node:path";
 
 export interface FileLock {
@@ -25,11 +28,52 @@ export interface FileLockOptions {
   nowFn?: () => Date;
   /** stale lock을 회수한 뒤 재시도할 최대 횟수(다른 프로세스와의 경합 대비). 기본 5. */
   maxRetries?: number;
+  /** 테스트 주입용(OPS-002). 기본값: os.hostname(). */
+  hostname?: string;
+  /**
+   * 테스트 주입용(OPS-002) — 주어진 pid로 실행 중인 프로세스의 시작 시각을 구할 수 있으면
+   * 문자열로, 못 구하면(플랫폼 미지원·권한 없음·프로세스 없음) null을 반환한다. 기본값은
+   * POSIX에서 `ps -o lstart= -p <pid>`(Windows는 항상 null — 아래 defaultGetProcessStartedAt
+   * 참고).
+   */
+  getProcessStartedAt?: (pid: number) => string | null;
 }
 
 interface LockFileContent {
   pid: number;
   acquiredAt: string;
+  /** OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 방법이 없으므로 자동
+   * 회수하지 않는다(수동 확인 필요). 구버전이 쓴 락 파일엔 이 필드가 없을 수 있다 — 그 경우
+   * "같은 호스트"로 간주해 기존 PID 기반 판정으로 폴백한다(하위 호환). */
+  hostname?: string;
+  /** 같은 pid·hostname이라도 이 락을 실제로 만든 실행 인스턴스를 구분하는 무작위 값
+   * (release()가 pid만이 아니라 이 값도 맞는지 확인한다 — OPS-002 보강). */
+  nonce?: string;
+  /** OPS-002 — PID 재사용(죽은 프로세스의 PID를 OS가 다른 프로세스에 재할당) 오판 완화용
+   * 보조 신호. 락을 만들 당시 이 pid로 실행 중이던 프로세스의 시작 시각(구할 수 있는
+   * 플랫폼에서만) — 나중에 같은 pid가 "살아있다"고 나와도 그 pid의 *현재* 시작 시각이 이
+   * 값과 다르면 그 사이 pid가 재사용된 것으로 판단해 stale 취급한다. null/누락이면 이 신호
+   * 없이 기존 PID-only 판정을 쓴다(필수 신호가 아니다).
+   */
+  pidStartedAt?: string | null;
+}
+
+/** POSIX(macOS/Linux 공통 `ps -o lstart=`)에서만 시도한다 — Windows엔 동등한 무설치 명령이
+ * 없고(`wmic`/PowerShell은 더 무겁고 이 프로젝트가 검증한 적 없음, OPS-006 참고), 실패하면
+ * (ps 없음·권한 없음·이미 종료) OPS-002의 보조 신호일 뿐이므로 조용히 null로 폴백한다 — 이
+ * 함수가 예외를 던지면 락 획득 자체가 막히는데, 그건 이 신호가 의도한 "완화"가 아니라
+ * "새 장애"가 된다. */
+function defaultGetProcessStartedAt(pid: number): string | null {
+  if (process.platform === "win32") return null;
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out === "" ? null : out;
+  } catch {
+    return null;
+  }
 }
 
 export class FileLockBusyError extends Error {
@@ -37,9 +81,14 @@ export class FileLockBusyError extends Error {
     lockPath: string,
     public readonly holderPid: number,
     acquiredAt: string,
+    holderHostname?: string,
   ) {
+    const crossHostNote =
+      holderHostname !== undefined
+        ? ` 락은 호스트 "${holderHostname}"의 프로세스가 만들었습니다 — 다른 호스트의 프로세스면 이 머신에서 생사를 확인할 수 없어 자동 회수하지 않습니다.`
+        : "";
     super(
-      `${lockPath}를 프로세스 ${holderPid}가 이미 사용 중입니다(${acquiredAt}부터). ` +
+      `${lockPath}를 프로세스 ${holderPid}가 이미 사용 중입니다(${acquiredAt}부터).${crossHostNote} ` +
         "같은 데이터 디렉터리를 두 프로세스가 동시에 열면 PGlite가 조용히 데이터를 잃을 수 " +
         `있습니다(SPEC §12) — 그 프로세스가 끝난 뒤 다시 시도하세요. 프로세스가 이미 죽었는데도 ` +
         `이 에러가 계속 뜨면 ${lockPath}를 수동으로 삭제하세요.`,
@@ -127,15 +176,27 @@ export async function acquireFileLock(
   const isAlive = opts.isAlive ?? defaultIsAlive;
   const nowFn = opts.nowFn ?? (() => new Date());
   const maxRetries = opts.maxRetries ?? 5;
+  const hostname = opts.hostname ?? osHostname();
+  const getProcessStartedAt = opts.getProcessStartedAt ?? defaultGetProcessStartedAt;
   const lockPath = lockPathFor(targetPath);
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const content: LockFileContent = { pid, acquiredAt: nowFn().toISOString() };
+    const nonce = randomUUID();
+    const content: LockFileContent = {
+      pid,
+      acquiredAt: nowFn().toISOString(),
+      hostname,
+      nonce,
+      pidStartedAt: getProcessStartedAt(pid),
+    };
     if (await tryCreateLockFile(lockPath, content)) {
       return {
         async release(): Promise<void> {
           const current = await readLockFile(lockPath);
-          if (current === null || current.pid !== pid) return; // 우리 소유가 아니면 그대로 둔다.
+          // 우리 소유가 아니면(pid도 다르거나, 같은 pid라도 다른 인스턴스의 nonce면) 그대로
+          // 둔다 — nonce는 구버전 락 파일엔 없을 수 있어 그 경우 pid만으로 비교한다.
+          if (current === null || current.pid !== pid) return;
+          if (typeof current.nonce === "string" && current.nonce !== nonce) return;
           try {
             await rm(lockPath);
           } catch (err) {
@@ -148,11 +209,31 @@ export async function acquireFileLock(
     const holder = await readLockFile(lockPath);
     if (holder === null) continue; // 그 사이 다른 프로세스가 release했다 — 바로 재시도.
 
-    if (isAlive(holder.pid)) {
-      throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt);
+    // OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 수 없다. 구버전이 쓴
+    // 락(hostname 필드 없음)은 "같은 호스트"로 간주해 기존 판정으로 폴백한다(하위 호환).
+    const crossHost = typeof holder.hostname === "string" && holder.hostname !== hostname;
+    if (crossHost) {
+      throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, holder.hostname);
     }
 
-    // stale lock — 죽은 프로세스가 남긴 것이므로 회수하고 재시도한다.
+    if (isAlive(holder.pid)) {
+      // PID는 살아있지만, 락을 만들 때 기록해둔 프로세스 시작 시각과 지금 그 pid로 실행 중인
+      // 프로세스의 시작 시각이 다르면 그 사이 OS가 pid를 재사용한 것이다(OPS-002) — "살아
+      // 있다"는 신호를 무시하고 stale로 취급한다. 둘 중 하나라도 못 구했으면(구버전 락,
+      // Windows, 권한 없음 등) 이 신호를 쓰지 않고 기존처럼 "살아있다"로 취급한다.
+      const recordedStartedAt = holder.pidStartedAt;
+      const currentStartedAt = getProcessStartedAt(holder.pid);
+      const pidReused =
+        typeof recordedStartedAt === "string" &&
+        typeof currentStartedAt === "string" &&
+        recordedStartedAt !== currentStartedAt;
+      if (!pidReused) {
+        throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, holder.hostname);
+      }
+    }
+
+    // stale lock — 죽은 프로세스가 남겼거나(isAlive false) pid가 재사용된 경우이므로 회수하고
+    // 재시도한다.
     try {
       await rm(lockPath);
     } catch (err) {

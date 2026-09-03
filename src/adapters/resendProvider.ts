@@ -77,6 +77,14 @@ export function createResendEmailProvider(
             headers: {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/json",
+              // OPS-004(007 검수, TASKS T34) — 같은 키의 요청은 24시간 내 Resend가 중복
+              // 발송 없이 dedupe한다(resend.com API 문서 확인, 2026-09-03). 에이전트가
+              // runId를 그대로 넘긴다 — 타임아웃 후 사람이 같은 runId로 재시도해도 실제로는
+              // 한 통만 나간다. 없으면(예: idempotencyKey를 안 주는 호출자) 헤더 자체를
+              // 생략한다 — Resend 쪽에서 매번 새 발송으로 취급된다(기존 동작과 동일).
+              ...(msg.idempotencyKey !== undefined
+                ? { "Idempotency-Key": msg.idempotencyKey }
+                : {}),
             },
             body: JSON.stringify({
               from,
@@ -93,13 +101,21 @@ export function createResendEmailProvider(
         );
       } catch (err) {
         const isTimeout = err instanceof Error && err.name === "TimeoutError";
-        throw new Error(
+        const wrapped = new Error(
           isTimeout
             ? `Resend 요청이 ${timeoutMs}ms 내에 응답하지 않아 타임아웃 처리했습니다. ` +
                 "이미 발송됐을 수 있으니 재시도 전에 Resend 대시보드에서 이 수신자에게 발송됐는지 확인하세요."
             : `Resend 요청 자체가 실패했습니다: ${err instanceof Error ? err.message : String(err)}`,
           { cause: err },
         );
+        if (isTimeout) {
+          // OPS-004 — 호출자(agent/folderScan.ts, agent/reorder.ts)가 이 이름으로 "확실한
+          // 실패"와 "발송됐는지 알 수 없음"을 구분해 agent_send_log에 status='unknown'으로
+          // 남긴다. 타임아웃이 아닌 다른 실패(연결 자체 거부 등)는 Resend에 요청이 닿지도
+          // 못했을 가능성이 높아 'failed'로 그대로 둔다.
+          wrapped.name = "AmbiguousSendError";
+        }
+        throw wrapped;
       }
 
       const payload: unknown = await response.json().catch(() => undefined);
