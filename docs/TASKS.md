@@ -61,9 +61,9 @@
 
 ---
 
-## v0.2 대기열 — CSV/Excel 이후로 미룬 항목
+## v0.2 대기열 — CSV/Excel 이후로 미룬 항목 · 전부 완료(2026-09-03)
 
-CSV/Excel 채널(T12~T22)과 무관한 항목들이다 — `explore_sql`(읽기 전용 롤)만 여전히 착수 금지(트리거 없음 — 시트/데이터와 무관한 보안 설계 항목). SCM 시트 연동 / 정통 셀스루 / 팩 단위 반올림은 사용자가 실제 샘플 시트를 제공해(2026-09-03) T23·T24로 착수했고, 미뤄뒀던 "MCP 도구·에이전트 배선"(T25)·"실 데이터 유입 경로"(T26, 원래 "Google Sheets API 연동"으로 부르다 접근 방식 재검토로 스코프 변경)까지 한 태스크씩 완료→머지→확인 후 다음 진행 방식으로 이어서 끝냈다(2026-09-03). 남은 건 `explore_sql` 하나뿐이다. (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
+CSV/Excel 채널(T12~T22)과 무관했던 항목들이다. SCM 시트 연동 / 정통 셀스루 / 팩 단위 반올림은 사용자가 실제 샘플 시트를 제공해(2026-09-03) T23·T24로 착수했고, 미뤄뒀던 "MCP 도구·에이전트 배선"(T25)·"실 데이터 유입 경로"(T26, 원래 "Google Sheets API 연동"으로 부르다 접근 방식 재검토로 스코프 변경)·`explore_sql`(T27, 데이터·시트와 무관한 보안 설계 항목)까지 한 태스크씩 완료→머지→확인 후 다음 진행 방식으로 이어서 전부 끝냈다(2026-09-03). (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
 
 ### T23 — SCM 입고 실적 스키마 + 재고 정합성 검증 · 상태: DONE(2026-09-03) · 의존: 없음(v0.1/T12~T22와 독립)
 - 목표: 사용자가 제공한 실제 샘플 구글시트("발주, 입고 데이터" — 상품목록/입출고내역/재고현황/판매요약/대시보드 5탭)를 근거로, SCM 입고 실적을 적재하는 스키마·웨어하우스 계층과 그걸로 계산하는 "정통 셀스루"·"재고 정합성 검증"을 구현한다. 실제 Google Sheets API 연동(자격증명·의존성 결정)은 이번 스코프 밖 — 시트 스냅샷을 테스트 픽스처로만 쓴다(사용자 확인, "지금은 픽스처로만" 선택).
@@ -84,6 +84,13 @@ CSV/Excel 채널(T12~T22)과 무관한 항목들이다 — `explore_sql`(읽기 
 - 목표: "실 Google Sheets API 연동"으로 시작했으나, npm 배포 후 불특정 다수(비개발자 포함)가 쓴다는 전제로 접근 방식을 재검토한 결과 **서비스 계정/OAuth 대신 SPEC §12의 "ERP는 CSV로 내보내기 → 폴더 채널" 선례를 SCM 시트에도 적용**하기로 스코프를 바꿨다(사용자 확인, "옵션 4로 진행"). T25가 미뤄뒀던 재고 정합성 검증(T23)을 실제로 쓸 수 있게 만든다.
 - 완료 기준: [x] `SCM_RECEIPTS_DIR`(선택) 설정 시 `runFolderScan`이 최신 SCM CSV를 T23 스키마로 파싱해 `purchase_receipts`에 적재 [x] 매장이 여럿이면 명시 요구, 하나면 자동 추론 [x] 이번 스캔 파일만으로 재고 정합성 계산(DB 재조회 없음, T17 패턴) + 불일치를 저재고 알림과 같은 이메일에 통합 [x] SCM 파싱 실패가 저재고 알림 판정을 막지 않음(격리) [x] `SCM_RECEIPTS_DIR` 미설정 시 기존 동작과 완전히 동일 [x] check 통과
 - **완료**: 접근 방식 재검토 표(서비스 계정/공개링크/OAuth/수동내보내기)는 `docs/SPEC.md` §16에 근거와 함께 기록 — 결론은 새 의존성·시크릿 0개인 수동 CSV 내보내기 채택, OAuth는 "실시간 자동화가 실제로 필요하다고 확인되면"(Loyverse 재검토와 같은 패턴) 보류. `agent/folderScan.ts`에 `findLatestScmFile`(CSV 전용)·`resolveScmStoreId`(단일 매장 자동추론/다중 매장 명시 요구)·`ingestScmReceipts`(파싱 실패를 삼켜 지점 스캔의 핵심 임무를 막지 않음)·`aggregatePurchases`·`salesAggFromCsv` 추가. `FolderScanOptions.scmReceiptsDir`/`scmReceiptsStoreId`, `FolderScanResult.reconciliation`(불일치 행만) 추가, `renderAlertText`가 재고 정합성 섹션을 저재고 알림과 같은 리포트에 합쳐 렌더링(발송 파이프라인은 하나만 유지) — 저재고 0건이어도 정합성 불일치만으로 발송 대상이 된다(issueCount 로직). **알려진 한계**(문서화, 해결 아님): `sales_period_agg`가 스캔마다 최신 기간으로 교체될 뿐 누적되지 않아(T12), 재고 정합성은 "추적 시작 이후 전체"가 아니라 "이번 스캔이 보고하는 기간만의 근사 대사"다. 기초재고는 여전히 기본값 0(온보딩 1회 실사값 입력은 이후 태스크). `.env.example`에 `SCM_RECEIPTS_DIR`/`SCM_RECEIPTS_STORE_ID` 추가. 상세는 `docs/SPEC.md` §16. check 통과(335 테스트 = 기존 330 + 신규 5).
+
+### T27 — explore_sql (임의 SELECT 조회) · 상태: DONE(2026-09-03) · 의존: 없음(v0.2 대기열 마지막 항목, 데이터·시트와 무관)
+- 목표: `docs/DESIGN.md` §6이 이름까지 미리 예고해둔 "자유 SQL 조회 도구"를 구현한다 — 가드레일 4가 사전 승인해둔 유일한 예외. 파라미터라이즈드 쿼리 원칙이 애초에 적용 안 되는(고정된 쿼리 형태가 없는) 유일한 도구라 안전장치를 검증(UX) + `BEGIN READ ONLY`(진짜 방어선) 두 겹으로 설계한다.
+- 완료 기준: [x] `select`/`with`만 허용하는 SQL 검증기(순수 함수, 블록리스트+세미콜론 다중문장 거부+CTE 위장 거부) [x] 검증을 통과해도 `BEGIN READ ONLY` 트랜잭션 안에서만 실행 — 검증기가 놓친 쓰기 부작용(예: `nextval()`)도 DB 엔진이 최종 거부함을 테스트로 실증 [x] 결과 행수 제한(LIMIT 파라미터 바인딩, SQL 재작성 없음) [x] 운영 기본값 비활성(`EXPLORE_SQL_ENABLED=false`), `sync_now`와 대칭인 게이팅 [x] 읽기 전용 DB role에서도 정상 동작(T9 테스트 패턴 재사용) [x] check 통과
+- **완료**: `core/sqlValidator.ts`(신규, 순수)의 `validateReadOnlySql` — 1차 방어선(UX), 완벽하지 않음을 문서에 명시. `adapters/exploreSqlExecutor.ts`(신규)가 진짜 방어선 — `BEGIN READ ONLY` 트랜잭션(Postgres 엔진이 쓰기 시도를 전부 거부, 시퀀스 진행 포함) 안에서만 실행하고 항상 롤백. LIMIT은 서브쿼리로 감싸 파라미터 바인딩(`select * from (<sql>) as t limit $1`), `statement_timeout`은 `set_config()`로 파라미터 바인딩 — 둘 다 SQL 텍스트에 값을 직접 보간하지 않는다. `adapters/pgWarehouse.ts`의 `withSession`을 export해 재사용, `adapters/warehouseFactory.ts`의 `WarehouseHandle`에 `connectionProvider`(pg/pglite 공통) 추가. **착수 중 발견한 한계**: 스파이크로 확인한 결과 임베디드 PGlite는 `statement_timeout`을 실제로 집행하지 않는다(`set_config` 호출은 성공하지만 느린 쿼리를 취소하지 않음, 실 Postgres/Neon과 다른 동작) — 진짜 안전장치인 `BEGIN READ ONLY`(쓰기 차단)는 PGlite에서도 정상 동작을 직접 확인해 안전성 자체엔 영향 없다(문서화, 해결 아님). `core/types.ts`에 `ExploreSqlExecutor`/`ExploreSqlOptions`/`ExploreSqlResult`를 나머지 `Warehouse`와 의도적으로 분리된 인터페이스로 추가(고정 쿼리 계약을 이 하나로 흐리지 않기 위해). `server.ts`에 `EXPLORE_SQL_ENABLED` 게이팅(`SYNC_TOOL_ENABLED`와 같은 패턴이나 `DATABASE_URL`을 강제하지 않음 — advisory lock 같은 pg 전용 기능에 안 걸림, 임베디드 PGlite에서도 그대로 동작). 상세는 `docs/SPEC.md` §17. check 통과(376 테스트 = 기존 335 + 신규 41).
+
+이걸로 v0.2 대기열(SCM 시트 연동/정통 셀스루/팩 단위 반올림/explore_sql) 전부 완료됐다.
 
 ## v0.2 백로그 — CSV/Excel 채널 (SPEC §12, 2026-09-03 설계)
 

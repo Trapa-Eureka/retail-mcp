@@ -84,7 +84,8 @@ export function createPgliteConnectionProvider(db: PgliteLike): DbConnectionProv
   };
 }
 
-async function withSession<T>(
+/** exploreSqlExecutor.ts(explore_sql 전용)가 같은 acquire/release 패턴을 재사용하려고 export한다. */
+export async function withSession<T>(
   provider: DbConnectionProvider,
   fn: (session: DbSession) => Promise<T>,
 ): Promise<T> {

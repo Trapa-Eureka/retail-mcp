@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveServerConfig, registerTools, type RegisterToolsDeps } from "../src/server.js";
+import { createExploreSqlExecutor } from "../src/adapters/exploreSqlExecutor.js";
 import { createTestWarehouse } from "../src/mocks/pglite.js";
 import { createPgWarehouse, createPgliteConnectionProvider } from "../src/adapters/pgWarehouse.js";
 import { createFixedClock } from "../src/mocks/fixedClock.js";
@@ -57,6 +58,19 @@ describe("resolveServerConfig", () => {
       }),
     ).toThrow(/STALE_THRESHOLD_HOURS/);
   });
+
+  it("EXPLORE_SQL_ENABLED 기본값은 false다(TASKS T27, 운영 기본값 비활성)", () => {
+    const config = resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila" });
+    expect(config.exploreSqlEnabled).toBe(false);
+  });
+
+  it("EXPLORE_SQL_ENABLED=true를 반영한다 — DATABASE_URL 없이도(임베디드 PGlite에서도 동작)", () => {
+    const config = resolveServerConfig({
+      BUSINESS_TIMEZONE: "Asia/Manila",
+      EXPLORE_SQL_ENABLED: "true",
+    });
+    expect(config.exploreSqlEnabled).toBe(true);
+  });
 });
 
 describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => {
@@ -70,6 +84,7 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
         businessTimezone: "Asia/Manila",
         staleThresholdHours: 24,
         syncToolEnabled,
+        exploreSqlEnabled: false,
       },
     };
     if (!syncToolEnabled) return base;
@@ -112,6 +127,53 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
     const deps: RegisterToolsDeps = {
       ...base,
       config: { ...base.config, syncToolEnabled: true },
+    };
+    const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
+    expect(() => registerTools(server, deps)).toThrow(/조립/);
+  });
+});
+
+describe("registerTools — EXPLORE_SQL_ENABLED 게이팅 (TASKS T27, 가드레일 4 예외)", () => {
+  async function makeDeps(exploreSqlEnabled: boolean): Promise<RegisterToolsDeps> {
+    const db = await createTestWarehouse();
+    const warehouse = createPgWarehouse(createPgliteConnectionProvider(db));
+    const base: RegisterToolsDeps = {
+      warehouse,
+      clock: createFixedClock("2026-09-01T00:00:00Z"),
+      config: {
+        businessTimezone: "Asia/Manila",
+        staleThresholdHours: 24,
+        syncToolEnabled: false,
+        exploreSqlEnabled,
+      },
+    };
+    if (!exploreSqlEnabled) return base;
+    return {
+      ...base,
+      exploreSqlExecutor: createExploreSqlExecutor(createPgliteConnectionProvider(db)),
+    };
+  }
+
+  it("EXPLORE_SQL_ENABLED=false면 explore_sql을 등록하지 않는다(운영 기본값)", async () => {
+    const deps = await makeDeps(false);
+    const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
+    const registered = registerTools(server, deps);
+    expect(registered).not.toContain("explore_sql");
+  });
+
+  it("EXPLORE_SQL_ENABLED=true면 explore_sql을 포함한 6종을 등록한다", async () => {
+    const deps = await makeDeps(true);
+    const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
+    const registered = registerTools(server, deps);
+    expect(registered).toContain("explore_sql");
+    expect(registered).toHaveLength(6);
+  });
+
+  it("EXPLORE_SQL_ENABLED=true인데 exploreSqlExecutor가 없으면 조립 오류를 던진다", async () => {
+    const base = await makeDeps(false);
+    const deps: RegisterToolsDeps = {
+      ...base,
+      config: { ...base.config, exploreSqlEnabled: true },
     };
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
     expect(() => registerTools(server, deps)).toThrow(/조립/);

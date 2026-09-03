@@ -22,7 +22,14 @@ import {
   type ReorderMetricRow,
   type SellThroughRow,
 } from "../core/metrics.js";
-import type { Clock, LoyverseClient, ReorderReport, Warehouse } from "../core/types.js";
+import type {
+  Clock,
+  ExploreSqlExecutor,
+  ExploreSqlResult,
+  LoyverseClient,
+  ReorderReport,
+  Warehouse,
+} from "../core/types.js";
 import { syncAll, type SyncResource, type SyncResult } from "../etl/sync.js";
 
 // ── 공통 ────────────────────────────────────────────────────────────────
@@ -486,4 +493,29 @@ export async function syncNowTool(deps: SyncNowDeps, input: SyncNowInput): Promi
     ),
   );
   return toSyncNowResult(result);
+}
+
+// ── explore_sql (v0.2 대기열, TASKS T27) — 운영 기본값 비활성, EXPLORE_SQL_ENABLED=true 필요 ──
+//
+// 실제 안전장치(SQL 검증 + BEGIN READ ONLY)는 core/sqlValidator.ts와
+// adapters/exploreSqlExecutor.ts에 있다 — 여기는 다른 5개 도구와 같은 얇은 조립 계층이다.
+
+export interface ExploreSqlDeps {
+  executor: ExploreSqlExecutor;
+}
+
+export interface ExploreSqlToolInput {
+  sql: string;
+  limit?: number;
+  timeoutMs?: number;
+}
+
+export async function exploreSqlTool(
+  deps: ExploreSqlDeps,
+  input: ExploreSqlToolInput,
+): Promise<ExploreSqlResult> {
+  return deps.executor.execute(input.sql, {
+    ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
 }

@@ -25,6 +25,7 @@ import {
   createPgConnectionProvider,
   createPgliteConnectionProvider,
   createPgWarehouse,
+  type DbConnectionProvider,
 } from "./pgWarehouse.js";
 
 /** `DATABASE_URL` 미설정 시 임베디드 PGlite 데이터를 저장할 기본 경로(프로세스 작업 디렉터리 기준). */
@@ -38,6 +39,12 @@ export interface WarehouseHandle {
    * Postgres 전용 기능에 필요하다(DESIGN §11.4). 임베디드 PGlite 경로에는 이 값이 없다.
    */
   pgPool?: Pool;
+  /**
+   * `warehouse`를 만들 때 쓴 것과 같은 연결 제공자 — pg/pglite 어느 쪽이든 항상 존재한다.
+   * `explore_sql`(TASKS T27)처럼 Warehouse의 고정 쿼리 계약 밖에서 세션이 필요한 극소수
+   * 예외 용도(현재는 explore_sql 하나뿐)로만 쓴다.
+   */
+  connectionProvider: DbConnectionProvider;
   /** 열어둔 자원(pg.Pool 연결 또는 PGlite 인스턴스+파일 락)을 전부 정리한다. */
   close(): Promise<void>;
 }
@@ -62,10 +69,12 @@ async function createEmbeddedWarehouse(dataDir: string): Promise<WarehouseHandle
       throw err;
     }
 
-    const warehouse = createPgWarehouse(createPgliteConnectionProvider(db));
+    const connectionProvider = createPgliteConnectionProvider(db);
+    const warehouse = createPgWarehouse(connectionProvider);
     return {
       warehouse,
       kind: "pglite",
+      connectionProvider,
       async close() {
         await db.close();
         await lock.release();
@@ -79,11 +88,13 @@ async function createEmbeddedWarehouse(dataDir: string): Promise<WarehouseHandle
 
 function createNetworkWarehouse(databaseUrl: string): WarehouseHandle {
   const pool = new Pool({ connectionString: databaseUrl });
-  const warehouse = createPgWarehouse(createPgConnectionProvider(pool));
+  const connectionProvider = createPgConnectionProvider(pool);
+  const warehouse = createPgWarehouse(connectionProvider);
   return {
     warehouse,
     kind: "pg",
     pgPool: pool,
+    connectionProvider,
     close: () => pool.end(),
   };
 }

@@ -14,6 +14,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { withTryAdvisoryLock } from "./adapters/advisoryLock.js";
+import {
+  createExploreSqlExecutor,
+  EXPLORE_SQL_MAX_LIMIT,
+  EXPLORE_SQL_MAX_TIMEOUT_MS,
+} from "./adapters/exploreSqlExecutor.js";
 import { createLoyverseClientFromEnv } from "./adapters/loyverseClient.js";
 import { createSystemClock } from "./adapters/systemClock.js";
 import { createWarehouseFromEnv } from "./adapters/warehouseFactory.js";
@@ -23,8 +28,9 @@ import {
   DEFAULT_SAFETY_DAYS,
   DEFAULT_TARGET_COVER_DAYS,
 } from "./core/metrics.js";
-import type { Clock, LoyverseClient, Warehouse } from "./core/types.js";
+import type { Clock, ExploreSqlExecutor, LoyverseClient, Warehouse } from "./core/types.js";
 import {
+  exploreSqlTool,
   inventoryStatusTool,
   reorderSuggestionsTool,
   sellThroughTool,
@@ -43,6 +49,8 @@ export interface ServerConfig {
   businessTimezone: string;
   staleThresholdHours: number;
   syncToolEnabled: boolean;
+  /** 운영 기본값 비활성(가드레일 4 예외, TASKS T27) — 임의 SELECT 조회 도구를 등록할지. */
+  exploreSqlEnabled: boolean;
 }
 
 function parsePositiveNumber(
@@ -88,7 +96,8 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
         "SYNC_TOOL_ENABLED를 꺼두세요(임베디드 PGlite 경로에서는 sync_now를 쓸 수 없습니다).",
     );
   }
-  return { businessTimezone, staleThresholdHours, syncToolEnabled };
+  const exploreSqlEnabled = env["EXPLORE_SQL_ENABLED"] === "true";
+  return { businessTimezone, staleThresholdHours, syncToolEnabled, exploreSqlEnabled };
 }
 
 // ── 도구 결과 포장 ───────────────────────────────────────────────────────
@@ -125,6 +134,8 @@ export interface RegisterToolsDeps {
   loyverseClient?: LoyverseClient;
   /** sync_now의 advisory lock 실행기. SYNC_TOOL_ENABLED=false면 아예 참조하지 않는다. */
   runExclusively?: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** explore_sql에서만 쓴다. EXPLORE_SQL_ENABLED=false면 아예 참조하지 않는다(TASKS T27). */
+  exploreSqlExecutor?: ExploreSqlExecutor;
 }
 
 /** 실제로 등록한 도구 이름 목록을 반환한다 — SYNC_TOOL_ENABLED 분기를 테스트로 확인하기 위함. */
@@ -272,6 +283,45 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
     registered.push("sync_now");
   }
 
+  if (deps.config.exploreSqlEnabled) {
+    if (!deps.exploreSqlExecutor) {
+      throw new Error(
+        "EXPLORE_SQL_ENABLED=true인데 exploreSqlExecutor가 조립되지 않았습니다 " +
+          "(server.ts 조립 버그 — createRetailMcpServer() 호출부를 확인하세요).",
+      );
+    }
+    const exploreSqlExecutor = deps.exploreSqlExecutor;
+    server.registerTool(
+      "explore_sql",
+      {
+        title: "임의 SELECT 조회 (읽기 전용)",
+        description:
+          "select/with(CTE)로 시작하는 단일 조회문만 BEGIN READ ONLY 트랜잭션 안에서 실행한다 " +
+          "— 데이터를 바꾸는 어떤 시도도 Postgres 엔진 자체가 거부한다. 운영 기본값은 비활성 " +
+          "— EXPLORE_SQL_ENABLED=true일 때만 등록된다(가드레일 4 예외, DESIGN §6이 이름으로 " +
+          "미리 예고해둔 도구). 주요 테이블: stores, products, sales_lines, sales_period_agg, " +
+          "inventory_levels, purchase_receipts, sync_state, agent_send_log.",
+        inputSchema: {
+          sql: z.string().min(1),
+          limit: z.number().int().positive().max(EXPLORE_SQL_MAX_LIMIT).optional(),
+          timeout_ms: z.number().int().positive().max(EXPLORE_SQL_MAX_TIMEOUT_MS).optional(),
+        },
+      },
+      (args) =>
+        wrap(() =>
+          exploreSqlTool(
+            { executor: exploreSqlExecutor },
+            {
+              sql: args.sql,
+              ...(args.limit !== undefined ? { limit: args.limit } : {}),
+              ...(args.timeout_ms !== undefined ? { timeoutMs: args.timeout_ms } : {}),
+            },
+          ),
+        ),
+    );
+    registered.push("explore_sql");
+  }
+
   return registered;
 }
 
@@ -306,6 +356,9 @@ export async function createRetailMcpServer(): Promise<{
         client.release();
       }
     };
+  }
+  if (config.exploreSqlEnabled) {
+    registerDeps.exploreSqlExecutor = createExploreSqlExecutor(handle.connectionProvider);
   }
   registerTools(server, registerDeps);
 
