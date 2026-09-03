@@ -258,7 +258,7 @@ T23·T24가 각각 미룬 "MCP 도구·에이전트 배선"의 **팩 단위 반�
 
 ### 이번에 안 하는 것
 
-- **재고 정합성 검증(§13, `computeStockReconciliation`)은 MCP·에이전트 어디에도 연결하지 않는다.** 이유: 이 계산은 `Warehouse.queryPurchaseAgg`(SCM 입고 실적)를 입력으로 받는데, 실 Google Sheets 연동(§13에서 미룬 항목)이 없는 지금은 `purchase_receipts`가 운영 환경에서 항상 비어 있다 — 그 상태로 계산을 돌리면 "입고 0건"을 실제 입고 이력으로 오인해 모든 품목에 대해 `discrepancy`(불일치)가 거짓으로 잡힌다. 의미 없는 경고를 자동 노출하는 대신, 이 도구는 실 Google Sheets 연동과 함께(그때는 `purchase_receipts`에 실제 데이터가 있다) 노출하기로 미룬다.
+- **재고 정합성 검증(§13, `computeStockReconciliation`)은 MCP·에이전트 어디에도 연결하지 않는다.** 이유: 이 계산은 `Warehouse.queryPurchaseAgg`(SCM 입고 실적)를 입력으로 받는데, 실 SCM 데이터 유입 경로가 없는 지금은 `purchase_receipts`가 운영 환경에서 항상 비어 있다 — 그 상태로 계산을 돌리면 "입고 0건"을 실제 입고 이력으로 오인해 모든 품목에 대해 `discrepancy`(불일치)가 거짓으로 잡힌다. 의미 없는 경고를 자동 노출하는 대신, 실 데이터 유입 경로가 생긴 뒤(→ §16) 노출하기로 미룬다.
 - 새 MCP 조회 도구를 추가하지 않는다 — 기존 6개 도구(`reorder_suggestions` 포함) 재사용만으로 이번 배선이 끝난다.
 
 ### 구현
@@ -268,3 +268,35 @@ T23·T24가 각각 미룬 "MCP 도구·에이전트 배선"의 **팩 단위 반�
 - `agent/reorder.ts` — `buildReorderReport()`에서 `queryProducts` + `applyPackRounding` 호출, `renderReportText`/`renderReportHtml`에 `formatOrderQty()` 헬퍼로 팩 단위 반올림 표시("42 → 최종 발주량 48(2팩, 팩당 24개)").
 - `agent/folderScan.ts` — `alertsFrom()`이 `products: ProductRow[]`를 추가로 받아 history 모드 행에 팩 단위 반올림을 적용, `FolderScanAlertItem`에 `reorderQty`/`finalOrderQty`/`packCount`(선택 필드 — no_history 모드는 없음) 추가.
 - 테스트: `tests/pgWarehouse.test.ts`(`queryProducts`), `tests/reorderAgent.test.ts`(packSize 있는 golden case), `tests/claudeSummarizer.test.ts`(리포트 타입 갱신), `tests/folderScan.test.ts`(CSV 알림에 팩 단위 반올림 반영/미반영 각각). 기존 `tests/mcpTools.test.ts`/`tests/e2e.test.ts`의 "도구=에이전트 완전 동일" 회귀 가드는 두 경로가 같은 함수를 재사용하므로 코드 변경 없이 그대로 통과한다.
+
+## 16. SCM 입고 실적 — 수동 CSV 내보내기로 흡수 (2026-09-03, T23/T25 후속)
+
+T25가 "실 Google Sheets 연동이 없어 의미 없다"며 미룬 재고 정합성 검증(§13, §15)을 실제로 쓸 수 있게 한다. **실 Google Sheets API 연동은 채택하지 않는다** — 아래 "접근 방식 재검토"가 그 이유다.
+
+### 접근 방식 재검토 — 왜 서비스 계정을 안 쓰나
+
+이 프로젝트는 npm으로 배포해 불특정 다수(비개발자 리테일 운영자 포함)가 쓴다는 전제다(SPEC §11 "사용 채널" 재정의, §12 "웨어하우스: 임베디드 PGlite 기본"이 이미 이 전제로 여러 번 결정을 내렸다). 이 전제로 세 가지 접근을 다시 체크했다:
+
+| 방식 | 사용자가 매번 해야 하는 일 | 판정 |
+|---|---|---|
+| 서비스 계정 + Sheets API | Google Cloud 콘솔 가입 → 프로젝트 생성 → API 활성화 → 서비스 계정 생성 → JSON 키 발급 → 그 계정 이메일을 자기 시트에 공유. 온보딩 CLI로 자동화 불가(브라우저 로그인이 아니라 콘솔 수동 조작) | **기각** — Neon DB 연결 문자열(§12에서 이미 "진입장벽 크다"고 판단해 PGlite 기본값 채택)보다도 진입장벽이 높다 |
+| 공개 링크 CSV export | 시트를 "링크 있으면 누구나 보기"로 전환 | **기각** — 매입단가·거래처 등이 사실상 인터넷에 공개됨(§9 원칙과도 배치) |
+| OAuth(사용자 계정으로 연결) | 사용자 부담은 낮지만, 유지관리자가 OAuth 클라이언트 등록 + 로컬 리다이렉트 서버(`gh`/`gcloud` 패턴) + 토큰 저장·리프레시를 새로 구현해야 함 | **보류** — 구현 복잡도가 셋 중 가장 크다. 실시간 자동화가 실제로 필요하다고 확인되면(Loyverse를 대했던 것과 같은 패턴) 그때 버전업으로 검토 |
+| **수동 CSV 내보내기 → 폴더 채널 흡수** | "파일 > 다운로드 > CSV" 한 번, 감시 폴더에 두기 | **채택** |
+
+**채택 근거**: `docs/SPEC.md` §12가 이미 "ERP는 채널로 다루지 않는다 — ERP에서 CSV/Excel로 내보내기 → 폴더 채널로 투입"이라는 선례를 만들어뒀다. 구글시트도 동일하게 취급할 수 있다 — 새 의존성·시크릿이 전혀 없고, T23의 `mapScmRowsToPurchaseReceipts`가 이미 "헤더별로 파싱된 원시 행 배열"을 받는 순수 함수라 그대로 재사용된다. §12의 "실행 모델: 주기 스캔, 상시 워처 아님" 결정과도 자연스럽게 맞는다 — 폴더 채널 자체가 "사람이 파일을 갱신하면 다음 스캔이 읽는다"는 모델이라, "내보내기"라는 수동 단계 하나가 이질적이지 않다.
+
+### 구현
+
+- **`SCM_RECEIPTS_DIR`**(선택, 지점 모드 전용) — 설정하면 `runFolderScan`이 이 폴더의 최신 CSV를 찾아 T23 스키마로 파싱해 `Warehouse.upsertPurchaseReceipts`로 적재한다. 미설정 시 기존 동작과 완전히 동일(재고 정합성 검증 스킵).
+- **매장 귀속**: SCM 시트 자체엔 매장 컬럼이 없다(§13에서 이미 확인). 이번 스캔의 재고 파일에 매장이 정확히 하나면 자동 추론, 여럿이면 `SCM_RECEIPTS_STORE_ID`(또는 `scmReceiptsStoreId` 옵션)로 명시해야 한다 — 안 하면 명확한 에러.
+- **SCM 처리 실패 격리**: SCM 파일이 없거나 파싱에 실패해도 지점 스캔의 핵심 임무(저재고 알림)는 그대로 진행된다 — 경고만 남기고 재고 정합성 검증만 건너뛴다. CSV 채널(T18)의 "부분 적재 없이 명확한 에러로 중단" 원칙은 재고 파일 자체에만 적용되고, SCM은 부가 기능이라 격리한다.
+- **재고 정합성 계산 범위(알려진 한계)**: DB 재조회 없이 **이번 스캔에서 방금 파싱한 SCM 파일·재고 파일만으로** 계산한다(T17이 DB 재조회를 피한 것과 같은 패턴). `sales_period_agg`는 스캔마다 최신 기간으로 **교체**되지 갱신되지 않으므로(TASKS T12), "추적 시작 이후 전체 누적"이 아니라 **이번 스캔이 보고하는 기간만의 근사 대사**다 — SCM 파일과 재고 파일이 서로 다른 기간을 대표하면 오차가 생길 수 있다는 걸 사용자가 알아야 한다. 기초재고(`openingStock`)는 명시적으로 넘기지 않으면 0으로 간주한다(T23 원래 설계 그대로 — 온보딩 시 1회 실사값 입력은 여전히 이후 태스크).
+- **알림 통합**: 저재고 알림과 재고 정합성 경고(불일치가 있는 행만)를 **같은 이메일**에 합쳐 보낸다(별도 발송 파이프라인을 새로 만들지 않음) — 저재고 알림이 0건이어도 정합성 불일치만으로 발송 대상이 된다.
+
+### 구현 파일
+
+- `core/scmSchema.ts`/`core/metrics.ts`/`core/types.ts`: T23이 이미 만든 것을 그대로 재사용(변경 없음).
+- `agent/folderScan.ts`: `findLatestScmFile`(CSV만 지원), `resolveScmStoreId`, `ingestScmReceipts`(실패 격리), `aggregatePurchases`(DB 재조회 없이 이번 스캔 파일 합산), `salesAggFromCsv`(T17 내부 매핑과 동일 패턴) 추가. `FolderScanOptions.scmReceiptsDir`/`scmReceiptsStoreId`, `FolderScanResult.reconciliation` 추가. `renderAlertText`가 재고 정합성 섹션을 함께 렌더링.
+- `.env.example`: `SCM_RECEIPTS_DIR`/`SCM_RECEIPTS_STORE_ID` 추가.
+- 테스트: `tests/folderScan.test.ts`(새 describe — 미설정 시 기존 동작 동일, 불일치 검출 골든 케이스, 매장 다중일 때 명시 요구, SCM 파싱 실패 격리, 파일 없음 시 조용히 스킵).
