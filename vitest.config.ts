@@ -15,16 +15,19 @@ export default defineConfig({
       // 되되 스킵됨), exclude로 애초에 이 파일 자체를 보지 않게 하는 게 "기본 게이트는 이
       // 디렉터리를 아예 모른다"는 의도를 정확히 반영한다.
       "tests/component/**",
-      // performance.test.ts의 5초 wall-clock 예산은 v8 coverage 계측 오버헤드와 근본적으로
-      // 안 맞는다 — CI(coverage job)에서 실측 반복 실패(6567ms/5463ms 등, TASKS T36)를 보고
+      // performance.test.ts의 wall-clock 예산은 v8 coverage 계측 오버헤드와 근본적으로 안
+      // 맞는다 — CI(coverage job)에서 실측 반복 실패(6567ms/5463ms 등, TASKS T36)를 보고
       // 확정. 성능 가드 자체는 계측 없는 `test` job(plain `vitest run`)이 매 PR 여전히
       // 강제한다 — 여기서 빼는 건 "가드를 느슨하게 한다"가 아니라 "가드를 재는 도구에서
       // 잰다"는 뜻이다(계측된 실행 시간으로 wall-clock 예산을 재는 게 애초에 잘못된 측정).
+      // (예산 값 자체(BUDGET_MS)도 coverage와 무관하게 5초→10초로 올렸다 — 2차 적대적 검수
+      // 대응, tests/performance.test.ts 주석 참고. 계측 제외는 그것과 별개로 여전히 유효하다.)
       ...(coverageEnabled ? ["tests/performance.test.ts"] : []),
     ],
     // PGlite(인프로세스 Postgres) 기동이 CI/공유 CPU 환경에서 기본 5000ms를 넘기는 경우가
     // 실측됐다(특히 --coverage의 v8 계측 오버헤드와 겹칠 때) — 여유 있게 20초로 늘린다.
-    // 50k행 성능 가드 자체는 이 값과 별개로 테스트 안에서 5초 기준을 직접 assert한다.
+    // 50k행 성능 가드 자체는 이 값과 별개로 테스트 안에서 자체 BUDGET_MS(10초)를 직접
+    // assert한다.
     testTimeout: 20_000,
     coverage: {
       provider: "v8",
