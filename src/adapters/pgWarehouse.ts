@@ -130,8 +130,24 @@ async function upsertStoresOn(session: DbSession, rows: StoreRow[]): Promise<voi
   );
 }
 
+/**
+ * `low_stock_threshold`/`pack_size`는 세 상태를 구분한다(006 DATA-005, TASKS T33,
+ * `core/types.ts`의 `ProductRow` 문서 참고) — `undefined`(이 upsert 배치는 이 필드에 대해
+ * 아무 정보가 없음 → 기존 값 유지), `null`(명시적으로 지움 → null로 덮어씀), 값(그 값으로
+ * 설정). 컬럼이 파일에 있는지는 파일 헤더 단위 속성이라 한 배치(한 파일) 안에서 행마다
+ * 갈리지 않는다 — 갈린다면 전부 undefined이거나 전부 아니거나 둘 중 하나다. 그래서 배치
+ * 전체에 대해 "이 필드에 대해 조금이라도 정보가 있는 행이 하나라도 있는가"만 한 번 판정해
+ * SET절 자체를 고른다: 있으면 무조건 `excluded.x`로 덮어써 null도 그대로 반영되고(clear),
+ * 없으면 `products.x`(자기 자신)로 둬 기존 값을 그대로 보존한다 — `coalesce`는 배치
+ * 전체가 "정보 없음"일 때만 실질적으로 no-op이 되므로 이제 필요 없다(예전 방식은 null도
+ * "정보 없음"으로 오인해 명시적 clear를 표현할 방법이 아예 없었다 — 006 DATA-005가 지적한
+ * 결함 그 자체).
+ */
 async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise<void> {
   if (rows.length === 0) return;
+  const thresholdProvided = rows.some((r) => r.lowStockThreshold !== undefined);
+  const packSizeProvided = rows.some((r) => r.packSize !== undefined);
+
   const params: unknown[] = [];
   for (const r of rows) {
     params.push(
@@ -144,17 +160,20 @@ async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise
       r.packSize ?? null,
     );
   }
+  const thresholdSet = thresholdProvided
+    ? "low_stock_threshold = excluded.low_stock_threshold"
+    : "low_stock_threshold = products.low_stock_threshold";
+  const packSizeSet = packSizeProvided
+    ? "pack_size = excluded.pack_size"
+    : "pack_size = products.pack_size";
   await session.query(
     `insert into products (variant_id, item_id, name, sku, category, low_stock_threshold, pack_size)
      values ${buildValuesPlaceholders(rows.length, 7)}
      on conflict (variant_id) do update set
        item_id = excluded.item_id, name = excluded.name,
        sku = excluded.sku, category = excluded.category,
-       -- 어느 채널이든 이 값을 안 채우는 upsert(항상 null)가 다른 채널이 이미 저장해둔 값을
-       -- 조용히 지우지 않도록, 이번 upsert가 실제 값을 줄 때만 덮어쓴다(TASKS T16 low_stock_
-       -- threshold와 같은 패턴 — T24는 pack_size에도 동일하게 적용).
-       low_stock_threshold = coalesce(excluded.low_stock_threshold, products.low_stock_threshold),
-       pack_size = coalesce(excluded.pack_size, products.pack_size)`,
+       ${thresholdSet},
+       ${packSizeSet}`,
     params,
   );
 }
@@ -299,6 +318,14 @@ async function deactivateMissingCsvRowsOn(
   );
 }
 
+/**
+ * PK가 `(store_id, variant_id, received_at)`뿐이라 여기 자체는 여전히 "같은 날짜 두 번째
+ * upsert가 첫 번째를 덮어쓴다"는 계약이다(migrations/004 주석) — 같은 매장·SKU·날짜의 여러
+ * 입고를 합산 없이 그대로 이 함수에 넘기면 수량이 조용히 축소된다. 실제 소실 방지는 호출자
+ * (`core/scmSchema.ts`의 `mapScmRowsToPurchaseReceipts`)가 import 전에 같은 날짜 행을
+ * 합산해서 넘기는 쪽에서 이뤄진다(006 DATA-008, TASKS T33) — 이 함수는 그 계약을 강제하지
+ * 않으므로, 다른 호출자를 추가할 땐 반드시 같은 방식으로 미리 합산해야 한다.
+ */
 async function upsertPurchaseReceiptsOn(
   session: DbSession,
   rows: PurchaseReceiptRow[],

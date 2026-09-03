@@ -27,6 +27,7 @@ import {
   applyPackRounding,
   computeCsvReorderMetrics,
   computeStockReconciliation,
+  periodsOverlap,
   type CsvHistoryMetricRow,
   type CsvMetricsOptions,
   type StockReconciliationRow,
@@ -170,6 +171,7 @@ function alertsFrom(
 function renderAlertText(
   alerts: FolderScanAlertItem[],
   reconciliation: StockReconciliationRow[],
+  scmStatus: ScmStatus,
   sourceFile: string,
   now: Date,
 ): string {
@@ -197,6 +199,22 @@ function renderAlertText(
       );
     }
   }
+
+  // SCM 처리 상태(006 DATA-006/007, TASKS T33) — SKU별 노이즈 없이 한 줄 요약만 남긴다.
+  // "정상 결과"로 보이는 이메일에 SCM 실패/불확실이 조용히 묻히지 않게 하는 게 목적이다.
+  if (scmStatus.kind === "failed") {
+    lines.push(
+      "",
+      `[SCM 처리 실패] ${scmStatus.error} — 이번 스캔은 재고 정합성 검증을 건너뛰었습니다.`,
+    );
+  } else if (scmStatus.kind === "ok" && scmStatus.insufficientData) {
+    lines.push(
+      "",
+      `[SCM 재고 정합성 참고] 입고 실적 ${scmStatus.receiptCount}건을 반영했지만 기초재고 ` +
+        "미확인 또는 입고·판매 기간 불일치로 확정 대사가 아닙니다(006 DATA-006) — 참고용으로만 보세요.",
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -250,26 +268,52 @@ function resolveScmStoreId(parsedStores: StoreRow[], explicit?: string): string 
 }
 
 /**
+ * SCM 입고 파이프라인의 구조화된 상태(006 DATA-007, TASKS T33) — 예전엔 실패를 전부
+ * `console.warn` 후 빈 배열로 삼켜 "데이터 없음"과 "처리 실패"가 구분되지 않았다(SCM 처리가
+ * 실패해도 저재고 알림이 정상 결과로 오면 사용자가 놓칠 수 있다는 지적). `FolderScanResult`에
+ * 그대로 노출해 dry-run 출력·이메일·MCP 조회 어디서든 이 상태를 볼 수 있게 한다.
+ *
+ * - `not_configured`: `scmReceiptsDir` 자체를 안 줌(기존 동작과 완전히 동일, SPEC §16).
+ * - `no_file`: 폴더는 있지만 아직 CSV가 없음 — 정상적인 초기 상태.
+ * - `failed`: 폴더 접근·파싱·DB 적재 중 하나라도 실패 — 저재고 알림은 그대로 진행되지만
+ *   재고 정합성 검증은 이번 스캔에서 건너뛰었다는 뜻이다.
+ * - `ok`: 파싱·적재까지 성공. `insufficientData`는 006 DATA-006 — 기초재고 미확인/기간
+ *   불일치로 이번 스캔의 재고 정합성 대사가 참고용일 뿐 확정 결과가 아니라는 뜻이다
+ *   (reconciliation 계산 이후에 채워진다 — `ingestScmReceipts` 자체는 이 값을 모른다).
+ */
+export type ScmStatus =
+  | { kind: "not_configured" }
+  | { kind: "no_file" }
+  | { kind: "failed"; error: string }
+  | { kind: "ok"; file: string; receiptCount: number; insufficientData: boolean };
+
+interface ScmIngestOutcome {
+  receipts: PurchaseReceiptRow[];
+  status: ScmStatus;
+}
+
+/**
  * scmReceiptsDir에서 최신 CSV를 찾아 파싱·적재한다. **SCM 파싱 실패는 지점 스캔의 핵심
  * 임무(저재고 알림)를 막지 않는다** — 경고만 남기고 빈 결과로 계속 진행한다(폴더가 없거나
- * 파일이 아직 없는 정상적인 경우와 같은 취급).
+ * 파일이 아직 없는 정상적인 경우와 같은 취급). 대신 `status`로 무슨 일이 있었는지 호출자에게
+ * 그대로 알린다(006 DATA-007).
  */
 async function ingestScmReceipts(
   scmReceiptsDir: string,
   storeId: string,
   warehouse: Warehouse,
-): Promise<PurchaseReceiptRow[]> {
+): Promise<ScmIngestOutcome> {
   let file: string | null;
   try {
     file = await findLatestScmFile(scmReceiptsDir);
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.warn(
-      `SCM 입고 폴더(${scmReceiptsDir})를 읽을 수 없어 이번 스캔은 입고 데이터 없이 계속합니다: ` +
-        (err instanceof Error ? err.message : String(err)),
+      `SCM 입고 폴더(${scmReceiptsDir})를 읽을 수 없어 이번 스캔은 입고 데이터 없이 계속합니다: ${message}`,
     );
-    return [];
+    return { receipts: [], status: { kind: "failed", error: message } };
   }
-  if (!file) return [];
+  if (!file) return { receipts: [], status: { kind: "no_file" } };
 
   try {
     // SCM 입고 CSV도 파싱 전 크기 상한을 거친다(SEC-003, TASKS T32) — 이 함수는 실패를
@@ -285,13 +329,18 @@ async function ingestScmReceipts(
     }) as unknown[];
     const receipts = mapScmRowsToPurchaseReceipts(rawRows, storeId);
     await warehouse.upsertPurchaseReceipts(receipts);
-    return receipts;
+    return {
+      receipts,
+      // insufficientData는 reconciliation 계산 이후에나 알 수 있다 — 호출자(runFolderScan)가
+      // 이 status를 보강한다.
+      status: { kind: "ok", file, receiptCount: receipts.length, insufficientData: false },
+    };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.warn(
-      `SCM 입고 파일(${file}) 처리 실패 — 이번 스캔은 입고 데이터 없이 계속합니다: ` +
-        (err instanceof Error ? err.message : String(err)),
+      `SCM 입고 파일(${file}) 처리 실패 — 이번 스캔은 입고 데이터 없이 계속합니다: ${message}`,
     );
-    return [];
+    return { receipts: [], status: { kind: "failed", error: message } };
   }
 }
 
@@ -326,6 +375,31 @@ function salesAggFromCsv(salesPeriodAgg: SalesPeriodAggRow[], products: ProductR
       soldQtyRaw: s.soldQty,
     };
   });
+}
+
+/**
+ * SCM 입고 실적 기간(입고 날짜 최소~최대)과 판매 데이터 기간(판매기간시작일~종료일 최소~최대)이
+ * 겹치는지 판정한다(006 DATA-006, TASKS T33) — `computeStockReconciliation`의
+ * `periodsOverlap` 옵션에 넘긴다. 둘 중 하나라도 비어 있으면(판매이력 없는 스캔, SCM 입고
+ * 0건) 비교할 기간 자체가 없어 `undefined`를 반환한다 — `computeStockReconciliation`은
+ * `periodsOverlap`이 `undefined`면 이 조건만으로 insufficientData를 판정하지 않는다(기초재고
+ * 미확인 쪽 이유가 어차피 항상 있기 때문에 결과적으로 달라지지 않는다 — 하지만 여기서 억지로
+ * false를 반환해 "기간이 안 겹친다"고 오해할 만한 이유를 만들지 않는다).
+ */
+function computePeriodsOverlap(
+  salesPeriodAgg: SalesPeriodAggRow[],
+  receipts: PurchaseReceiptRow[],
+): boolean | undefined {
+  if (salesPeriodAgg.length === 0 || receipts.length === 0) return undefined;
+  const salesStartMs = Math.min(...salesPeriodAgg.map((s) => s.periodStart.getTime()));
+  const salesEndMs = Math.max(...salesPeriodAgg.map((s) => s.periodEnd.getTime()));
+  const receiptTimesMs = receipts.map((r) => r.receivedAt.getTime());
+  const receiptStartMs = Math.min(...receiptTimesMs);
+  const receiptEndMs = Math.max(...receiptTimesMs);
+  return periodsOverlap(
+    { start: new Date(salesStartMs), end: new Date(salesEndMs) },
+    { start: new Date(receiptStartMs), end: new Date(receiptEndMs) },
+  );
 }
 
 // ── 오케스트레이션 ───────────────────────────────────────────────────────
@@ -374,9 +448,14 @@ export interface FolderScanResult {
   messageId: string | null;
   /**
    * SCM 입고 실적 대사 결과(SPEC §16) — scmReceiptsDir 미설정이거나 이번 스캔에 SCM 파일이
-   * 없으면 빈 배열. 실사 재고와 일치하지 않는 행만 담는다(정상 대사는 노이즈라 제외).
+   * 없으면 빈 배열. **확정 불일치(hasDiscrepancy && !insufficientData)만** 담는다(정상 대사와
+   * insufficientData 행은 노이즈라 제외 — insufficientData 여부 요약은 `scmStatus` 참고,
+   * 006 DATA-006).
    */
   reconciliation: StockReconciliationRow[];
+  /** SCM 입고 파이프라인의 구조화된 상태(006 DATA-007) — not_configured/no_file/failed/ok.
+   * "SCM 처리가 실패해도 저재고 알림은 정상 결과로 온다"는 문제를 이 필드로 노출한다. */
+  scmStatus: ScmStatus;
 }
 
 // ── 일일 다이제스트 watermark (TASKS T31, DATA-003) ─────────────────────────
@@ -539,17 +618,34 @@ export async function runFolderScan(
 
   // SCM 입고 실적 흡수 + 재고 정합성 검증(SPEC §16) — scmReceiptsDir 미설정이거나 이번
   // 스캔에 SCM 파일이 없으면(또는 파싱 실패해도) reconciliation은 그냥 빈 배열이다. SCM
-  // 처리 실패가 위 alerts 판정·발송을 막지 않는다(ingestScmReceipts 자체가 실패를 삼킨다).
+  // 처리 실패가 위 alerts 판정·발송을 막지 않는다(ingestScmReceipts 자체가 실패를 삼킨다) —
+  // 대신 scmStatus로 결과에 그대로 남는다(006 DATA-007).
   let reconciliation: StockReconciliationRow[] = [];
+  let scmStatus: ScmStatus = { kind: "not_configured" };
   if (opts.scmReceiptsDir) {
     const scmStoreId = resolveScmStoreId(parsed.stores, opts.scmReceiptsStoreId);
-    const receipts = await ingestScmReceipts(opts.scmReceiptsDir, scmStoreId, deps.warehouse);
-    if (receipts.length > 0) {
-      const purchases = aggregatePurchases(receipts);
+    const outcome = await ingestScmReceipts(opts.scmReceiptsDir, scmStoreId, deps.warehouse);
+    scmStatus = outcome.status;
+    if (outcome.receipts.length > 0) {
+      const purchases = aggregatePurchases(outcome.receipts);
       const sales = salesAggFromCsv(parsed.salesPeriodAgg, parsed.products);
-      reconciliation = computeStockReconciliation(parsed.inventory, purchases, sales).filter(
-        (r) => r.hasDiscrepancy,
-      );
+      // openingStock을 생략하면(온보딩 실사값 입력 흐름이 아직 없다 — SPEC §16) 모든 행이
+      // insufficientData로 표시된다(006 DATA-006, TASKS T33) — 의도된 동작이다. 실사값
+      // 입력이 생기면 여기서 실제 값을 채워 넘긴다.
+      const periodsOverlapResult = computePeriodsOverlap(parsed.salesPeriodAgg, outcome.receipts);
+      const allReconciliation = computeStockReconciliation(parsed.inventory, purchases, sales, {
+        ...(periodsOverlapResult !== undefined ? { periodsOverlap: periodsOverlapResult } : {}),
+      });
+      // 확정 불일치만 알림 대상(reconciliation)에 남긴다 — insufficientData 행까지 전부
+      // 노출하면 매 스캔 SKU별 노이즈가 되므로, 대신 scmStatus.insufficientData 한 줄
+      // 요약으로 "참고용일 뿐 확정 아님"을 알린다(아래 renderAlertText).
+      reconciliation = allReconciliation.filter((r) => r.hasDiscrepancy && !r.insufficientData);
+      if (scmStatus.kind === "ok") {
+        scmStatus = {
+          ...scmStatus,
+          insufficientData: allReconciliation.some((r) => r.insufficientData),
+        };
+      }
     }
   }
 
@@ -588,10 +684,11 @@ export async function runFolderScan(
       sent: false,
       messageId: null,
       reconciliation: [],
+      scmStatus,
     };
   }
 
-  const reportText = renderAlertText(alerts, reconciliation, sourceFile, now);
+  const reportText = renderAlertText(alerts, reconciliation, scmStatus, sourceFile, now);
   const subjectParts = [
     ...(alerts.length > 0 ? [`저재고 ${alerts.length}건`] : []),
     ...(reconciliation.length > 0 ? [`재고 정합성 경고 ${reconciliation.length}건`] : []),
@@ -623,6 +720,7 @@ export async function runFolderScan(
       sent: false,
       messageId: null,
       reconciliation,
+      scmStatus,
     };
   }
 
@@ -654,6 +752,7 @@ export async function runFolderScan(
       sent: false,
       messageId: null,
       reconciliation,
+      scmStatus,
     };
   }
 
@@ -706,6 +805,7 @@ export async function runFolderScan(
       sent: true,
       messageId: sendResult.messageId,
       reconciliation,
+      scmStatus,
     };
   } catch (err) {
     await deps.warehouse.logAgentSend({

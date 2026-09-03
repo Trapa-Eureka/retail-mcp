@@ -105,15 +105,16 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [x] `.env` 0600 + 원자 쓰기 테스트(SEC-005) — `tests/onboard.test.ts`
 - [x] `npm audit --omit=dev` 0건 또는 근거·만료일이 기록된 승인된 예외(SEC-006) — 0건은 아님, uuid(exceljs 경유) 승인된 예외 1건(재검토 2027-03-03, `docs/005` 상세) + `scripts/verifyPack.ts`가 **실제 게시 tarball 설치 기준**으로 이 예외 하나뿐인지 매번 확인(release gate 5단계, dev 체크아웃의 `overrides`는 published 소비자에게 적용 안 됨을 착수 중 발견)
 
-**데이터 정확성 게이트 (TASKS T31 — 완료, T33)**
+**데이터 정확성 게이트 (TASKS T31/T33 — 완료)**
 
 - [x] snapshot export → import 왕복 시 `포장수량` 보존(DATA-001) — `tests/snapshotExport.test.ts`
 - [x] authoritative 스캔에서 사라진 SKU/매장이 tombstone 처리되고 재주문·저재고 계산에서 제외됨(DATA-002) — `tests/pgWarehouse.test.ts`(`deactivateMissingCsvRows`), `tests/folderScan.test.ts`(tombstone e2e)
 - [x] 동일 파일로 cron을 반복 실행해도 재발송이 없고, 마지막 발송으로부터 하루가 지나면 변경 없이도 다이제스트 1회가 발송됨(DATA-003) — `tests/folderScan.test.ts`(일일 다이제스트 5 tests, 적용 범위는 실제 발송 시도로 한정 — DESIGN §12.3)
 - [x] snapshot 파일 쓰기 도중 프로세스가 죽어도 이전 정상 snapshot이 손상되지 않음(atomic write, DATA-004) — `tests/atomicFile.test.ts`
-- [ ] SCM 기초재고·기간 불일치 시 `insufficient_data`로 표시되고 거짓 discrepancy가 발생하지 않음(DATA-006)
-- [ ] SCM 처리 실패가 결과/이메일에 `scm_status`로 노출됨(DATA-007)
-- [ ] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008)
+- [x] 컬럼 없음(undefined)/명시적 clear(null)/값 세 상태가 nullable 필드에서 정확히 구분되고 반영됨(DATA-005) — `tests/csvExcelParser.test.ts`(CSV/XLSX 파싱 단계), `tests/pgWarehouse.test.ts`(upsert 단계)
+- [x] SCM 기초재고·기간 불일치 시 `insufficientData`로 표시되고 거짓 discrepancy(확정 원인 단정 경고)가 발생하지 않음(DATA-006) — `tests/metrics.test.ts`
+- [x] SCM 처리 실패가 결과/이메일에 `scmStatus`로 노출됨(DATA-007) — `tests/folderScan.test.ts`
+- [x] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008) — `tests/scmSchema.test.ts`
 
 **운영 신뢰성 게이트 (TASKS T34)**
 

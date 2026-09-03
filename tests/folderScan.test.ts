@@ -305,17 +305,20 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
       { watchDir, snapshotDir },
     );
     expect(result.reconciliation).toEqual([]);
+    expect(result.scmStatus).toEqual({ kind: "not_configured" });
   });
 
-  it("SCM 입고 CSV를 흡수해 purchase_receipts에 적재하고 재고 정합성 불일치를 찾아낸다", async () => {
+  it("SCM 입고 CSV를 흡수해 purchase_receipts에 적재한다 — 대사는 기초재고 미확인으로 insufficientData다(006 DATA-006, TASKS T33)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
       "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
       "utf8",
     );
-    // 구글시트를 "파일 > 다운로드 > CSV"로 내보낸 것을 흉내낸다(SPEC §16) — 입고 30인데
-    // 판매이력이 없어(재고 파일이 판매수량 컬럼 없음) 예상재고 30, 실제재고 9로 불일치.
+    // 구글시트를 "파일 > 다운로드 > CSV"로 내보낸 것을 흉내낸다(SPEC §16). 온보딩 실사값
+    // 입력 흐름이 아직 없어(SPEC §16) 기초재고를 모른다 — 겉보기엔 입고 30 대비 재고 9로
+    // 불일치처럼 보이지만, 이 가정(기초재고=0) 자체를 신뢰할 수 없으니 "확정 불일치"로
+    // 취급하지 않는다.
     await writeFile(
       join(scmReceiptsDir, "receipts.csv"),
       "일자,구분,상품코드,상품명,수량,단가,거래처\n" +
@@ -332,17 +335,20 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
       { watchDir, snapshotDir, scmReceiptsDir },
     );
 
-    expect(result.reconciliation).toHaveLength(1);
-    const [row] = result.reconciliation;
-    expect(row?.variantId).toBe("SKU-COLA");
-    expect(row?.expectedStock).toBe(30); // 0(기초, 기본값) + 30(입고) − 0(판매이력 없음)
-    expect(row?.actualStock).toBe(9);
-    expect(row?.discrepancy).toBe(-21);
+    // 확정 불일치 목록(reconciliation)은 비어 있다 — insufficientData 행은 여기 안 들어간다.
+    expect(result.reconciliation).toEqual([]);
+    // 대신 scmStatus가 "SCM은 적재됐지만 대사는 참고용"이라는 사실을 구조화된 결과로 남긴다
+    // (006 DATA-007 — SCM 처리 결과가 결과에서 사라지지 않는다).
+    expect(result.scmStatus).toMatchObject({
+      kind: "ok",
+      receiptCount: 1,
+      insufficientData: true,
+    });
 
-    // 재고 자체는 기본 임계치(5) 이상이라 저재고 알림은 0건이지만, 재고 정합성 경고만으로도
-    // "보고할 게 있다" 판정이 나 dry-run 출력까지 이어진다(issueCount 로직).
+    // 재고 자체는 기본 임계치(5) 이상이라 저재고 알림 0건, 확정 불일치도 0건이라 report할
+    // 이슈가 없다 — "정상 결과인 척 SCM 문제를 숨긴다"가 아니라 애초에 확정 이슈가 없다.
     expect(result.alertCount).toBe(0);
-    expect(result.status).toBe("dry_run");
+    expect(result.status).toBe("no_suggestions");
 
     const purchases = await warehouse.queryPurchaseAgg({
       storeId: "본점",
@@ -396,9 +402,52 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
     // SCM 파싱은 실패했지만(경고만 남김) 기존 HAPPY_CSV의 저재고 알림 2건은 그대로 처리된다.
     expect(result.alertCount).toBe(2);
     expect(result.reconciliation).toEqual([]);
+    // 006 DATA-007 — "실패"와 "데이터 없음"이 구분된다. 조용히 삼키지 않고 결과에 남는다.
+    expect(result.scmStatus.kind).toBe("failed");
+    if (result.scmStatus.kind === "failed") {
+      expect(result.scmStatus.error.length).toBeGreaterThan(0);
+    }
   });
 
-  it("scmReceiptsDir에 파일이 아직 없으면 조용히 건너뛴다(에러 아님)", async () => {
+  it("확정 저재고 알림이 있을 때 SCM insufficientData 요약이 발송 이메일 본문에 포함된다(006 DATA-006/007, TASKS T33)", async () => {
+    const { warehouse } = await makeWarehouse();
+    const notificationProvider = createMockNotificationProvider();
+    // SKU-CHIPS는 기본 임계치(5) 아래라 확정 저재고 알림이 발생한다 — 이슈가 있어야 실제
+    // report가 발송되고, 그 안에 SCM 상태 줄이 들어가는지 검증할 수 있다.
+    await writeFile(
+      join(watchDir, "inventory.csv"),
+      "매장명,상품명,SKU,재고수량\n본점,Piattos,SKU-CHIPS,2\n",
+      "utf8",
+    );
+    await writeFile(
+      join(scmReceiptsDir, "receipts.csv"),
+      "일자,구분,상품코드,상품명,수량,단가,거래처\n" +
+        "2026-07-01,입고,SKU-CHIPS,Piattos,10,1000,과자유통\n",
+      "utf8",
+    );
+
+    const result = await runFolderScan(
+      { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider },
+      {
+        watchDir,
+        snapshotDir,
+        scmReceiptsDir,
+        sendMode: "live",
+        confirm: true,
+        recipient: "owner@example.com",
+      },
+    );
+
+    expect(result.status).toBe("sent");
+    expect(result.scmStatus).toMatchObject({ kind: "ok", insufficientData: true });
+    expect(notificationProvider.sent).toHaveLength(1);
+    expect(notificationProvider.sent[0]?.text).toContain("[SCM 재고 정합성 참고]");
+    expect(notificationProvider.sent[0]?.text).toContain("확정 대사가 아닙니다");
+    // 확정 불일치로 단정하는 문구("도난·파손·실사오차 확인 필요")는 나오지 않는다.
+    expect(notificationProvider.sent[0]?.text).not.toContain("확인 필요");
+  });
+
+  it("scmReceiptsDir에 파일이 아직 없으면 조용히 건너뛴다(에러 아님) — scmStatus는 no_file", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
@@ -415,6 +464,7 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
       { watchDir, snapshotDir, scmReceiptsDir }, // 폴더는 있지만 안이 비어 있음
     );
     expect(result.reconciliation).toEqual([]);
+    expect(result.scmStatus).toEqual({ kind: "no_file" });
   });
 });
 

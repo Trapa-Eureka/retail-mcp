@@ -9,6 +9,7 @@ import {
   computeStockReconciliation,
   daysOfCover,
   isStockoutRisk,
+  periodsOverlap,
   reorderQty,
   roundToPackMultiple,
   sellThroughRatio,
@@ -466,8 +467,10 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.warnings).toEqual([]);
   });
 
-  it("실사 재고가 원장 예상치와 다르면 discrepancy·hasDiscrepancy·경고로 드러난다", () => {
-    // 원장상 예상재고는 P001과 동일하게 9여야 하지만, 실사는 7 — 도난/파손/오차 등 2개 불일치.
+  it("실사 재고가 원장 예상치와 다르면 discrepancy·hasDiscrepancy·경고로 드러난다(기초재고·기간이 확인된 경우)", () => {
+    // 원장상 예상재고는 9여야 하지만, 실사는 7 — 도난/파손/오차 등 2개 불일치. 기초재고를
+    // 알고(openingStock에 키 존재) 기간도 겹친다고 명시해야 이 경고가 나온다(006 DATA-006,
+    // TASKS T33) — 아래 "기초재고·기간을 모르면" 테스트가 그 반대 경우를 검증한다.
     const inventory: InventoryRow[] = [
       { storeId: "본사", variantId: "P999", inStock: "7", updatedAt: new Date() },
     ];
@@ -476,13 +479,92 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
       { storeId: "본사", variantId: "P999", name: "테스트 상품", category: null, soldQtyRaw: "21" },
     ];
 
-    const [row] = computeStockReconciliation(inventory, purchases, sales);
+    const [row] = computeStockReconciliation(inventory, purchases, sales, {
+      openingStock: { "본사:P999": 0 },
+      periodsOverlap: true,
+    });
 
     expect(row?.expectedStock).toBe(9);
     expect(row?.actualStock).toBe(7);
     expect(row?.discrepancy).toBe(-2);
     expect(row?.hasDiscrepancy).toBe(true);
+    expect(row?.insufficientData).toBe(false);
     expect(row?.warnings.some((w) => w.includes("다릅니다"))).toBe(true);
+  });
+
+  describe("insufficientData — 기초재고·기간 미확인 시 확정 경고를 내보내지 않는다(006 DATA-006, TASKS T33)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본사", variantId: "P999", inStock: "7", updatedAt: new Date() },
+    ];
+    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P999", receivedQtyRaw: "30" }];
+    const sales: SalesAgg[] = [
+      { storeId: "본사", variantId: "P999", name: "테스트 상품", category: null, soldQtyRaw: "21" },
+    ];
+
+    it("openingStock을 아예 안 주면(기본값) 모든 행이 insufficientData다", () => {
+      const [row] = computeStockReconciliation(inventory, purchases, sales);
+      expect(row?.insufficientData).toBe(true);
+      expect(row?.insufficientDataReasons.some((r) => r.includes("기초재고"))).toBe(true);
+      // discrepancy 숫자 자체는 참고용으로 여전히 계산돼 있다 — 완전히 숨기지 않는다.
+      expect(row?.discrepancy).toBe(-2);
+      // 단, "도난·파손·실사오차"처럼 확정 원인을 단정하는 경고는 내보내지 않는다.
+      expect(row?.warnings.some((w) => w.includes("다릅니다"))).toBe(false);
+    });
+
+    it("openingStock 키는 있지만 periodsOverlap이 false면 insufficientData다", () => {
+      const [row] = computeStockReconciliation(inventory, purchases, sales, {
+        openingStock: { "본사:P999": 0 },
+        periodsOverlap: false,
+      });
+      expect(row?.insufficientData).toBe(true);
+      expect(row?.insufficientDataReasons.some((r) => r.includes("기간"))).toBe(true);
+      expect(row?.insufficientDataReasons.some((r) => r.includes("기초재고"))).toBe(false);
+    });
+
+    it("openingStock 키가 있고 periodsOverlap이 true면 insufficientData가 아니다", () => {
+      const [row] = computeStockReconciliation(inventory, purchases, sales, {
+        openingStock: { "본사:P999": 0 },
+        periodsOverlap: true,
+      });
+      expect(row?.insufficientData).toBe(false);
+      expect(row?.insufficientDataReasons).toEqual([]);
+    });
+
+    it("periodsOverlap을 생략하면(undefined) 그 이유만으로는 insufficientData가 되지 않는다", () => {
+      const [row] = computeStockReconciliation(inventory, purchases, sales, {
+        openingStock: { "본사:P999": 0 },
+      });
+      expect(row?.insufficientData).toBe(false);
+    });
+  });
+
+  describe("periodsOverlap (순수 함수, 006 DATA-006)", () => {
+    it("겹치는 구간은 true", () => {
+      expect(
+        periodsOverlap(
+          { start: new Date("2026-08-01"), end: new Date("2026-08-31") },
+          { start: new Date("2026-08-15"), end: new Date("2026-09-15") },
+        ),
+      ).toBe(true);
+    });
+
+    it("경계가 정확히 맞닿아도 겹침으로 본다(포함 경계)", () => {
+      expect(
+        periodsOverlap(
+          { start: new Date("2026-08-01"), end: new Date("2026-08-31") },
+          { start: new Date("2026-08-31"), end: new Date("2026-09-15") },
+        ),
+      ).toBe(true);
+    });
+
+    it("완전히 분리된 구간은 false", () => {
+      expect(
+        periodsOverlap(
+          { start: new Date("2026-07-01"), end: new Date("2026-07-31") },
+          { start: new Date("2026-08-01"), end: new Date("2026-08-31") },
+        ),
+      ).toBe(false);
+    });
   });
 
   it("기초재고를 명시하면(openingStock) 정통 셀스루·예상재고 계산에 반영된다", () => {

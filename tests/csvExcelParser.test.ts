@@ -133,6 +133,21 @@ describe("parseInventoryFile — 크기/행 수/셀 길이 상한(SEC-003, TASKS
 
     await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/셀 값이 너무 깁니다/);
   });
+
+  it("XLSX — 컬럼은 있지만 셀이 빈 경우도 CSV처럼 명시적 clear(null)로 파싱된다(006 DATA-005, TASKS T33)", async () => {
+    // ExcelJS의 eachCell({includeEmpty:false})은 빈 셀을 아예 건너뛴다 — 헤더 프리시드
+    // 없이는 "컬럼이 파일에 없음"과 구분이 안 됐던 부분(parseExcelFile 문서 참고).
+    const p = join(dir, "blank-optional-cell.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Sheet1");
+    sheet.addRow(["매장명", "상품명", "SKU", "재고수량", "저재고임계치", "포장수량"]);
+    sheet.addRow(["본점", "코카콜라 500ml", "SKU-COLA", 40, null, null]); // 컬럼은 있지만 빈 셀.
+    await workbook.xlsx.writeFile(p);
+
+    const result = await parseInventoryFile(p, NOW);
+    expect(result.products[0]?.lowStockThreshold).toBeNull();
+    expect(result.products[0]?.packSize).toBeNull();
+  });
 });
 
 describe("mapRowsToDomain", () => {
@@ -198,8 +213,11 @@ describe("mapRowsToDomain", () => {
     );
     expect(withPackSize.products[0]?.packSize).toBe("24");
 
+    // BASE_ROW엔 포장수량 컬럼 자체가 없다 — "정보 없음"(undefined)이지 "비움"(null)이
+    // 아니다(006 DATA-005, TASKS T33). 컬럼이 있지만 셀만 비어 있는 경우는 아래 describe
+    // 참고.
     const withoutPackSize = mapRowsToDomain([BASE_ROW], NOW);
-    expect(withoutPackSize.products[0]?.packSize).toBeNull();
+    expect(withoutPackSize.products[0]?.packSize).toBeUndefined();
   });
 
   it("판매이력 없는 행은 salesPeriodAgg에 들어가지 않는다(임계치 폴백 대상)", () => {
@@ -214,5 +232,48 @@ describe("mapRowsToDomain", () => {
     const customNow = new Date("2020-01-01T00:00:00Z");
     const result = mapRowsToDomain([BASE_ROW], customNow);
     expect(result.inventory[0]?.updatedAt).toBe(customNow);
+  });
+});
+
+describe("mapRowsToDomain — nullable 필드 clear 계약(006 DATA-005, TASKS T33)", () => {
+  const BASE_ROW = {
+    매장명: "본점",
+    상품명: "코카콜라 500ml",
+    SKU: "SKU-COLA",
+    재고수량: "40",
+  };
+
+  it("컬럼 자체가 없으면 undefined(정보 없음 — 하위 호환, 기존 값 유지 대상)", () => {
+    const result = mapRowsToDomain([BASE_ROW], NOW);
+    expect(result.products[0]?.lowStockThreshold).toBeUndefined();
+    expect(result.products[0]?.packSize).toBeUndefined();
+  });
+
+  it("컬럼은 있지만 셀이 비어 있으면 null(명시적으로 지움)", () => {
+    const result = mapRowsToDomain([{ ...BASE_ROW, 저재고임계치: "", 포장수량: "" }], NOW);
+    expect(result.products[0]?.lowStockThreshold).toBeNull();
+    expect(result.products[0]?.packSize).toBeNull();
+  });
+
+  it("컬럼이 있고 값이 있으면 그 값", () => {
+    const result = mapRowsToDomain([{ ...BASE_ROW, 저재고임계치: "10", 포장수량: "24" }], NOW);
+    expect(result.products[0]?.lowStockThreshold).toBe("10");
+    expect(result.products[0]?.packSize).toBe("24");
+  });
+
+  it("같은 SKU의 두 행 중 하나는 컬럼 없음(undefined), 하나는 값이면 불일치로 거부한다", () => {
+    const rows = [
+      { ...BASE_ROW, 저재고임계치: "10" },
+      { ...BASE_ROW, 매장명: "마카티점" }, // 컬럼 없음 — undefined
+    ];
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/컬럼 없음/);
+  });
+
+  it("같은 SKU의 두 행 중 하나는 명시적으로 비움(null), 하나는 값이면 불일치로 거부한다", () => {
+    const rows = [
+      { ...BASE_ROW, 저재고임계치: "10" },
+      { ...BASE_ROW, 매장명: "마카티점", 저재고임계치: "" },
+    ];
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/비어 있음\(명시적으로 지움\)/);
   });
 });
