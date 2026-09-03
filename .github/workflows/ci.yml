@@ -9,6 +9,16 @@ on:
     branches: [main]
   pull_request:
 
+# 2차 적대적 검수 SR2-CI-001 — 명시적 선언이 없으면 실제 GITHUB_TOKEN 권한은 repository/
+# organization 기본 설정에 따라 달라진다(그 기본값이 나중에 넓어지면 fork PR 코드가 그 권한을
+# 그대로 상속). 네 job 모두 checkout해서 로컬 커맨드(npm ci/test/lint 등)만 실행하고 아무것도
+# 쓰지 않는다 — SBOM `actions/upload-artifact@v4`도 GITHUB_TOKEN이 아니라 Actions 런타임
+# 토큰으로 인증하므로 별도 권한이 필요 없다. 워크플로 전체를 최소값(`contents: read`)으로
+# 고정한다 — 앞으로 PR 코멘트 작성 등 쓰기가 필요한 job이 추가되면 그 job에만 개별로 권한을
+# 추가한다(전역을 넓히지 않는다).
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

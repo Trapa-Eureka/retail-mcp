@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: P0 5/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+- 처리 진행 상황: P0 5/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001). P1 1/10 RESOLVED(SR2-CI-001, 순서상 앞당겨 처리 — 아래 참고). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록.
 
 ## 실행 검증
@@ -30,6 +30,7 @@
 - 근거: workflow 또는 job 수준 `permissions:` 선언이 없다. 실제 `GITHUB_TOKEN` 권한은 repository/organization 기본 설정에 의존한다.
 - 공격/실패 시나리오: fork PR의 코드는 `npm ci` lifecycle, 테스트, package script로 실행된다. 기본 권한이 나중에 넓어지면 PR 코드가 그 권한을 상속한다.
 - 수정 기준: workflow 최상단에 최소 `permissions: { contents: read }`를 명시하고 artifact job에 추가 권한이 필요한 경우 해당 job에만 부여한다. fork PR에서 secrets 미주입과 token 권한을 repository 설정/branch protection까지 확인한다.
+- **RESOLVED**: `ci.yml` 워크플로 최상단에 `permissions: { contents: read }`를 명시했다. 네 job 모두 checkout 후 로컬 커맨드(npm ci/test/lint/audit 등)만 실행하고 아무것도 쓰지 않는다는 걸 확인했다 — SBOM `actions/upload-artifact@v4`도 `GITHUB_TOKEN`이 아니라 Actions 런타임 토큰으로 인증해 별도 권한이 필요 없다. 그래서 job별 추가 권한 없이 워크플로 전역 `contents: read` 하나로 충분하다. `SECURITY.md`에 반영. (참고: 이 finding의 실제 우선순위는 doc 본문상 **P1**이다 — 사용자 지시로 P0 항목보다 먼저 이 순서로 처리했다.)
 
 ### SR2-CI-002 — 외부 Action과 Postgres image가 immutable digest로 고정되지 않음
 
