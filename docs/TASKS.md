@@ -97,9 +97,14 @@ T12는 완료(DONE)됐다 — 착수 중 스코프가 "리네임"에서 "데이�
 - 완료 기준: [x] 필수 컬럼 누락 시 zod 파싱 실패 + 원인 명시 [x] 판매수량은 있는데 기간이 없는 등 불일치 케이스 거부 [x] 판매이력 모드 판정 골든 케이스 테스트 [x] check 통과
 - **완료**: `src/core/csvSchema.ts` — `csvRowSchema`(zod), `parseCsvRow()`(실패 시 원인을 모두 모은 에러), `salesHistoryModeOf()`. 컬럼명은 SPEC §12 표의 한글 그대로 키로 써서 어댑터(T16) 매핑 실수를 줄인다. 빈 셀("")을 `blankToUndefined`로 먼저 걸러내는 게 핵심 — 이게 없으면 `z.coerce.number()`가 빈 재고수량/판매수량 칸을 조용히 0으로 바꿔버려 "칸을 비웠다"와 "0을 채웠다"를 구분 못 하고, 판매이력 모드 판정(T17이 쓸 예정)이 깨진다. 판매수량↔기간 상호 필수, 단가↔통화 상호 필수(SPEC §9)도 `superRefine`으로 검증. (매장명, SKU) 유일성처럼 행 하나로 판단 못 하는 검증은 T16(여러 행 순회) 몫으로 남겨뒀다.
 
-### T16 (레인 C) — CSV/Excel 파서 어댑터 · 상태: TODO · 의존: T12, T15
+### T16 (레인 C) — CSV/Excel 파서 어댑터 · 상태: DONE(2026-09-03) · 의존: T12, T15
 - 목표: `src/adapters/csvExcelParser.ts` — CSV/XLSX 파일을 읽어 인코딩 자동감지(UTF-8/CP949/EUC-KR 등, 신뢰도 낮으면 무음 처리 대신 명시적 에러/경고 반환), T15 스키마로 검증, 도메인 행 타입(`StoreRow`/`ProductRow`/`InventoryRow`/`SalesPeriodAggRow`, T12)으로 변환하는 함수 생성. `LoyverseClient`는 구현하지 않는다(T12 결정 — CSV에는 영수증 단위 데이터가 없다). 네트워크 호출 없음.
-- 완료 기준: [ ] UTF-8/CP949/EUC-KR 픽스처 파일 각각 정상 파싱 [ ] 신뢰도 낮은 인코딩은 명시적 에러/경고로 표시(무음 mojibake 금지) [ ] CSV·XLSX 양쪽 픽스처 테스트 [ ] 변환 결과가 `Warehouse.upsertStores`/`upsertProducts`/`upsertInventory`/`upsertSalesPeriodAgg`에 바로 넘길 수 있는 타입과 일치 [ ] check 통과
+- 완료 기준: [x] UTF-8/CP949/EUC-KR 픽스처 파일 각각 정상 파싱 [x] 신뢰도 낮은 인코딩은 명시적 에러/경고로 표시(무음 mojibake 금지) [x] CSV·XLSX 양쪽 픽스처 테스트 [x] 변환 결과가 `Warehouse.upsertStores`/`upsertProducts`/`upsertInventory`/`upsertSalesPeriodAgg`에 바로 넘길 수 있는 타입과 일치 [x] check 통과
+- **완료**: 인코딩 자동감지는 별도 라이브러리 없이 Node 내장 `TextDecoder`로 처리한다 — WHATWG "euc-kr" 라벨이 Node에서 CP949(EUC-KR 상위호환) 코드페이지로 구현돼 있어 하나로 다룰 수 있고, `fatal: true`(엄격 모드)로 UTF-8→EUC-KR 순서로 시도하면 서로 다른 인코딩의 바이트가 섞여도 대부분 디코딩 자체가 실패해 안전하다(실제 바이트로 양방향 검증함). CSV는 `csv-parse`, XLSX는 `exceljs`를 새 의존성으로 추가했다 — SheetJS `xlsx`도 검토했으나 공개 npm에 배포된 최신 버전(0.18.5)에 패치 안 된 HIGH 심각도 취약점(프로토타입 오염, ReDoS)이 있어 제외, `exceljs`는 쓰기 경로에서만 쓰이는 uuid 관련 MODERATE 취약점(우리는 읽기만 함)만 있어 채택.
+  - **착수 중 발견한 스키마 공백**: `저재고임계치`(T15가 이미 파싱)를 담을 웨어하우스 컬럼이 없었다 — `migrations/003_product_low_stock_threshold.sql`로 `products.low_stock_threshold`(nullable numeric) 추가, `ProductRow.lowStockThreshold`(optional)·`upsertProductsOn`도 함께 갱신(T12와 같은 패턴: 발견 즉시 스키마를 고치고 문서화). Loyverse 동기화가 이 값을 조용히 null로 덮어쓰지 않도록 `coalesce(excluded.low_stock_threshold, products.low_stock_threshold)`로 upsert.
+  - **의도적으로 미룬 것**: 단가/통화(SPEC §12 "매출액 표시용")는 T15가 검증만 하고 여기서는 저장하지 않는다 — 어떤 v0.1/v0.2 핵심 지표도 단가를 입력으로 쓰지 않고, 저장할 컬럼도 없다. 실제로 필요해지면 별도 태스크.
+  - (매장명, SKU) 유일성, SKU별 상품명·임계치 일관성처럼 파일 전체를 훑어야 아는 검증(T15가 명시적으로 넘긴 것)을 `mapRowsToDomain`이 수행 — 위반 시 부분 처리 없이 명확한 에러.
+  - 픽스처는 `tests/fixtures/csvExcel/`(UTF-8·EUC-KR CSV는 `iconv`로 실제 바이트 생성해 상호 검증, XLSX는 `exceljs`로 생성해 네이티브 숫자/날짜 셀 타입까지 검증).
 
 ### T17 (레인 C) — 셀스루/임계치 분기 로직 · 상태: TODO · 의존: T15, T12
 - 목표: 판매이력 없는 품목(해당 store/variant의 `querySalesPeriodAgg` 결과 없음)은 셀스루 계산을 건너뛰고 "판매 이력 없음"으로 표시 + `재고수량 < 임계치`(품목별 override 우선, 없으면 전역 기본값) 단순 판정으로 대체(SPEC §12). 판매이력 있는 품목은 `querySalesPeriodAgg` 결과를 `computeReorderMetrics`에 넘기되, **`windowDays`를 CSV가 보고한 실제 기간 길이(`period_end`-`period_start`)로 계산**한다 — v0.1 기본값 28일을 그대로 쓰면 CSV 기간 길이가 다를 때 `avgDailySales`가 왜곡된다(T12에서 발견). 한 결과 집합 안에 두 모드가 섞일 수 있음을 반영. `core/metrics.ts`의 `computeSellThrough`/`computeReorderMetrics` 자체는 이미 소스 중립적(`SalesAgg[]` 입력)이라 변경하지 않는다.
