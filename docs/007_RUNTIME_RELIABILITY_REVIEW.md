@@ -56,7 +56,7 @@
 - 근거: `engines.node >=20`만 있고 OS/Node 버전 matrix CI와 clean install 검증 기록이 없다. PGlite·ExcelJS·TextDecoder(euc-kr)·파일 락은 플랫폼 차이에 민감하다.
 - 영향: 개발 머신에서는 통과하지만 Windows/Linux 또는 다른 Node LTS에서 설치/인코딩/경로 동작이 깨질 수 있다.
 - 수정 기준: 최소 지원 OS와 Node LTS를 정하고 clean tarball install + 핵심 e2e를 CI matrix에서 실행한다.
-- **부분 해결(T34) + T35로 이관**: 지원 범위를 README "운영 신뢰성"에 문서화했다 — Node 20+, macOS로 검증, Linux는 미검증(코드상 문제 소지는 낮음), **Windows는 명시적으로 미검증**(`fileLock.ts`의 `ps` 기반 OPS-002 보조 신호가 Windows에선 항상 null로 폴백함을 문서화). `npm run verify:pack`(로컬, 실제 tarball을 새 디렉터리에 clean install)이 지금 유일한 clean-install 검증이다. **실제 OS/Node CI matrix 구성은 T35로 넘겼다** — T35가 어차피 "CI에서 실 Postgres 서비스로 컴포넌트 테스트"를 위해 CI를 처음 구성해야 하므로, matrix도 그 김에 같이 설정하는 게 중복 작업을 피한다(TASKS.md 의존관계 T34→T35와 일치).
+- **해결(T34 부분 + T35 완료)**: T34가 지원 범위를 README "운영 신뢰성"에 문서화(Node 20+, Windows 명시적 미검증)한 데 이어, T35가 `.github/workflows/ci.yml`의 `test` job으로 실제 CI matrix(`os: [ubuntu-latest, macos-latest] × node: [20, 22]`, 매 조합에서 typecheck/lint/format/test + `npm run verify:pack`)를 구성해 "지원한다고 문서화한 범위가 실제로 매 PR에서 검증됨"을 완성했다. CI가 Linux 러너에서 도는 것 자체로 "Linux 미검증"도 함께 해소됐다. Windows는 여전히 매트릭스에 없다 — `ps` 기반 OPS-002 보조 신호의 알려진 제약을 그대로 유지하는 의도적 선택(README에 이미 문서화).
 
 ## 운영 재검수 기준
 
@@ -65,5 +65,5 @@
 - [x] latest input 결정론(T34)
 - [x] 원격 발송의 unknown/idempotency 정책(T34)
 - [x] 구조화 로그·보존·백업 계약(T34)
-- [ ] 지원 OS/Node matrix 통과 — T35로 이관(CI 최초 구성과 함께)
+- [x] 지원 OS/Node matrix 통과(T35, CI 최초 구성과 함께) — `.github/workflows/ci.yml` `test` job
 

@@ -124,9 +124,16 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [x] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음, Idempotency-Key 전달(OPS-004) — `tests/resendProvider.test.ts`, `tests/pgWarehouse.test.ts`, `tests/folderScan.test.ts`
 - [x] 구조화 로그가 JSON으로 파싱 가능하고, 보존 기간 지난 `agent_send_log`/`inventory_snapshots` 행이 `npm run cleanup`으로 정리됨(OPS-005) — `tests/structuredLog.test.ts`, `tests/pgWarehouse.test.ts`(신규 describe 4 tests)
 
-**Postgres 계약 게이트 (TASKS T35, CI 전용)**
+**Postgres 계약 게이트 (TASKS T35 — 완료, CI 전용)**
 
-- [ ] CI service Postgres에서 migration, transaction rollback, READ ONLY role, advisory lock cleanup, explore_sql timeout을 component test(QA-004) — PGlite와 실 Postgres의 이미 알려진 차이(§17 statement_timeout 미집행 등)가 실 Postgres에서는 재현되지 않음을 별도로 확인한다.
-- [ ] CI matrix에 최소 지원 OS/Node LTS로 `npm run verify:pack`(clean tarball install) 포함(007 OPS-006, T34에서 이관)
+- [x] CI service Postgres에서 migration, transaction rollback, READ ONLY role, advisory lock cleanup, explore_sql timeout을 component test(QA-004) — `tests/component/postgres.component.test.ts`(`vitest.component.config.ts`, `npm run test:pg-component`), CI `postgres-component` job(`postgres:16` 서비스 컨테이너). PGlite와 실 Postgres의 이미 알려진 차이(§17 statement_timeout 미집행)가 실 Postgres에서는 재현되지 않음을 직접 확인했다(로컬 `postgresql@16`으로 8/8 통과 실측, TASKS T35).
+- [x] CI matrix에 최소 지원 OS/Node LTS로 `npm run verify:pack`(clean tarball install) 포함(007 OPS-006, T34에서 이관) — `.github/workflows/ci.yml`의 `test` job, `os: [ubuntu-latest, macos-latest] × node: [20, 22]`.
 
-이 절의 각 항목은 007/008이 지적한 "376개 테스트가 통과해도 게시된 패키지가 실행 불가능하거나 공격에 취약할 수 있다"는 간극을 메우기 위한 것이다 — §1~§7의 기존 게이트를 대체하지 않고 추가한다.
+**테스트 게이트/공급망 게이트 (TASKS T35 — 완료)**
+
+- [x] coverage threshold를 CI 필수 게이트로 승격(QA-002) — CI `coverage` job(`npm run coverage`). 로컬 `npm run check`엔 의도적으로 미포함(무거움).
+- [x] coverage 범위를 core 밖(explore_sql/warehouseFactory/agent/mcp/cli)까지 확장 + 위험 모듈별 threshold(QA-003) — `vitest.config.ts`의 `coverage.include`/`thresholds`.
+- [x] 005~007의 공격/정확성 회귀 케이스가 전부 자동 테스트로 연결됨(QA-005) — `docs/010_FINDING_TEST_CROSSREF.md`가 finding별 대조표. 이번에 새로 채운 유일한 빈 칸은 "partial snapshot 동시 read"(`tests/atomicFile.test.ts`).
+- [x] dependency audit(lockfile 기준) + tarball allowlist assertion + secret scan + SBOM을 release 워크플로에 연결(QA-006) — CI `audit` job(`npm run audit:lockfile`, `npm run secret-scan`, `npm sbom` → 아티팩트). fail-open/fail-closed 정책은 `src/adapters/auditLockfile.ts` 문서 주석 참고.
+
+이 절의 각 항목은 007/008이 지적한 "376개 테스트가 통과해도 게시된 패키지가 실행 불가능하거나 공격에 취약할 수 있다"는 간극을 메우기 위한 것이다 — §1~§7의 기존 게이트를 대체하지 않고 추가한다. finding별 상세 대조는 `docs/010_FINDING_TEST_CROSSREF.md` 참고.
