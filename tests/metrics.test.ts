@@ -2,15 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   avgDailySales,
   calendarWindow,
+  computeCsvReorderMetrics,
   computeReorderMetrics,
   computeSellThrough,
   daysOfCover,
   isStockoutRisk,
   reorderQty,
   sellThroughRatio,
+  type CsvHistoryMetricRow,
+  type CsvThresholdMetricRow,
 } from "../src/core/metrics.js";
 import { createFixedClock } from "../src/mocks/fixedClock.js";
-import type { SalesAgg, StockRow } from "../src/core/types.js";
+import type {
+  InventoryRow,
+  ProductRow,
+  SalesAgg,
+  SalesPeriodAggRow,
+  StockRow,
+} from "../src/core/types.js";
 
 // TESTING.md §3 골든 케이스 — 손계산 값을 그대로 하드코딩한다.
 describe("골든 케이스 (TESTING.md §3)", () => {
@@ -263,5 +272,168 @@ describe("경계값 유효성 검증", () => {
       { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "not-a-number" },
     ];
     expect(() => computeSellThrough(salesAgg, [])).toThrow(/유효한 숫자/);
+  });
+});
+
+describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", () => {
+  const PRODUCT_COLA: ProductRow = {
+    variantId: "SKU-COLA",
+    itemId: "SKU-COLA",
+    name: "코카콜라 500ml",
+    sku: "SKU-COLA",
+    category: null,
+    lowStockThreshold: "10",
+  };
+  const PRODUCT_CHIPS: ProductRow = {
+    variantId: "SKU-CHIPS",
+    itemId: "SKU-CHIPS",
+    name: "Piattos",
+    sku: "SKU-CHIPS",
+    category: null,
+    // override 없음 — 전역 기본값을 써야 한다.
+  };
+  const products = [PRODUCT_COLA, PRODUCT_CHIPS];
+
+  it("판매이력 있는 품목은 기존 §2 근사식 그대로다(28일 골든 케이스 회귀 없음)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
+    ];
+    const salesPeriodAgg: SalesPeriodAggRow[] = [
+      {
+        storeId: "본점",
+        variantId: "SKU-COLA",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28일
+        soldQty: "56",
+      },
+    ];
+
+    const [row] = computeCsvReorderMetrics(inventory, salesPeriodAgg, products, {
+      defaultLowStockThreshold: 5,
+    });
+
+    expect(row?.mode).toBe("history");
+    const historyRow = row as CsvHistoryMetricRow;
+    // TESTING §3와 같은 골든 값: 28일 56개 → 일평균 2.0, 재고 15 → 커버 7.5일, 리드7+안전3=10 위험.
+    expect(historyRow.avgDailySales).toBe(2.0);
+    expect(historyRow.daysOfCover).toBe(7.5);
+    expect(historyRow.stockoutRisk).toBe(true);
+    expect(historyRow.reorderQty).toBe(27); // ceil(21*2.0-15)
+    expect(historyRow.sellThrough).toBeCloseTo(56 / (56 + 15), 10);
+  });
+
+  it("CSV 기간 길이가 28일이 아니어도(35일) 실제 기간으로 avgDailySales가 정확히 나뉜다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-COLA", inStock: "50", updatedAt: new Date() },
+    ];
+    const salesPeriodAgg: SalesPeriodAggRow[] = [
+      {
+        storeId: "본점",
+        variantId: "SKU-COLA",
+        periodStart: new Date("2026-07-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35일
+        soldQty: "105",
+      },
+    ];
+
+    const [row] = computeCsvReorderMetrics(inventory, salesPeriodAgg, products, {
+      defaultLowStockThreshold: 5,
+    });
+    const historyRow = row as CsvHistoryMetricRow;
+    // v0.1 기본값(28일)을 그대로 썼다면 105/28=3.75가 나왔을 것 — 실제 기간(35일)로는 3.0이어야 한다.
+    expect(historyRow.avgDailySales).toBe(3.0);
+  });
+
+  it("한 파일 안에 기간 길이가 다른 품목이 섞여 있어도 각자 맞는 windowDays로 계산된다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
+      { storeId: "마카티점", variantId: "SKU-CHIPS", inStock: "20", updatedAt: new Date() },
+    ];
+    const salesPeriodAgg: SalesPeriodAggRow[] = [
+      {
+        storeId: "본점",
+        variantId: "SKU-COLA",
+        periodStart: new Date("2026-08-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28일
+        soldQty: "56",
+      },
+      {
+        storeId: "마카티점",
+        variantId: "SKU-CHIPS",
+        periodStart: new Date("2026-07-01T00:00:00Z"),
+        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35일
+        soldQty: "105",
+      },
+    ];
+
+    const rows = computeCsvReorderMetrics(inventory, salesPeriodAgg, products, {
+      defaultLowStockThreshold: 5,
+    }) as CsvHistoryMetricRow[];
+
+    const cola = rows.find((r) => r.variantId === "SKU-COLA");
+    const chips = rows.find((r) => r.variantId === "SKU-CHIPS");
+    expect(cola?.avgDailySales).toBe(2.0); // 56/28
+    expect(chips?.avgDailySales).toBe(3.0); // 105/35 — 28일로 계산됐으면 3.75가 됐을 것.
+  });
+
+  it("판매이력 없는 품목은 셀스루/재주문을 건너뛰고 임계치로만 판정한다(조용히 0 처리 안 함)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "2", updatedAt: new Date() },
+    ];
+    const [row] = computeCsvReorderMetrics(inventory, [], products, {
+      defaultLowStockThreshold: 5,
+    });
+
+    expect(row?.mode).toBe("no_history");
+    const thresholdRow = row as CsvThresholdMetricRow;
+    // history 전용 필드(avgDailySales 등)가 아예 없어야 한다 — "조용히 0"이 아니라 다른 모양.
+    expect(thresholdRow).not.toHaveProperty("avgDailySales");
+    expect(thresholdRow).not.toHaveProperty("sellThrough");
+  });
+
+  it("임계치 판정: 품목별 override(10)가 전역 기본값(5)보다 우선한다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-COLA", inStock: "8", updatedAt: new Date() }, // 8 < 10(override)
+    ];
+    const [row] = computeCsvReorderMetrics(inventory, [], products, {
+      defaultLowStockThreshold: 5, // 8 >= 5 였다면 전역 기본값만으론 안 걸렸을 값
+    });
+    const thresholdRow = row as CsvThresholdMetricRow;
+    expect(thresholdRow.threshold).toBe(10);
+    expect(thresholdRow.belowThreshold).toBe(true);
+  });
+
+  it("임계치 판정: override가 없으면 전역 기본값을 쓴다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "3", updatedAt: new Date() },
+    ];
+    const [row] = computeCsvReorderMetrics(inventory, [], products, {
+      defaultLowStockThreshold: 5,
+    });
+    const thresholdRow = row as CsvThresholdMetricRow;
+    expect(thresholdRow.threshold).toBe(5);
+    expect(thresholdRow.belowThreshold).toBe(true); // 3 < 5
+  });
+
+  it("재고가 임계치 이상이면 belowThreshold=false다", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "9", updatedAt: new Date() },
+    ];
+    const [row] = computeCsvReorderMetrics(inventory, [], products, {
+      defaultLowStockThreshold: 5,
+    });
+    expect((row as CsvThresholdMetricRow).belowThreshold).toBe(false);
+  });
+
+  it("음수 재고는 0으로 clamp하고 경고를 남긴다(임계치 폴백 경로에서도)", () => {
+    const inventory: InventoryRow[] = [
+      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "-3", updatedAt: new Date() },
+    ];
+    const [row] = computeCsvReorderMetrics(inventory, [], products, {
+      defaultLowStockThreshold: 5,
+    });
+    const thresholdRow = row as CsvThresholdMetricRow;
+    expect(thresholdRow.inStock).toBe(0);
+    expect(thresholdRow.warnings.some((w) => w.includes("음수"))).toBe(true);
   });
 });
