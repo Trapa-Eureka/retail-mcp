@@ -55,7 +55,7 @@ npm run agent:reorder   # 재주문 에이전트 1회 실행 (기본 SEND_MODE=d
 ## 최초 live 발송 전 사람 체크리스트
 
 - **타임존**: `.env`의 `BUSINESS_TIMEZONE`이 실제 매장 타임존인지 확인한다 — 판매 창·재주문 계산·이메일 표시가 전부 이 값 기준이다(DB 저장은 항상 UTC).
-- **권한 분리**: 조회 도구(sell_through 등 5종)는 읽기 전용 DB 역할로 돌리고, `sync_now`는 기본 비활성(`SYNC_TOOL_ENABLED=false`)으로 둔다 — 활성화할 땐 별도 쓰기 자격 증명/프로세스로 라우팅한다(DESIGN §11.4). `explore_sql`(임의 SELECT 조회, TASKS T27)도 기본 비활성(`EXPLORE_SQL_ENABLED=false`) — 켤 때도 읽기 전용 DB 역할로 돌리는 걸 권장한다(도구 자체가 `BEGIN READ ONLY`로 쓰기를 막지만, 두 겹으로 방어한다).
+- **권한 분리**: 조회 도구(sell_through 등 5종)는 읽기 전용 DB 역할로 돌리고, `sync_now`는 기본 비활성(`SYNC_TOOL_ENABLED=false`)으로 둔다 — 활성화할 땐 별도 쓰기 자격 증명/프로세스로 라우팅한다(DESIGN §11.4). `explore_sql`(임의 SELECT 조회, TASKS T27)도 기본 비활성(`EXPLORE_SQL_ENABLED=false`) — 켤 때는 **위험 함수(advisory lock, `set_config` 등) 실행 권한이 없는 전용 DB role을 필수로 권장**한다(`BEGIN READ ONLY`는 테이블/시퀀스 쓰기만 막고 이런 세션 부수효과까지는 못 막는다, TASKS T30). `DATABASE_URL` 없이(임베디드 PGlite) `explore_sql`을 켜려는 시도는 role 분리·timeout 집행이 둘 다 불가능해 기본적으로 거부되며, 위험을 이해했다면 `EXPLORE_SQL_ALLOW_PGLITE=true`로만 켤 수 있다.
 - **stale 확인**: `sync_status` 도구나 스모크 출력에서 `data_last_synced_at`이 최근인지, `warnings`에 stale 경고가 없는지 확인한다(기본 임계값 24시간, `STALE_THRESHOLD_HOURS`).
 - **최초 발송**: `npm run agent:reorder -- --sync --confirm`을 **사람이 직접** 1회 실행해 실제 수신자에게 정상 도착하는지 확인한 뒤에만 스케줄러에 등록한다(스모크는 이 단계를 포함하지 않는다).
 

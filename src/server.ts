@@ -101,6 +101,23 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
     );
   }
   const exploreSqlEnabled = env["EXPLORE_SQL_ENABLED"] === "true";
+  // SEC-001/002(005 검수, TASKS T30) — explore_sql의 진짜 안전장치는 위험 함수 실행 권한이
+  // 없는 전용 DB role인데, 임베디드 PGlite는 role 기반 권한 분리를 지원하지 않고
+  // statement_timeout도 집행하지 않는다(SPEC §17 기존 한계). DATABASE_URL이 없으면(=임베디드
+  // PGlite 경로, createWarehouseFromEnv와 같은 판정 기준) 두 안전장치가 전부 빠진 채로
+  // explore_sql이 켜지는 셈이라 기본적으로 거부한다 — 위험을 이해하고도 켜야 하는 운영자를
+  // 위해 EXPLORE_SQL_ALLOW_PGLITE=true로만 우회할 수 있다(SEND_MODE=live&&--confirm과 같은
+  // "명시적 위험 인지" 패턴, DESIGN §12.4).
+  if (exploreSqlEnabled && !env["DATABASE_URL"] && env["EXPLORE_SQL_ALLOW_PGLITE"] !== "true") {
+    throw new Error(
+      "EXPLORE_SQL_ENABLED=true인데 DATABASE_URL이 없습니다(임베디드 PGlite 경로) — PGlite는 " +
+        "역할 기반 권한 분리와 statement_timeout 집행을 지원하지 않아 explore_sql의 두 안전장치가 " +
+        "모두 빠집니다(docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-001/002). Neon/Supabase " +
+        "등 실 Postgres에 위험 함수 실행 권한이 없는 전용 role로 연결하는 걸 강력히 권장합니다 " +
+        "— 그래도 PGlite로 켜야 한다면 위험을 이해했다는 뜻으로 EXPLORE_SQL_ALLOW_PGLITE=true를 " +
+        "함께 설정하세요.",
+    );
+  }
   return { businessTimezone, staleThresholdHours, syncToolEnabled, exploreSqlEnabled };
 }
 
@@ -363,6 +380,14 @@ export async function createRetailMcpServer(): Promise<{
   }
   if (config.exploreSqlEnabled) {
     registerDeps.exploreSqlExecutor = createExploreSqlExecutor(handle.connectionProvider);
+    // 시크릿·연결 정보는 로그에 남기지 않는다(CLAUDE.md 구현 해석 보충) — kind만 언급한다.
+    // stdout은 MCP JSON-RPC 프로토콜 전용이라 stderr로만 쓴다(console.warn 기본 동작).
+    console.warn(
+      `[retail-mcp] explore_sql이 활성화됐습니다(웨어하우스: ${handle.kind}). 위험 함수 실행 ` +
+        "권한이 없는 전용 DB role로 운영하는 걸 강력히 권장합니다 — BEGIN READ ONLY는 테이블/" +
+        "시퀀스 쓰기만 막고 advisory lock 같은 세션 부수효과까지 막지는 않습니다(SEC-001/002, " +
+        "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md).",
+    );
   }
   registerTools(server, registerDeps);
 

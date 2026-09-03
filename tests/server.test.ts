@@ -64,10 +64,29 @@ describe("resolveServerConfig", () => {
     expect(config.exploreSqlEnabled).toBe(false);
   });
 
-  it("EXPLORE_SQL_ENABLED=true를 반영한다 — DATABASE_URL 없이도(임베디드 PGlite에서도 동작)", () => {
+  it("EXPLORE_SQL_ENABLED=true + DATABASE_URL 있으면(실 Postgres) 별도 확인 없이 반영한다", () => {
+    const config = resolveServerConfig({
+      BUSINESS_TIMEZONE: "Asia/Manila",
+      DATABASE_URL: "postgres://x",
+      EXPLORE_SQL_ENABLED: "true",
+    });
+    expect(config.exploreSqlEnabled).toBe(true);
+  });
+
+  it("EXPLORE_SQL_ENABLED=true인데 DATABASE_URL이 없으면(임베디드 PGlite) 원인이 담긴 에러로 거부한다(TASKS T30, SEC-001/002)", () => {
+    expect(() =>
+      resolveServerConfig({
+        BUSINESS_TIMEZONE: "Asia/Manila",
+        EXPLORE_SQL_ENABLED: "true",
+      }),
+    ).toThrow(/EXPLORE_SQL_ALLOW_PGLITE/);
+  });
+
+  it("EXPLORE_SQL_ENABLED=true + EXPLORE_SQL_ALLOW_PGLITE=true면 DATABASE_URL 없이도 위험을 감수하고 반영한다", () => {
     const config = resolveServerConfig({
       BUSINESS_TIMEZONE: "Asia/Manila",
       EXPLORE_SQL_ENABLED: "true",
+      EXPLORE_SQL_ALLOW_PGLITE: "true",
     });
     expect(config.exploreSqlEnabled).toBe(true);
   });

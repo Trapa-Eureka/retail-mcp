@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: 임의 SQL, 파일 입력/출력, 시크릿, 운영 의존성
 - 판정: **출시 차단 — `explore_sql` 격리 주장이 성립하지 않고 알려진 의존성 취약점 존재**
-- 상태: **OPEN** — 추적: `docs/TASKS.md` T30(SEC-001/002), T32(SEC-003~007), T37(재검수). explore_sql 정책 강화는 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.4에 반영됨(2026-09-03).
+- 상태: **부분 RESOLVED(T30, 2026-09-03)** — SEC-001/002 해결. SEC-003~007은 T32, 전체 재검수는 T37에서 진행. explore_sql 정책 강화는 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.4에 반영됨.
 
 ## SEC-001 — READ ONLY 트랜잭션은 부수효과 SELECT를 막지 못함
 
@@ -23,6 +23,7 @@ PGlite 실증에서 두 호출 모두 `true`였고 rollback 뒤에도 session ad
 - 원인: PostgreSQL의 READ ONLY는 테이블/시퀀스 쓰기를 제한하지만 모든 volatile 함수의 외부 부수효과를 금지하는 샌드박스가 아니다. 블록리스트의 `\block\b`도 `pg_advisory_lock`의 underscore 때문에 잡지 못한다.
 - 영향: 사용자가 migration/sync용 advisory lock을 선점해 운영을 방해하거나 pooled session에 lock을 남길 수 있다. 설치된 extension과 DB 권한에 따라 다른 부수효과 함수도 호출할 수 있다.
 - 수정 기준: 쓰기 권한뿐 아니라 위험 함수 실행 권한이 제한된 전용 DB role을 필수화한다. 임의 표현식이 아니라 허용 schema/table을 대상으로 한 제한된 query AST 또는 고정 analytics 도구를 우선 검토한다. 최소한 advisory lock/unlock, backend 제어, 파일/네트워크/설정 함수의 공격 테스트가 필요하다.
+- **해결(T30)**: `core/sqlValidator.ts`에 `FORBIDDEN_FUNCTION_CALLS`(함수명 단위 블록리스트, `\b이름\s*\(` 매칭 — `\block\b`이 놓쳤던 언더스코어 우회를 닫는다) 추가 — advisory lock류·`set_config`·백엔드 제어류·파일/원격 접근류. 이 재현 시나리오(`begin read only; select pg_try_advisory_lock(...); rollback; select pg_try_advisory_lock(...)`)를 `tests/exploreSqlExecutor.test.ts`에 그대로 살아있는 회귀 테스트로 남겨 "READ ONLY 혼자로는 advisory lock을 못 막는다"는 사실 자체를 문서화했다. 전용 DB role 요구는 SPEC §18/DESIGN §12.4에 정책으로, README(T36에서) 체크리스트로 반영 — 코드가 role 권한을 강제 조회하지는 않는다(운영 role 구성은 배포자 책임, 가드레일 4 기존 원칙). 허용 schema/table 제한 쿼리 AST 방식은 채택하지 않음(explore_sql의 정의 자체가 고정 쿼리 형태가 없는 유일한 예외이기 때문) — 근거는 SPEC §18.
 
 ## SEC-002 — 사용자가 `statement_timeout`을 다시 바꿀 수 있음
 
@@ -31,6 +32,7 @@ PGlite 실증에서 두 호출 모두 `true`였고 rollback 뒤에도 session ad
 - 근거: executor가 먼저 `set_config('statement_timeout', ...)`를 호출하지만 사용자 SELECT도 `set_config`를 호출할 수 있다. validator는 이를 금지하지 않는다.
 - 영향: 실 Postgres에서도 사용자가 timeout을 0 또는 큰 값으로 덮어써 비싼 쿼리를 장시간 실행할 수 있다. PGlite는 문서대로 timeout 자체를 집행하지 않아 더 직접적인 CPU/메모리 DoS가 가능하다.
 - 수정 기준: `set_config` 같은 설정 함수 실행을 차단하는 것만으로 완전한 샌드박스가 되지는 않는다. 전용 role, 서버 측 `statement_timeout` 강제, 별도 제한 connection/pool, 동시성·비용 제한을 결합하고 bypass 회귀 테스트를 추가한다. PGlite에서는 `explore_sql` 비활성화를 기본이 아니라 강제로 검토한다.
+- **해결(T30)**: `set_config(`를 `FORBIDDEN_FUNCTION_CALLS`로 막아 사용자 SQL이 executor 자신의 `statement_timeout` 설정을 재정의할 수 없게 했다(`tests/sqlValidator.test.ts`/`tests/exploreSqlExecutor.test.ts`에 회귀 테스트). "PGlite에서는 explore_sql 비활성화를 기본이 아니라 강제로 검토"는 **기본 차단 + 명시적 override**(`EXPLORE_SQL_ALLOW_PGLITE=true`, `SEND_MODE=live && --confirm`과 같은 패턴)로 확정 — `resolveServerConfig()`가 `DATABASE_URL` 없이 `EXPLORE_SQL_ENABLED=true`면 원인+조치 담긴 에러로 서버 기동을 거부한다(`tests/server.test.ts`). 서버 측 `statement_timeout` 강제·별도 connection pool·동시성 제한은 실 Postgres(pg 경로)에서는 표준 GUC라 이미 유효하고, PGlite 전용 한계는 위 차단으로 우회 경로 자체를 없앴다.
 
 ## SEC-003 — XLSX/CSV 입력에 파일 크기·행·셀 길이 한도가 없음
 
@@ -73,9 +75,9 @@ PGlite 실증에서 두 호출 모두 `true`였고 rollback 뒤에도 session ad
 
 ## 보안 재검수 기준
 
-- [ ] `explore_sql`의 전용 role·함수 실행 권한·PGlite 정책 확정
-- [ ] advisory lock 및 timeout override 공격 테스트 통과
-- [ ] 파일 resource limit과 CSV formula 방어 적용
-- [ ] `.env` 0600 + 원자 쓰기
-- [ ] 운영 dependency audit 0건 또는 승인된 예외 문서화
+- [x] `explore_sql`의 전용 role·함수 실행 권한·PGlite 정책 확정(T30 — role은 정책/문서, PGlite는 코드로 기본 차단)
+- [x] advisory lock 및 timeout override 공격 테스트 통과(T30)
+- [ ] 파일 resource limit과 CSV formula 방어 적용 — T32
+- [ ] `.env` 0600 + 원자 쓰기 — T32
+- [ ] 운영 dependency audit 0건 또는 승인된 예외 문서화 — T32
 
