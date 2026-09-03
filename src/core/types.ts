@@ -114,6 +114,12 @@ export interface ProductRow {
   name: string;
   sku: string | null;
   category: string | null;
+  /**
+   * 품목별 저재고 임계치 override(SPEC §12, TASKS T16) — CSV/Excel 채널 전용, Loyverse
+   * 경로는 항상 undefined/null이다. 생략하면 기존 필드처럼 다루던 코드가 그대로 동작하도록
+   * optional로 둔다. 실제로 읽어 임계치 판정에 쓰는 것은 T17의 몫이다.
+   */
+  lowStockThreshold?: Numeric | null;
 }
 
 export interface SalesLineRow {

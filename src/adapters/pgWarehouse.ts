@@ -125,13 +125,18 @@ async function upsertStoresOn(session: DbSession, rows: StoreRow[]): Promise<voi
 async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise<void> {
   if (rows.length === 0) return;
   const params: unknown[] = [];
-  for (const r of rows) params.push(r.variantId, r.itemId, r.name, r.sku, r.category);
+  for (const r of rows) {
+    params.push(r.variantId, r.itemId, r.name, r.sku, r.category, r.lowStockThreshold ?? null);
+  }
   await session.query(
-    `insert into products (variant_id, item_id, name, sku, category)
-     values ${buildValuesPlaceholders(rows.length, 5)}
+    `insert into products (variant_id, item_id, name, sku, category, low_stock_threshold)
+     values ${buildValuesPlaceholders(rows.length, 6)}
      on conflict (variant_id) do update set
        item_id = excluded.item_id, name = excluded.name,
-       sku = excluded.sku, category = excluded.category`,
+       sku = excluded.sku, category = excluded.category,
+       -- Loyverse 동기화(항상 null)가 CSV가 이미 저장해둔 임계치를 조용히 지우지 않도록,
+       -- 이번 upsert가 실제 값을 줄 때만 덮어쓴다(TASKS T16).
+       low_stock_threshold = coalesce(excluded.low_stock_threshold, products.low_stock_threshold)`,
     params,
   );
 }

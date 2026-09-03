@@ -32,7 +32,8 @@ describe("마이그레이션 러너", () => {
     const migrations = await loadMigrations();
     const result = await runMigrations(executor, migrations);
 
-    expect(result.applied).toEqual(["001_init", "002_sales_period_agg"]);
+    // 마이그레이션 개수는 태스크마다 늘어나므로 파일명을 하드코딩하지 않고 실제 목록과 비교한다.
+    expect(result.applied).toEqual(migrations.map((m) => m.id));
     expect(result.skipped).toEqual([]);
 
     const { rows } = await executor.query<{ table_name: string }>(
@@ -48,17 +49,17 @@ describe("마이그레이션 러너", () => {
     const migrations = await loadMigrations();
 
     const first = await runMigrations(executor, migrations);
-    expect(first.applied).toEqual(["001_init", "002_sales_period_agg"]);
+    expect(first.applied).toEqual(migrations.map((m) => m.id));
 
     const second = await runMigrations(executor, migrations);
     expect(second.applied).toEqual([]);
-    expect(second.skipped).toEqual(["001_init", "002_sales_period_agg"]);
+    expect(second.skipped).toEqual(migrations.map((m) => m.id));
 
     // 행 수가 두 배로 늘지 않았는지도 확인 (재적용되지 않았다는 직접 증거)
     const { rows } = await executor.query<{ count: string }>(
       "select count(*)::text as count from schema_migrations",
     );
-    expect(rows[0]?.count).toBe("2");
+    expect(rows[0]?.count).toBe(String(migrations.length));
   });
 
   it("agent_send_log.status는 정해진 값만 허용한다", async () => {
