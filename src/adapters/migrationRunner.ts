@@ -90,6 +90,54 @@ export interface RunMigrationsResult {
   skipped: string[];
 }
 
+/** Postgres SQLSTATE — 조회하려는 테이블 자체가 없음. pg와 PGlite 둘 다 같은 코드를 던진다
+ * (직접 재현 확인). */
+const UNDEFINED_TABLE_SQLSTATE = "42P01";
+
+function isUndefinedTableError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    (err as { code?: unknown }).code === UNDEFINED_TABLE_SQLSTATE
+  );
+}
+
+export interface PendingMigrationsStatus {
+  /** 아직 적용되지 않은 마이그레이션 id 목록(파일 순서대로). */
+  pending: string[];
+}
+
+/** 조회만 하는 최소 인터페이스 — `checkPendingMigrations`는 아무것도 쓰지 않으므로 `exec()`가
+ * 있는 전체 `SqlExecutor`를 요구하지 않는다(그래도 `SqlExecutor`는 이 타입을 그대로 만족해
+ * 기존 호출자를 바꿀 필요는 없다). */
+export type QueryOnlyExecutor = Pick<SqlExecutor, "query">;
+
+/**
+ * 2차 적대적 검수 SR2-REL-001 — 아무것도 적용하지 않고(읽기 전용) 대기 중인 마이그레이션이
+ * 있는지만 확인한다. `warehouseFactory.ts`의 network Postgres 시작 시 사전 점검과
+ * `retail-mcp-migrate`의 dry-run 모드가 함께 쓴다 — 목적은 raw Postgres 에러("relation ...
+ * does not exist")를 "무엇을 해야 하는지"까지 담은 메시지로 바꾸는 것이다.
+ *
+ * `schema_migrations` 테이블 자체가 없으면(완전히 빈 DB) 전체를 pending으로 본다. 그 외의
+ * 조회 실패(연결 끊김·권한 없음 등)는 "마이그레이션이 필요하다"는 뜻이 전혀 아니므로 그대로
+ * 다시 던진다 — 실제 장애를 "migrate를 실행하세요"로 오인시키면 안 된다.
+ */
+export async function checkPendingMigrations(
+  executor: QueryOnlyExecutor,
+  migrations: readonly Migration[],
+): Promise<PendingMigrationsStatus> {
+  let rows: { id: string }[];
+  try {
+    const result = await executor.query<{ id: string }>("select id from schema_migrations");
+    rows = result.rows;
+  } catch (err) {
+    if (isUndefinedTableError(err)) return { pending: migrations.map((m) => m.id) };
+    throw err;
+  }
+  const appliedIds = new Set(rows.map((r) => r.id));
+  return { pending: migrations.filter((m) => !appliedIds.has(m.id)).map((m) => m.id) };
+}
+
 /**
  * 마이그레이션을 순서대로 적용한다. 이미 schema_migrations에 기록된 id는 checksum이
  * 일치할 때만 건너뛴다 — 적용 후 파일 내용이 바뀌면 명확한 에러로 중단한다.

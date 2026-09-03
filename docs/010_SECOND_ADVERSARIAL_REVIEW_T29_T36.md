@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: P0 5/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001). P1 1/10 RESOLVED(SR2-CI-001, 순서상 앞당겨 처리 — 아래 참고). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 1/10 RESOLVED(SR2-CI-001, 순서상 앞당겨 처리 — 아래 참고). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록.
 
 ## 실행 검증
@@ -202,6 +202,8 @@ const productionKey = "sk-ant-실제키값"; // example
   1. `retail-mcp-migrate` bin을 제공하고 사람 확인 가드·dry-run/target 표시를 둔다.
   2. server/agent startup 자동 migration을 채택하되 기존 “프로덕션 migration은 사람만” 가드레일을 공식 변경한다.
   3. npm 배포판은 embedded PGlite만 지원하고 network Postgres 기능을 비공개/고급 설치 범위로 분리한다.
+- **제품 결정(사용자, 2026-09-04)**: 선택지 1 채택. 근거 — DATABASE_URL을 설정하는 사용자는 이미 Neon/Supabase 계정 생성·연결 문자열 발급을 거친, 어느 정도 기술적인 선택을 한 사람들이다(embedded PGlite가 진짜 비개발자 기본 경로이고 이미 자동 마이그레이션이라 이 문제와 무관). 그 단계까지 거친 사람에게 명시적 CLI 명령 한 번 더 요구하는 건 Prisma/Django/Rails 등 업계 표준 마이그레이션 도구와 같은 패턴이라 부담이 작다. 선택지 2(자동 migration)는 여러 라운드의 적대적 검수로 확정한 가드레일 5("프로덕션 마이그레이션은 사람만")를 직접 뒤집고 다중 인스턴스 동시 기동 시 새 위험을 만든다. 선택지 3(embedded 전용 제한)은 이미 구현·테스트된 기능을 통째로 제거하는 과한 대응이다.
+- **RESOLVED**: `retail-mcp-migrate` bin(`src/cli/migrate.ts`) 추가 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션 목록만 표시, 자격증명은 절대 출력하지 않음), 실제 적용은 `--confirm`(가드레일 1의 dry_run+--confirm 이중 게이트와 같은 패턴). 실제 적용/점검 로직(advisory lock 포함)은 `scripts/migrate.ts`(저장소 전용)와 `src/adapters/migratePg.ts`를 공유해 lock key 등이 두 파일에 따로 하드코딩되는 걸 막았다. 선택지 1에 더해, 사용자가 지적한 "실제로 마찰의 원인은 명령어 한 번이 아니라 confusing raw 에러"라는 관찰을 반영해 읽기 전용 사전 점검(`checkPendingMigrations`, `migrationRunner.ts`)도 추가했다 — `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`가 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`(`warehouseFactory.ts`)를 호출해 스키마 누락을 raw Postgres 에러("relation ... does not exist") 대신 `retail-mcp-migrate`를 안내하는 에러로 즉시 알린다. 이 사전 점검은 `createWarehouseFromEnv()` 자체에는 넣지 않았다 — 그 함수가 DATABASE_URL이 있어도 실제 네트워크 연결을 시도하지 않는다는 기존 테스트 계약(warehouseFactory.test.ts)을 지키기 위해서다. `scripts/verifyPack.ts`(release gate)에 bin 실행·에러 경로 확인을 추가하고, `tests/component/postgres.component.test.ts`(real Postgres)·`tests/warehouseFactory.test.ts`·`tests/migrateRunner.test.ts`·`tests/cliMigrate.test.ts`에 회귀 테스트를 추가했다. `retail-mcp-migrate` 전체 흐름(dry-run/--confirm/멱등성/DATABASE_URL 누락 에러)을 로컬 Postgres 16(Homebrew)에 대해 직접 재현·확인했다. `docs/004` REL-006도 완전 해소로 갱신.
 
 ---
 

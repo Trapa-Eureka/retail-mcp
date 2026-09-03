@@ -37,7 +37,10 @@ import { isMainModule } from "../adapters/mainModule.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { logStructured } from "../adapters/structuredLog.js";
 import { createSystemClock } from "../adapters/systemClock.js";
-import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
+import {
+  createWarehouseFromEnv,
+  ensureNetworkMigrationsApplied,
+} from "../adapters/warehouseFactory.js";
 import { syncAll } from "../etl/sync.js";
 
 // ── 리포트 조립 (결정론, T9 재사용) ────────────────────────────────────────
@@ -463,6 +466,11 @@ async function main(): Promise<void> {
   const handle = await createWarehouseFromEnv();
   const warehouse = handle.warehouse;
   try {
+    // SR2-REL-001(2차 적대적 검수) — network Postgres(DATABASE_URL) 경로에서 스키마가 없거나
+    // 일부만 적용됐으면 raw Postgres 에러 대신 여기서 명확한 안내로 즉시 멈춘다. embedded
+    // PGlite 경로는 이미 자동 마이그레이션됐으므로 no-op.
+    await ensureNetworkMigrationsApplied(handle);
+
     if (shouldSync) {
       const syncResult = await syncAll(
         { loyverseClient: createLoyverseClientFromEnv(), warehouse, clock },
