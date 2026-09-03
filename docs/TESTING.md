@@ -53,7 +53,7 @@
 - [ ] 발송 후 `agent_send_log`에 기록 (dry_run 여부 포함)
 
 **성능 가드**
-- [ ] 판매 라인 50,000행 픽스처: ETL 적재 + `reorder_suggestions` 계산 합계 < 5초 (PGlite 기준)
+- [x] 판매 라인 50,000행 픽스처: ETL 적재 + `reorder_suggestions` 계산 합계 < 5초 (PGlite 기준) — `tests/performance.test.ts`. **`npm run coverage`(v8 계측)에서는 이 테스트를 제외한다**(`vitest.config.ts`, TASKS T36) — CI에서 6567ms/5463ms/5042ms 등으로 반복 실패하는 걸 실측했다. wall-clock 예산을 계측된 실행에서 재는 것 자체가 잘못된 측정이라 가드를 없앤 게 아니라 계측 없는 도구로 옮긴 것 — 이 가드는 계측 없는 `test` job(plain `vitest run`, 매 PR/OS/Node 조합)이 여전히 강제한다.
 
 ## 5. 수동 스모크 (사람 전용 — scripts/smoke.ts)
 

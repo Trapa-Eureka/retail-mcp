@@ -1,14 +1,27 @@
 import { defaultExclude, defineConfig } from "vitest/config";
 
+// vitest.config.ts는 실행마다 새로 평가되는 일반 JS라 --coverage 여부를 process.argv로
+// 직접 판정할 수 있다(별도 env var/스크립트 변경 불필요).
+const coverageEnabled = process.argv.includes("--coverage");
+
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
-    // tests/component/**는 실 Postgres가 필요한 별도 스위트다(QA-004, TASKS T35,
-    // vitest.component.config.ts + `npm run test:pg-component` 전용) — 기본 게이트(가드레일
-    // 2: 테스트 네트워크 호출 0건)에서 명시적으로 제외한다. skipIf로도 안전하지만(실행은
-    // 되되 스킵됨), exclude로 애초에 이 파일 자체를 보지 않게 하는 게 "기본 게이트는 이
-    // 디렉터리를 아예 모른다"는 의도를 정확히 반영한다.
-    exclude: [...defaultExclude, "tests/component/**"],
+    exclude: [
+      ...defaultExclude,
+      // tests/component/**는 실 Postgres가 필요한 별도 스위트다(QA-004, TASKS T35,
+      // vitest.component.config.ts + `npm run test:pg-component` 전용) — 기본 게이트(가드레일
+      // 2: 테스트 네트워크 호출 0건)에서 명시적으로 제외한다. skipIf로도 안전하지만(실행은
+      // 되되 스킵됨), exclude로 애초에 이 파일 자체를 보지 않게 하는 게 "기본 게이트는 이
+      // 디렉터리를 아예 모른다"는 의도를 정확히 반영한다.
+      "tests/component/**",
+      // performance.test.ts의 5초 wall-clock 예산은 v8 coverage 계측 오버헤드와 근본적으로
+      // 안 맞는다 — CI(coverage job)에서 실측 반복 실패(6567ms/5463ms 등, TASKS T36)를 보고
+      // 확정. 성능 가드 자체는 계측 없는 `test` job(plain `vitest run`)이 매 PR 여전히
+      // 강제한다 — 여기서 빼는 건 "가드를 느슨하게 한다"가 아니라 "가드를 재는 도구에서
+      // 잰다"는 뜻이다(계측된 실행 시간으로 wall-clock 예산을 재는 게 애초에 잘못된 측정).
+      ...(coverageEnabled ? ["tests/performance.test.ts"] : []),
+    ],
     // PGlite(인프로세스 Postgres) 기동이 CI/공유 CPU 환경에서 기본 5000ms를 넘기는 경우가
     // 실측됐다(특히 --coverage의 v8 계측 오버헤드와 겹칠 때) — 여유 있게 20초로 늘린다.
     // 50k행 성능 가드 자체는 이 값과 별개로 테스트 안에서 5초 기준을 직접 assert한다.
