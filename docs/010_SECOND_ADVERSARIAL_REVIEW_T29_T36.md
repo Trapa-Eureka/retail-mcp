@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 4/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
+- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 5/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003, SR2-SEC-004). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록. **후속(2026-09-04, SR2-MAIL-002 작업 중 관측)**: 같은 원인(PGlite 기동 지연)이 `vitest.config.ts`의 `hookTimeout`(기본 10초) 쪽에 그대로 남아 있었다 — `createTestWarehouse()`는 대부분 `beforeEach` hook 안에서 실행돼 `testTimeout`(이미 20초)이 아니라 `hookTimeout`이 적용된다. 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"로 실패(격리 재실행은 통과). `hookTimeout: 20_000`으로 맞췄다.
 
 ## 실행 검증
@@ -98,6 +98,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: `readFile(...).catch(() => null)` 후 아무 오류 없이 continue한다.
 - 영향: 권한·인코딩·race·비정상 파일 때문에 검사하지 못한 tracked file이 있어도 “발견 0건”으로 성공한다.
 - 수정 기준: 검사 대상 tracked file을 읽지 못하면 non-zero로 실패하고 파일명을 보고한다. 의도적으로 제외하는 binary는 allowlist에서만 제외한다.
+- **RESOLVED**: 트리 스캔 로직을 `scripts/secretScan.ts`에서 `src/adapters/secretScanGit.ts`의 `scanTrackedFiles(repoRoot)`로 옮겨 단위 테스트 대상으로 만들고, 읽지 못한 추적 파일을 `unreadable: {filePath, reason(errno)}[]`로 전부 모아 반환한다 — 예전의 `readFile(...).catch(() => null); continue`(조용히 건너뛰고 "발견 0건" 성공)를 제거. `scripts/secretScan.ts`는 `unreadable`이 하나라도 있으면 시크릿 발견과 **별개 카테고리("검사 불가")**로 파일명·errno를 출력하고 non-zero로 실패한다(fail-closed) — 읽을 수 있는 파일의 스캔은 계속 진행해 한 번에 전부 보고한다. 의도적 제외는 두 가지만이고 둘 다 명시적 규칙이다: binary 확장자 allowlist(`SKIP_EXTENSIONS`, 유일하게 허용된 제외 방법으로 에러 메시지에 안내)와 심볼릭 링크(`lstat`로 판별·follow 안 함 — 내용이 링크 대상 경로일 뿐이고, range 스캔이 mode 120000을 제외하는 것과 일관; 깨진 링크도 여기서 "링크"로 판별돼 ENOENT 오탐이 되지 않는다). `tests/secretScanGit.test.ts`에 임시 git 저장소로 5개 추가: 정상 트리, 권한 000 파일 → `{locked.txt, EACCES}`(root면 재현 불가로 건너뜀 — 잘못 통과가 아니라 명시 skip), 추적 중이지만 워킹 트리에서 사라진 파일 → `ENOENT`(race/로컬 삭제 케이스), 정상+깨진 심볼릭 링크 → 둘 다 skipped·unreadable 아님, png → allowlist로만 제외.
 
 ### SR2-SEC-005 — 프로젝트가 실제 사용하는 credential 종류를 충분히 다루지 않음
 
