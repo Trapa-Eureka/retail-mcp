@@ -1,10 +1,16 @@
 /**
- * CSV/Excel 폴더 스캔 에이전트 — 지점 모드(SPEC §12 "실행 모델"·"연결 채널: 폴더 감시만").
+ * CSV/Excel 폴더 스캔 에이전트 — 지점 모드 + 본사 통합 모드(SPEC §12 "실행 모델"·"연결 채널:
+ * 폴더 감시만"·"다지점 헤드오피스 통합 조회", CSV_MODE=branch|consolidated로 선택, 기본 branch).
  *
- * 흐름: 감시 폴더의 최신 파일 찾기 → T16으로 파싱(검증 실패 시 여기서 중단, 아무것도 적재하지
- * 않음) → Warehouse.transaction()으로 stores/products/inventory/salesPeriodAgg 원자적 upsert
- * → T17(computeCsvReorderMetrics)로 알림 대상 판정 → 0건이면 종료, 아니면 SEND_MODE=live &&
- * --confirm 이중 게이트로만 실제 발송(가드레일 1) → T19로 스냅샷 CSV 갱신 → agent_send_log 기록.
+ * **지점 모드**(`runFolderScan`): 감시 폴더의 최신 파일 찾기 → T16으로 파싱(검증 실패 시
+ * 여기서 중단, 아무것도 적재하지 않음) → Warehouse.transaction()으로
+ * stores/products/inventory/salesPeriodAgg 원자적 upsert → T17(computeCsvReorderMetrics)로
+ * 알림 대상 판정 → 0건이면 종료, 아니면 SEND_MODE=live && --confirm 이중 게이트로만 실제
+ * 발송(가드레일 1) → T19로 스냅샷 CSV 갱신 → agent_send_log 기록.
+ *
+ * **본사 통합 모드**(`runConsolidatedScan`): 지점 스냅샷이 모이는 수집 폴더의 파일을 전부(최신
+ * 1개가 아니라) 각자 독립적으로 파싱→적재→sync_state 기록한다 — 한 지점 파일이 실패해도
+ * 다른 지점 파일 처리는 계속된다(부분 실패 격리, TASKS T20).
  *
  * `agent/reorder.ts`와 같은 얇은 오케스트레이션 원칙 — LLM 요약 없음(저재고 알림은 결정론
  * 목록이면 충분하다, DESIGN §7의 재주문 리포트와 달리 LLM 경계가 필요 없다). `LoyverseClient`/
@@ -28,37 +34,45 @@ import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
 const DEFAULT_SNAPSHOT_FILE_NAME = "snapshot.csv";
 
-// ── 감시 폴더에서 최신 파일 찾기 ──────────────────────────────────────────
+// ── 폴더에서 재고 파일 찾기 (지점 모드: 최신 1개 / 본사 모드: 전부) ──────────
 
-async function findLatestInventoryFile(dir: string): Promise<string> {
+interface InventoryFileEntry {
+  fullPath: string;
+  mtimeMs: number;
+}
+
+async function listInventoryFiles(dir: string): Promise<InventoryFileEntry[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const candidateNames = entries
     .filter((e) => e.isFile())
     .map((e) => e.name)
     .filter((name) => /\.(csv|xlsx)$/i.test(name));
 
-  if (candidateNames.length === 0) {
-    throw new Error(
-      `${dir}에 .csv/.xlsx 재고 파일이 없습니다. SPEC §12 고정 템플릿에 맞춰 채운 파일을 이 폴더에 넣으세요.`,
-    );
-  }
-
-  const withMtime = await Promise.all(
+  return Promise.all(
     candidateNames.map(async (name) => {
       const full = path.join(dir, name);
       const st = await stat(full);
       return { fullPath: full, mtimeMs: st.mtimeMs };
     }),
   );
-  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
 
-  if (withMtime.length > 1) {
-    console.warn(
-      `${dir}에 재고 파일이 ${withMtime.length}개 있습니다 — 가장 최근에 수정된 ` +
-        `"${path.basename(withMtime[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
+async function findLatestInventoryFile(dir: string): Promise<string> {
+  const files = await listInventoryFiles(dir);
+  if (files.length === 0) {
+    throw new Error(
+      `${dir}에 .csv/.xlsx 재고 파일이 없습니다. SPEC §12 고정 템플릿에 맞춰 채운 파일을 이 폴더에 넣으세요.`,
     );
   }
-  return withMtime[0]!.fullPath;
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  if (files.length > 1) {
+    console.warn(
+      `${dir}에 재고 파일이 ${files.length}개 있습니다 — 가장 최근에 수정된 ` +
+        `"${path.basename(files[0]!.fullPath)}"만 사용하고 나머지는 건너뜁니다.`,
+    );
+  }
+  return files[0]!.fullPath;
 }
 
 // ── 알림 대상 판정 (T17 결과 → 사람이 읽는 목록) ────────────────────────────
@@ -337,6 +351,91 @@ export async function runFolderScan(
   }
 }
 
+// ── 본사 통합 모드 (SPEC §12 "다지점 헤드오피스 통합 조회", TASKS T20) ─────────
+//
+// 지점 스냅샷(T19 exportSnapshotCsv 산출물)이 모이는 "수집 폴더"를 스캔한다 — 지점 모드처럼
+// "최신 파일 1개"가 아니라 폴더 안의 파일 전부를 지점별로 처리한다. 스냅샷은 이미 T15/T16과
+// 같은 고정 템플릿이라 파서를 그대로 재사용한다. 한 파일(지점)이 파싱 중간에 실패해도 다른
+// 파일(다른 지점)의 적재는 계속 진행한다 — 부분 실패가 전체를 막지 않는다.
+//
+// 파일별로 sync_state에 처리 이력을 남긴다(resource="csv_branch:<파일명>") — 그 파일이
+// 끝까지 성공 파싱·적재된 뒤에만, 같은 트랜잭션 안에서 watermark를 커밋한다(CLAUDE.md 구현
+// 해석 보충 원칙을 지점 단위로 지킴). 재고 스냅샷 자체는 매 스캔이 전체 상태를 다시
+// upsert하므로(멱등), 이 watermark는 "언제 그 지점이 마지막으로 성공 반영됐는지" 가시성을
+// 위한 것이지 증분 스킵 용도가 아니다.
+
+export interface ConsolidatedFileResult {
+  file: string;
+  status: "success" | "failed";
+  itemCount: number;
+  error?: string;
+}
+
+export interface ConsolidatedScanResult {
+  scannedAt: Date;
+  files: ConsolidatedFileResult[];
+  ok: boolean;
+}
+
+export interface ConsolidatedScanDeps {
+  warehouse: Warehouse;
+  clock: Clock;
+}
+
+export interface ConsolidatedScanOptions {
+  /** 지점 스냅샷이 모이는 수집 폴더. */
+  collectDir: string;
+}
+
+/**
+ * 수집 폴더의 지점 스냅샷 파일을 전부 처리한다. 각 파일은 독립적으로 파싱→적재→sync_state
+ * 기록까지 자체 실패 격리 범위를 갖는다 — 한 파일이 실패해도 나머지 파일 처리는 계속된다.
+ */
+export async function runConsolidatedScan(
+  deps: ConsolidatedScanDeps,
+  opts: ConsolidatedScanOptions,
+): Promise<ConsolidatedScanResult> {
+  const files = await listInventoryFiles(opts.collectDir);
+  if (files.length === 0) {
+    throw new Error(
+      `${opts.collectDir}에 지점 스냅샷 파일(.csv/.xlsx)이 없습니다 — 지점 인스턴스가 내보낸 ` +
+        "스냅샷을 이 폴더로 옮겨주세요.",
+    );
+  }
+
+  const now = deps.clock.now();
+  const results: ConsolidatedFileResult[] = [];
+
+  for (const { fullPath } of files) {
+    const fileName = path.basename(fullPath);
+    const resource = `csv_branch:${fileName}`;
+    try {
+      const parsed = await parseInventoryFile(fullPath, now);
+      await deps.warehouse.transaction(async (tx) => {
+        await tx.upsertStores(parsed.stores);
+        await tx.upsertProducts(parsed.products);
+        await tx.upsertInventory(parsed.inventory);
+        await tx.upsertSalesPeriodAgg(parsed.salesPeriodAgg);
+        // 적재와 watermark를 같은 트랜잭션에 묶는다 — 이 콜백이 끝까지 성공했을 때만 둘 다
+        // 커밋되고, 실패하면 둘 다 롤백된다.
+        await tx.setCursor(resource, now.toISOString(), now);
+      });
+      results.push({ file: fileName, status: "success", itemCount: parsed.inventory.length });
+    } catch (err) {
+      // 이 파일만 실패로 기록하고 계속 진행한다 — 이 파일의 트랜잭션 자체가 롤백돼 부분
+      // 적재는 없고, 다른 지점 파일의 적재·watermark에는 전혀 영향이 없다.
+      results.push({
+        file: fileName,
+        status: "failed",
+        itemCount: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { scannedAt: now, files: results, ok: results.every((r) => r.status === "success") };
+}
+
 // ── CLI 진입점 (조립만) ───────────────────────────────────────────────────
 
 function parseSendMode(): "dry_run" | "live" {
@@ -349,7 +448,18 @@ function parseSendMode(): "dry_run" | "live" {
   return raw;
 }
 
-async function main(): Promise<void> {
+function parseCsvMode(): "branch" | "consolidated" {
+  const raw = process.env["CSV_MODE"] ?? "branch";
+  if (raw !== "branch" && raw !== "consolidated") {
+    throw new Error(
+      `CSV_MODE 값이 올바르지 않습니다: "${raw}". "branch"(지점, 기본값) 또는 "consolidated"` +
+        "(본사 통합)만 허용합니다(.env 확인).",
+    );
+  }
+  return raw;
+}
+
+async function runBranchMain(clock: Clock, handle: { warehouse: Warehouse }): Promise<void> {
   const watchDir = process.env["CSV_WATCH_DIR"];
   if (!watchDir) {
     throw new Error(
@@ -373,30 +483,56 @@ async function main(): Promise<void> {
 
   const confirm = process.argv.includes("--confirm");
   const sendMode = parseSendMode();
+
+  const result = await runFolderScan(
+    { warehouse: handle.warehouse, clock, notificationProvider: createResendEmailProvider() },
+    {
+      watchDir,
+      snapshotDir,
+      sendMode,
+      confirm,
+      ...(defaultLowStockThreshold !== undefined ? { defaultLowStockThreshold } : {}),
+      ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
+    },
+  );
+  console.log(
+    `폴더 스캔 완료(지점) — run_id=${result.runId}, status=${result.status}, ` +
+      `알림 ${result.alertCount}건, 발송 ${result.sent ? "완료" : "안 함"}. 스냅샷: ${result.snapshotPath}`,
+  );
+}
+
+async function runConsolidatedMain(clock: Clock, handle: { warehouse: Warehouse }): Promise<void> {
+  const collectDir = process.env["CSV_COLLECT_DIR"];
+  if (!collectDir) {
+    throw new Error(
+      "CSV_COLLECT_DIR이 없습니다. 지점 스냅샷이 모이는 수집 폴더 경로를 .env의 " +
+        "CSV_COLLECT_DIR에 추가하세요(CSV_MODE=consolidated 전용).",
+    );
+  }
+
+  const result = await runConsolidatedScan({ warehouse: handle.warehouse, clock }, { collectDir });
+  const failed = result.files.filter((f) => f.status === "failed");
+  console.log(
+    `폴더 스캔 완료(본사 통합) — 지점 파일 ${result.files.length}개 중 성공 ` +
+      `${result.files.length - failed.length}개, 실패 ${failed.length}개.`,
+  );
+  for (const f of failed) {
+    console.error(`  실패: ${f.file} — ${f.error}`);
+  }
+}
+
+async function main(): Promise<void> {
   const clock = createSystemClock();
+  const mode = parseCsvMode();
 
   // DATABASE_URL이 없으면 임베디드 PGlite로 기동한다(T14, SPEC §12).
   const handle = await createWarehouseFromEnv();
   try {
-    const result = await runFolderScan(
-      {
-        warehouse: handle.warehouse,
-        clock,
-        notificationProvider: createResendEmailProvider(),
-      },
-      {
-        watchDir,
-        snapshotDir,
-        sendMode,
-        confirm,
-        ...(defaultLowStockThreshold !== undefined ? { defaultLowStockThreshold } : {}),
-        ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
-      },
-    );
-    console.log(
-      `폴더 스캔 완료 — run_id=${result.runId}, status=${result.status}, ` +
-        `알림 ${result.alertCount}건, 발송 ${result.sent ? "완료" : "안 함"}. 스냅샷: ${result.snapshotPath}`,
-    );
+    if (mode === "consolidated") {
+      await runConsolidatedMain(clock, handle);
+    } else {
+      await runBranchMain(clock, handle);
+    }
   } finally {
     await handle.close();
   }
