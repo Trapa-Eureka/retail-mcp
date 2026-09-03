@@ -97,9 +97,9 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [x] `npm pack --dry-run`의 파일 목록이 `files` allowlist와 일치(`dist`/`migrations`/`README`/`LICENSE`/`.env.example`만) — 97개→63개로 확인
 - [x] tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치 후 `bin` 실행 또는 MCP initialize까지 성공(QA-001) — `scripts/verifyPack.ts`가 `retail-mcp`(MCP `tools/list`)와 `retail-mcp-onboard`(`.env`+템플릿 생성)를 둘 다 실제 spawn으로 검증. 아직 `npm run check`/CI에는 자동 연결하지 않음(빌드+pack+install까지 하는 무거운 절차라 release gate 전용 별도 스크립트로 둠, TESTING §1 원칙과 별개) — CI 연결은 T37.
 
-**보안 게이트 (TASKS T30, T32)**
+**보안 게이트 (TASKS T30 — 완료, T32)**
 
-- [ ] `pg_advisory_lock`류 volatile 함수, `set_config` 재정의를 이용한 explore_sql 우회 시도가 회귀 테스트로 고정됨(SEC-001/002)
+- [x] `pg_advisory_lock`류 volatile 함수, `set_config` 재정의를 이용한 explore_sql 우회 시도가 회귀 테스트로 고정됨(SEC-001/002) — `tests/sqlValidator.test.ts`(함수 블록리스트), `tests/exploreSqlExecutor.test.ts`(실행 전 거부 + "검증기를 우회했다면 READ ONLY 혼자로는 못 막았을 것"을 실증하는 문서화 테스트), `tests/server.test.ts`(`EXPLORE_SQL_ALLOW_PGLITE` 게이팅)
 - [ ] snapshot CSV formula injection(`=`/`+`/`-`/`@` 시작 값) escape 및 round-trip 테스트(SEC-004)
 - [ ] 대형/압축폭탄 XLSX·대량 CSV에 대한 파일 크기·행·셀 길이 상한 테스트(SEC-003)
 - [ ] `npm audit --omit=dev` 0건 또는 근거·만료일이 기록된 승인된 예외(SEC-006)

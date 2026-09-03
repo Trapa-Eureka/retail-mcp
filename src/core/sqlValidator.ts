@@ -40,6 +40,55 @@ const FORBIDDEN_KEYWORDS = [
   "cluster",
 ] as const;
 
+/**
+ * 세션 부수효과가 있는 **함수 호출**을 함수명 단위로 막는다(TASKS T30, SEC-001/002 대응).
+ * `FORBIDDEN_KEYWORDS`의 `\b단어\b` 매칭은 `pg_advisory_lock`처럼 언더스코어로 이어진 이름의
+ * "lock" 앞뒤에 단어 경계가 안 생겨(`_`도 정규식 `\w`다) 통과시킨다는 걸 005가 실증했다 — 여기는
+ * 함수 전체 이름을 정확히 매치해 그 우회를 막는다.
+ *
+ * - advisory lock류: `BEGIN READ ONLY`가 테이블/시퀀스 쓰기는 막지만 이 세션 수준 부수효과는
+ *   막지 않는다(005 실증 — rollback 후에도 lock이 남았다). READ ONLY만으로는 안전하지 않다는
+ *   뜻이라 여기서 막는다.
+ * - `set_config`: executor 자신이 `statement_timeout`을 이걸로 설정한다(exploreSqlExecutor.ts) —
+ *   사용자 SQL이 같은 함수를 다시 호출하면 그 값을 되돌릴 수 있다(005 SEC-002). 사용자에게는
+ *   이 함수를 아예 막는다 — 읽기 전용 조회에 필요한 함수가 아니다.
+ * - 파일/원격 접근류(`lo_import`/`lo_export`/`dblink*`/`pg_read_file`류): READ ONLY 트랜잭션
+ *   범위 밖의 부수효과(디스크 IO, 네트워크 연결)라 막는다.
+ * - 백엔드 제어류(`pg_terminate_backend`/`pg_cancel_backend`/`pg_reload_conf`/`pg_rotate_logfile`):
+ *   다른 세션·서버 프로세스에 영향을 준다.
+ *
+ * **이 목록도 완전하지 않다** — 여기 없는 volatile 함수(예: `nextval`)는 여전히 통과하고,
+ * 그 경우 `BEGIN READ ONLY`가 최종 방어선이 된다(테스트로 실증, `tests/exploreSqlExecutor.test.ts`).
+ * 진짜 방어선은 이 블록리스트가 아니라 위험 함수 실행 권한이 없는 전용 DB role이다(SPEC §18,
+ * DESIGN §12.4) — 이 목록은 알려진 구체적 우회 두 가지를 막는 저비용 추가 계층일 뿐이다.
+ */
+const FORBIDDEN_FUNCTION_CALLS = [
+  "pg_advisory_lock",
+  "pg_advisory_lock_shared",
+  "pg_advisory_unlock",
+  "pg_advisory_unlock_all",
+  "pg_advisory_unlock_shared",
+  "pg_advisory_xact_lock",
+  "pg_advisory_xact_lock_shared",
+  "pg_try_advisory_lock",
+  "pg_try_advisory_lock_shared",
+  "pg_try_advisory_xact_lock",
+  "pg_try_advisory_xact_lock_shared",
+  "set_config",
+  "pg_terminate_backend",
+  "pg_cancel_backend",
+  "pg_reload_conf",
+  "pg_rotate_logfile",
+  "lo_import",
+  "lo_export",
+  "dblink",
+  "dblink_connect",
+  "dblink_exec",
+  "pg_read_file",
+  "pg_read_binary_file",
+  "pg_ls_dir",
+] as const;
+
 /** 검증용으로만 주석을 지운다 — 실제 실행에 쓰는 SQL 텍스트는 그대로 보존한다(원본 반환). */
 function stripSqlComments(sql: string): string {
   return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
@@ -77,6 +126,16 @@ export function validateReadOnlySql(sql: string): string {
       throw new Error(
         `SQL에 허용되지 않는 키워드("${keyword}")가 포함돼 있습니다 — explore_sql은 데이터를 ` +
           "바꾸지 않는 SELECT/WITH 조회만 허용합니다. 그 부분을 지우고 다시 실행하세요.",
+      );
+    }
+  }
+
+  for (const fn of FORBIDDEN_FUNCTION_CALLS) {
+    if (new RegExp(`\\b${fn}\\s*\\(`, "i").test(withoutTrailingSemicolon)) {
+      throw new Error(
+        `SQL에 보안상 금지된 함수 호출("${fn}(...)")이 포함돼 있습니다 — advisory lock·세션 ` +
+          "설정 변경·파일/원격 접근 함수는 explore_sql에서 호출할 수 없습니다(TASKS T30, " +
+          "SEC-001/002). 그 부분을 지우고 다시 실행하세요.",
       );
     }
   }

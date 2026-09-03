@@ -312,6 +312,8 @@ T25가 "실 Google Sheets 연동이 없어 의미 없다"며 미룬 재고 정�
 1. **`core/sqlValidator.ts`(1차, UX 계층)** — `select`/`with`로 시작하는 단일 문장만 허용, `insert/update/delete/drop/...` 등 블록리스트를 단어 경계로 검사(주석은 검증 전 제거해 오탐 방지). **완벽하지 않다는 걸 안다** — 블록리스트 우회가 이론상 가능하다. 목적은 "명백히 잘못된 요청"을 실행 전에 빠르고 명확한 에러로 걸러 UX를 개선하는 것뿐이다.
 2. **`adapters/exploreSqlExecutor.ts`의 `BEGIN READ ONLY`(2차, 진짜 방어선)** — 검증을 통과한 SQL도 반드시 이 트랜잭션 모드 안에서만 실행한다. Postgres 엔진 자체가 이 모드의 모든 쓰기 시도(시퀀스 `nextval()` 진행까지 포함)를 거부한다 — 1차 검증기를 우회하는 SQL이 있어도 여기서 최종적으로 막힌다. 테스트로 직접 재현해 증명했다(`nextval()`은 SELECT 구문이라 블록리스트를 통과하지만 READ ONLY 트랜잭션이 거부함, `tests/exploreSqlExecutor.test.ts`). 이 안전성은 **실행하는 DB 롤이 쓰기 권한을 갖고 있어도** 성립한다 — 운영 읽기 전용 롤 분리(README "권한 분리")는 여전히 권장하지만, 이 도구의 안전성 자체가 거기 의존하지는 않는다.
 
+> **정정(2026-09-03, T30, §18 참고)**: 위 "이 안전성은 실행하는 DB 롤이 쓰기 권한을 갖고 있어도 성립한다"는 **테이블/시퀀스 쓰기에 한정된 얘기였다** — 005 적대적 검수가 advisory lock류 세션 부수효과와 `set_config()` 재정의는 `BEGIN READ ONLY`로 막히지 않음을 실증했다. §18에서 정책을 재확정하고 `sqlValidator.ts`에 함수명 블록리스트를 추가했다 — 상세는 §18 "explore_sql 허용조건 강화".
+
 결과 행수 제한은 사용자 SQL을 파싱·재작성하지 않고 바깥에서 서브쿼리로 감싼다(`select * from (<검증된 SQL>) as t limit $1`) — LIMIT은 파라미터 바인딩, `statement_timeout`은 `set_config()`로 파라미터 바인딩해 어느 쪽도 SQL 텍스트에 값을 직접 보간하지 않는다.
 
 ### 알려진 한계 — PGlite는 statement_timeout을 집행하지 않는다
@@ -371,6 +373,7 @@ v0.2 대기열(§13~§17) 완료 직후 npm publish 준비 전 사용자 지시�
 
 - **정책**: `BEGIN READ ONLY`가 최종 방어선이라는 §17의 설계 전제를 낮춘다 — 이제 "쓰기 자체는 막는다"까지만 보장하고, **운영 배포는 explore_sql 전용의, 위험 함수 실행 권한이 없는 DB role을 필수로 요구**한다(README "권한 분리"의 권장을 필수로 격상). 임의 표현식 허용 대신 허용 schema/table로 제한된 쿼리로 좁히는 방향은 이번엔 채택하지 않는다 — `explore_sql`의 정의 자체가 "고정 쿼리 형태가 없는 유일한 예외"(가드레일 4)이기 때문이다. 대신 role 제한 + 공격 회귀 테스트로 방어한다.
 - **PGlite 노출 재검토**: PGlite는 `statement_timeout`을 집행하지 않을 뿐 아니라(§17 기존 한계) role 기반 함수 실행 제한 자체를 지원하지 않는다 — 임베디드 PGlite에서 explore_sql을 켜면 SEC-002가 지적한 DoS 경로(느린 쿼리를 취소할 수단이 없음)에 그대로 노출된다. `EXPLORE_SQL_ENABLED=true`이고 웨어하우스가 PGlite 경로일 때는 **명확한 경고**를 노출하거나(운영자가 의도적으로 켠 것인지 확인), 최소한 문서에서 "PGlite + explore_sql" 조합을 권장하지 않는다고 명시한다 — 완전 차단할지 경고로 둘지는 구현 시점(T30)에 확정한다.
+- **결정(T30)**: 완전 차단(예외 없음)이 아니라 **기본 차단 + 명시적 override**로 확정했다 — `DATABASE_URL`이 없는데(PGlite 경로) `EXPLORE_SQL_ENABLED=true`면 `resolveServerConfig()`가 원인+조치가 담긴 에러로 서버 기동을 거부하고, 새 env `EXPLORE_SQL_ALLOW_PGLITE=true`를 함께 설정해야만 우회된다 — 가드레일 1(`SEND_MODE=live && --confirm`)과 같은 "위험을 이해했다는 명시적 신호" 패턴이다. 완전 차단이 아니라 override를 둔 이유: 순수 로컬/오프라인 데모나 신뢰된 단일 사용자 환경처럼 role 분리가 애초에 의미 없는 사용처를 원천 봉쇄하지 않기 위해서다. `sqlValidator.ts`에도 advisory lock/`set_config`/백엔드 제어/파일·원격 접근 함수를 함수명 단위로 막는 `FORBIDDEN_FUNCTION_CALLS`를 추가해, 005가 실증한 "`\block\b`가 `pg_advisory_lock`의 밑줄 때문에 못 잡는" 구체적 우회를 닫았다 — 이 목록도 완전하지 않다는 걸 문서화(진짜 방어선은 여전히 role 제한).
 - 구현 계약은 DESIGN §12.4, 실제 구현·회귀 테스트는 TASKS T30.
 
 ### 나머지 P0/P1 검수 항목

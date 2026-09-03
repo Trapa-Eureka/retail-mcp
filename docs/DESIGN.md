@@ -276,6 +276,13 @@ SPEC §18의 정책 확정을 구현 계약으로 옮긴다. §6/§17의 2단계
 - **회귀 테스트**: `pg_try_advisory_lock`/`pg_advisory_unlock`, `set_config('statement_timeout', ...)` 재정의를 이용한 우회를 `tests/exploreSqlExecutor.test.ts`에 공격 시나리오로 고정한다(005 SEC-001/002가 재현한 그대로) — "막는다"가 아니라 "이 두 겹만으로는 못 막는 부분이 있고, 그래서 role 제한이 필수"라는 사실 자체를 문서화하는 회귀 테스트로 남긴다.
 - **PGlite 노출 재검토**: PGlite는 `statement_timeout` 미집행(§17 기존 한계)에 더해 role 기반 함수 실행 제한을 지원하지 않는다 — `EXPLORE_SQL_ENABLED=true` + PGlite(임베디드) 조합은 SEC-002의 DoS 경로에 그대로 노출된다. 이 조합이 감지되면(웨어하우스 팩토리가 이미 pg/pglite 분기를 알고 있다) 서버 기동 로그에 명확한 경고를 남긴다 — 강제 차단 여부는 T30 구현 중 최종 확정.
 
+**구현 완료(T30)**:
+
+- `core/sqlValidator.ts`에 `FORBIDDEN_FUNCTION_CALLS` 신설(`FORBIDDEN_KEYWORDS`와 별개 목록) — advisory lock류(`pg_advisory_lock`/`pg_try_advisory_lock`/...), `set_config`, 백엔드 제어류(`pg_terminate_backend`/`pg_cancel_backend`/`pg_reload_conf`/`pg_rotate_logfile`), 파일·원격 접근류(`lo_import`/`lo_export`/`dblink*`/`pg_read_file`/`pg_read_binary_file`/`pg_ls_dir`)를 함수명 단위(`\b이름\s*\(`)로 막는다 — `FORBIDDEN_KEYWORDS`의 `\b단어\b` 매칭이 `pg_advisory_lock`의 "_lock" 앞에 단어 경계가 없어(밑줄도 `\w`) 놓쳤던 정확한 우회(005 실증)를 닫는다. 여전히 완전하지 않다(모든 volatile 함수를 나열할 수 없다)는 걸 문서화 — `nextval()` 같은 목록 밖 함수는 여전히 `BEGIN READ ONLY`가 최종 방어선이다.
+- **차단 여부 확정: PGlite(임베디드, `DATABASE_URL` 미설정)에서 `EXPLORE_SQL_ENABLED=true`는 기본적으로 서버 기동을 거부한다.** `resolveServerConfig()`가 `DATABASE_URL` 없이(=PGlite 경로, `createWarehouseFromEnv`와 같은 판정 기준) `EXPLORE_SQL_ENABLED=true`면 원인+조치가 담긴 에러를 던진다 — 새 env `EXPLORE_SQL_ALLOW_PGLITE=true`를 함께 설정해야만 우회할 수 있다(`SEND_MODE=live && --confirm`과 같은 "명시적 위험 인지" 이중 게이트 패턴). PGlite는 role 기반 권한 분리도, `statement_timeout` 집행도 못하는 두 안전장치가 전부 빠지는 조합이라 완전 차단보다는 "그래도 켜야 한다면 명시적으로"를 선택했다 — 실 Postgres/Neon 경로는 이 확인 없이 그대로 동작한다.
+- `createRetailMcpServer()`가 `EXPLORE_SQL_ENABLED=true`일 때 서버 기동 시 `console.warn`(stderr — MCP 프로토콜은 stdout 전용이라 절대 오염시키지 않는다)으로 전용 role 권장 경고를 한 번 남긴다(웨어하우스 kind만 언급, 시크릿·연결 정보는 로그에 없음).
+- 테스트: `tests/sqlValidator.test.ts`(함수 블록리스트 각 항목 + 언더스코어 우회 재현 + 스키마 한정자/대소문자/공백 우회 시도 + 오탐 방지), `tests/exploreSqlExecutor.test.ts`(신규 함수가 실행 전에 거부됨 + "검증기를 우회했다면 READ ONLY 혼자로는 advisory lock을 못 막았을 것"을 세션에 직접 재현하는 문서화 목적 테스트), `tests/server.test.ts`(`EXPLORE_SQL_ALLOW_PGLITE` 게이팅 3가지 케이스).
+
 ### 12.5 원자적 파일 쓰기 — 공통 유틸리티 (DATA-004, TASKS T31)
 
 12.3의 atomic snapshot write와 SEC-005(`.env` 0600 원자 쓰기)가 같은 패턴(임시 파일 → flush → rename)을 필요로 한다 — `src/adapters/atomicFile.ts`(신규, 순수 IO 유틸리티)로 공용화한다: `writeFileAtomic(path, content, { mode? })`. `onboard.ts`의 `.env` 쓰기와 `folderScan.ts`의 snapshot 쓰기가 이 유틸리티를 공유한다.

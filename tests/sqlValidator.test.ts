@@ -76,4 +76,46 @@ describe("validateReadOnlySql (explore_sql 1차 방어선, TASKS T27)", () => {
       validateReadOnlySql("select store_id, variant_id from inventory_levels limit 10"),
     ).not.toThrow();
   });
+
+  it.each([
+    "select pg_advisory_lock(1)",
+    "select pg_advisory_lock_shared(1)",
+    "select pg_advisory_unlock(1)",
+    "select pg_advisory_unlock_all()",
+    "select pg_advisory_xact_lock(1)",
+    "select pg_try_advisory_lock(1)",
+    "select pg_try_advisory_lock_shared(1)",
+    "select pg_try_advisory_xact_lock(1)",
+    "select set_config('statement_timeout', '0', false)",
+    "select pg_terminate_backend(123)",
+    "select pg_cancel_backend(123)",
+    "select pg_reload_conf()",
+    "select lo_import('/etc/passwd')",
+    "select dblink('host=evil.example', 'select 1')",
+    "select pg_read_file('/etc/passwd')",
+    "select pg_ls_dir('.')",
+  ])("보안상 금지된 함수 호출은 거부한다(TASKS T30, SEC-001/002 대응): %s", (sql) => {
+    expect(() => validateReadOnlySql(sql)).toThrow(/보안상 금지된 함수/);
+  });
+
+  it('advisory lock 함수는 언더스코어 때문에 단어 경계 블록리스트("lock")를 우회했었다 — 함수명 블록리스트로 막는다(SEC-001 재현)', () => {
+    // "lock"이라는 단어 자체는 FORBIDDEN_KEYWORDS에 있지만 \block\b는 "advisory_lock"의
+    // "_lock" 앞에 단어 경계가 없어(밑줄도 \w) 못 잡는다 — 005가 실증한 정확히 그 우회다.
+    expect(() => validateReadOnlySql("select pg_try_advisory_lock(727100104)")).toThrow(
+      /pg_try_advisory_lock/,
+    );
+  });
+
+  it("스키마 한정자(pg_catalog.)나 대소문자·공백을 섞어도 함수 블록리스트를 우회하지 못한다", () => {
+    expect(() => validateReadOnlySql("select pg_catalog.pg_advisory_lock(1)")).toThrow();
+    expect(() => validateReadOnlySql("select PG_ADVISORY_LOCK(1)")).toThrow();
+    expect(() => validateReadOnlySql("select pg_advisory_lock  (1)")).toThrow();
+  });
+
+  it("금지된 함수 이름이 다른 식별자의 접미사일 뿐이면(다른 실제 함수 호출) 오탐하지 않는다", () => {
+    // "my_set_config(1)"은 문법상 함수 호출이지만 "set_config"가 아니라 "my_set_config"라는
+    // 별개 이름이다 — 단어 경계 앞에 "_"(\w)가 있어 진짜 set_config와 구분돼야 한다.
+    expect(() => validateReadOnlySql("select my_set_config(1) from stores")).not.toThrow();
+    expect(() => validateReadOnlySql("select my_set_config_backup from stores")).not.toThrow();
+  });
 });

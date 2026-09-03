@@ -229,9 +229,15 @@ v0.2 대기열(T23~T27) 완료 직후, npm publish 준비에 들어가기 전에
   - `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`에 REL-001~005 해결 근거, REL-006(T36)/REL-007·008(T37) 추적 상태 기록. `docs/TESTING.md` §8 패키징 게이트 항목 체크, `docs/DESIGN.md` §12.1에 구현 완료 addendum 추가.
   - `npm run check` 통과(typecheck/lint/format:check 전부 통과, 테스트 383/383 — `tests/performance.test.ts`의 5초 예산은 전체 스위트 동시 실행 부하에서 5269ms로 1건 초과 관찰됐으나 단독 재실행 시 통과, 세션 내 반복 관찰된 환경 플레이키(T21/T24/T26/T27/T28에서도 동일 패턴)로 실코드 회귀 아님. `npm run verify:pack` 별도 통과 확인).
 
-### T30 — explore_sql 보안 강화 (SEC-001~002) · 상태: TODO · 의존: T29
+### T30 — explore_sql 보안 강화 (SEC-001~002) · 상태: DONE(2026-09-03) · 의존: T29
 - 목표: `BEGIN READ ONLY`만으로는 advisory lock 등 volatile 함수 부수효과와 `set_config` 재정의를 막지 못한다는 005의 재현을 반영해, 전용 제한 role 요구를 강제화하고 PGlite에서의 노출 범위를 재검토하며 회귀 테스트를 추가한다.
-- 완료 기준: [ ] 운영 배포 시 explore_sql 전용 DB role에 위험 함수 실행 권한이 없어야 함을 SPEC/README에 명시하고, 가능한 범위에서 코드/문서로 강제(예: 실행 전 역할 점검 또는 명확한 경고) [ ] `pg_advisory_lock`/`pg_try_advisory_lock`류, `set_config` 재정의를 이용한 우회 공격 테스트 추가(005 SEC-001/002 재현 케이스를 회귀 가드로 고정) [ ] PGlite(`statement_timeout` 미집행 환경)에서 explore_sql 노출 정책 재검토 결과를 SPEC §17에 반영 [ ] `npm run check` 통과
+- 완료 기준: [x] 운영 배포 시 explore_sql 전용 DB role에 위험 함수 실행 권한이 없어야 함을 SPEC/README에 명시하고, 가능한 범위에서 코드/문서로 강제(예: 실행 전 역할 점검 또는 명확한 경고) [x] `pg_advisory_lock`/`pg_try_advisory_lock`류, `set_config` 재정의를 이용한 우회 공격 테스트 추가(005 SEC-001/002 재현 케이스를 회귀 가드로 고정) [x] PGlite(`statement_timeout` 미집행 환경)에서 explore_sql 노출 정책 재검토 결과를 SPEC §17에 반영 [x] `npm run check` 통과
+- **완료**: `core/sqlValidator.ts`에 `FORBIDDEN_FUNCTION_CALLS`(신규, `FORBIDDEN_KEYWORDS`와 별개 목록) 추가 — 함수명을 `\b이름\s*\(`로 정확히 매치해 advisory lock류(`pg_advisory_lock`/`pg_try_advisory_lock`/`pg_advisory_unlock`류 등 11개), `set_config`, 백엔드 제어류(`pg_terminate_backend`/`pg_cancel_backend`/`pg_reload_conf`/`pg_rotate_logfile`), 파일·원격 접근류(`lo_import`/`lo_export`/`dblink*`/`pg_read_file`/`pg_read_binary_file`/`pg_ls_dir`)를 막는다 — `FORBIDDEN_KEYWORDS`의 `\b단어\b`가 밑줄(`\w`) 때문에 "pg_advisory_**lock**"의 "lock"을 못 잡던 005의 정확한 우회를 닫는다. 스키마 한정자(`pg_catalog.`)·대소문자·공백을 섞어도 우회 못함을 테스트로 확인, "my_set_config(...)"처럼 진짜 다른 이름의 함수는 오탐하지 않음도 확인.
+  - `server.ts`의 `resolveServerConfig()`에 새 가드 추가 — `DATABASE_URL`이 없는데(=임베디드 PGlite 경로, `createWarehouseFromEnv`와 판정 기준 동일) `EXPLORE_SQL_ENABLED=true`면 원인+조치가 담긴 에러로 서버 기동을 거부한다. 새 env `EXPLORE_SQL_ALLOW_PGLITE=true`(`.env.example` 추가)를 함께 설정해야만 우회 가능 — `SEND_MODE=live && --confirm`과 같은 "위험을 명시적으로 인지" 이중 게이트 패턴. 완전 차단이 아니라 override를 둔 이유는 SPEC §18에 근거와 함께 기록(순수 로컬/신뢰된 단일 사용자 환경까지 원천 봉쇄하지 않기 위함).
+  - `createRetailMcpServer()`가 explore_sql 활성화 시 서버 기동 로그에 전용 role 권장 경고를 `console.warn`(stderr — MCP는 stdout 전용이라 오염시키지 않음)으로 한 번 남긴다.
+  - 테스트: `tests/sqlValidator.test.ts`(함수 블록리스트 16개 케이스 + 언더스코어 우회 재현 + 스키마 한정자/대소문자/공백 우회 시도 + 오탐 방지 2건), `tests/exploreSqlExecutor.test.ts`(신규 함수 실행 전 거부 + "검증기를 우회했다면 READ ONLY 혼자로는 advisory lock을 못 막는다"를 세션에 직접 재현하는 문서화 목적 테스트 — 005의 재현 스크립트 그대로), `tests/server.test.ts`(`EXPLORE_SQL_ALLOW_PGLITE` 게이팅 3케이스 — DATABASE_URL 있으면 그대로 통과/없으면 거부/allow-pglite면 통과).
+  - `docs/005`에 SEC-001/002 해결 근거 기록, `docs/SPEC.md` §17에 정정 각주 + §18에 최종 결정 기록, `docs/DESIGN.md` §12.4·`docs/TESTING.md` §8에 구현 완료 addendum, README "권한 분리" 절 갱신.
+  - `npm run check` 통과(typecheck/lint/format:check 전부 통과, 테스트 406/406).
 
 ### T31 — 데이터 정합성 P0 (DATA-001~004) · 상태: TODO · 의존: T30
 - 목표: pack size가 snapshot export에서 소실되는 결함(왕복 보장 깨짐), authoritative 스캔에서 사라진 SKU/매장이 DB에 영구 잔존하는 문제(확정된 tombstone 정책 구현), 파일 변경 없이 cron마다 반복 발송되는 문제(확정된 일일 다이제스트 정책 구현), snapshot 파일 쓰기가 원자적이지 않은 문제를 해결한다.

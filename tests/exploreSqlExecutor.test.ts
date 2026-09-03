@@ -82,6 +82,42 @@ describe("createExploreSqlExecutor (explore_sql, TASKS T27, 가드레일 4 예�
     expect(result.rowCount).toBeLessThanOrEqual(EXPLORE_SQL_MAX_LIMIT);
   });
 
+  it("advisory lock/set_config 함수 호출은 검증 단계에서 거부된다(TASKS T30, SEC-001/002 대응)", async () => {
+    await expect(executor.execute("select pg_try_advisory_lock(727100104)")).rejects.toThrow(
+      /보안상 금지된 함수/,
+    );
+    await expect(
+      executor.execute("select set_config('statement_timeout', '0', false)"),
+    ).rejects.toThrow(/보안상 금지된 함수/);
+  });
+
+  it("(SEC-001 재현, 왜 함수 블록리스트가 필요한지 실증) BEGIN READ ONLY만으로는 advisory lock을 막지 못한다 — 검증기를 우회한다고 가정하고 세션에 직접 재현", async () => {
+    // executor.execute()는 이제 위 테스트처럼 advisory lock을 검증 단계에서 거부한다 — 이
+    // 테스트는 "만약 검증기에 없는 다른 volatile 함수가 있었다면 READ ONLY 혼자로는 못 막았을
+    // 것"이라는 사실 자체를 005 검수가 실제로 재현한 방법 그대로 증명해, 진짜 방어선이
+    // 전용 DB role이어야 하는 이유를 살아있는 테스트로 남긴다(문서 SPEC §18/DESIGN §12.4).
+    const lockKey = 727_100_104;
+    await db.query("begin read only");
+    const first = await db.query<{ pg_try_advisory_lock: boolean }>(
+      "select pg_try_advisory_lock($1)",
+      [lockKey],
+    );
+    expect(first.rows[0]?.pg_try_advisory_lock).toBe(true);
+    await db.query("rollback");
+
+    // rollback 뒤에도 lock이 여전히 잡혀 있다 — READ ONLY+ROLLBACK이 advisory lock 세션
+    // 부수효과를 되돌리지 않는다는 뜻이다(테이블 쓰기와 달리).
+    const second = await db.query<{ pg_try_advisory_lock: boolean }>(
+      "select pg_try_advisory_lock($1)",
+      [lockKey],
+    );
+    expect(second.rows[0]?.pg_try_advisory_lock).toBe(true); // 이미 우리가 들고 있으니 재획득도 성공
+
+    // 정리 — 다른 테스트에 영향 없도록 두 번(각 성공한 acquire만큼) unlock한다.
+    await db.query("select pg_advisory_unlock($1)", [lockKey]);
+    await db.query("select pg_advisory_unlock($1)", [lockKey]);
+  });
+
   it("BEGIN READ ONLY가 진짜 방어선이다 — 검증기를 통과해도 실제 쓰기 부작용은 DB가 거부한다", async () => {
     // nextval()은 SELECT 구문이라 검증기(select/with로 시작, insert/update/... 블록리스트)를
     // 그대로 통과하지만, 시퀀스를 진행시키는 쓰기 부작용이 있다 — Postgres는 READ ONLY
