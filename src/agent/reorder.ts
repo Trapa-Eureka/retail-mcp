@@ -12,7 +12,6 @@
  * `main()`만 실제 어댑터를 조립하는 CLI 진입점이고, 로직은 전부 이 두 함수에 있다.
  */
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_STALE_THRESHOLD_HOURS, computeFreshness } from "../core/freshness.js";
 import {
   DEFAULT_WINDOW_DAYS,
@@ -33,6 +32,7 @@ import type {
 } from "../core/types.js";
 import { createClaudeSummarizer } from "../adapters/claudeSummarizer.js";
 import { createLoyverseClientFromEnv } from "../adapters/loyverseClient.js";
+import { isMainModule } from "../adapters/mainModule.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { logStructured } from "../adapters/structuredLog.js";
 import { createSystemClock } from "../adapters/systemClock.js";
@@ -502,8 +502,7 @@ async function main(): Promise<void> {
   }
 }
 
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMainModule) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
