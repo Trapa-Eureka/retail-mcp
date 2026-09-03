@@ -87,9 +87,10 @@ T12는 완료(DONE)됐다 — 착수 중 스코프가 "리네임"에서 "데이�
 - 완료 기준: [x] 같은 경로에 대한 동시 acquire 시도 중 하나만 성공하는 테스트(SPEC §12 스파이크 재현) [x] 존재하지 않는 PID가 남긴 stale lock 자동 회수 테스트 [x] 락 보유 중 재시도 시 에러 메시지에 보유 PID·조치 포함 [x] check 통과
 - **완료**: 락 파일은 보호 대상 경로 밖(`{targetPath}.lock`)에 두어 PGlite 데이터 디렉터리를 오염시키지 않는다. 배타 생성은 `fs.writeFile(path, ..., {flag:"wx"})`(단일 syscall, TOCTOU 경합 없음)로 하고, 두 프로세스가 동시에 시도해도 하나만 성공한다. `isAlive`/`pid`/`nowFn`을 주입 가능하게 해(rateLimiter.ts와 같은 테스트 가능성 패턴) 실제 프로세스를 죽이지 않고도 stale lock 시나리오를 결정론적으로 테스트한다. `FileLockBusyError`(advisoryLock.ts의 `AdvisoryLockBusyError`와 같은 패턴)와 `withFileLock(path, fn)` 편의 함수(`withAdvisoryLock`과 같은 acquire→fn→release 패턴)도 함께 제공. `release()`는 락 파일의 현재 pid가 자신과 다르면(다른 프로세스가 stale로 회수해 새로 잡은 경우) 삭제하지 않는다.
 
-### T14 (레인 B) — 임베디드 PGlite 웨어하우스 기본값 · 상태: TODO · 의존: T13
+### T14 (레인 B) — 임베디드 PGlite 웨어하우스 기본값 · 상태: DONE(2026-09-03) · 의존: T13
 - 목표: `pgWarehouse.ts`에 파일 영속 PGlite용 `DbConnectionProvider` 구현 추가(T13 락으로 디렉터리 열기를 감싸고, 최초 실행 시 `scripts/migrate.ts` 러너로 자동 마이그레이션). `server.ts`/`agent/reorder.ts`가 각자 하드코딩한 "`DATABASE_URL` 없으면 에러" 로직을 공용 팩토리로 추출 — `DATABASE_URL` 있으면 기존 pg.Pool 경로 그대로, 없으면 임베디드 PGlite(기본 경로 `.retail-mcp/data/`)로 대체. 이 로컬 자동 마이그레이션은 CLAUDE.md 가드레일 5("프로덕션 `DATABASE_URL` 마이그레이션은 사람만")의 대상이 아니다 — 원격 프로덕션 DB가 아니라 로컬 임베디드 DB 초기화다.
-- 완료 기준: [ ] `DATABASE_URL` 미설정 시 임베디드 PGlite로 기동 + 첫 실행 자동 마이그레이션 [ ] `DATABASE_URL` 설정 시 기존 pg.Pool 경로 회귀 없음 [ ] 임베디드 경로가 이미 열려 있으면(T13 락 보유 중) 명확한 에러로 거부 [ ] server.ts/agent/reorder.ts 중복 로직 제거 [ ] check 통과
+- 완료 기준: [x] `DATABASE_URL` 미설정 시 임베디드 PGlite로 기동 + 첫 실행 자동 마이그레이션 [x] `DATABASE_URL` 설정 시 기존 pg.Pool 경로 회귀 없음 [x] 임베디드 경로가 이미 열려 있으면(T13 락 보유 중) 명확한 에러로 거부 [x] server.ts/agent/reorder.ts 중복 로직 제거 [x] check 통과
+- **완료**: 신설 `src/adapters/warehouseFactory.ts`의 `createWarehouseFromEnv()`가 공용 팩토리다. 곁들여 `scripts/migrate.ts`의 러너 핵심 로직(`loadMigrations`/`runMigrations`/executor)을 `src/adapters/migrationRunner.ts`로 옮겼다 — advisoryLock.ts와 같은 이유(src가 scripts에 의존하는 잘못된 방향 회피)로, `src/mocks/pglite.ts`도 이제 여기서 가져온다(`scripts/migrate.ts`는 CLI 껍데기로 재export). `ServerConfig`에서 쓰이지 않던 `databaseUrl` 필드는 제거— 실제로 쓰는 곳이 pg.Pool 생성 한 줄뿐이었고 그 로직이 팩토리로 옮겨가며 무의미해졌다. `SYNC_TOOL_ENABLED=true`인데 `DATABASE_URL`이 없으면 `resolveServerConfig`가 명확한 에러로 시작을 거부한다(`sync_now`의 advisory lock은 pg 전용, DESIGN §11.4) — 임베디드 PGlite 경로에서는 `sync_now`를 못 쓴다. `.env.example`에 `RETAIL_MCP_DATA_DIR`, `.gitignore`에 `.retail-mcp/` 추가.
 
 ### T15 (레인 C) — CSV/Excel 컬럼 스키마 · 상태: TODO
 - 목표: SPEC §12 "컬럼 구성" 고정 템플릿을 `core/`에 zod 스키마로 정의(필수: 매장명/상품명/SKU/재고수량, 선택: 판매수량+기간/단가+통화/저재고임계치). 판매이력 있음/없음 모드를 판정하는 순수 함수 포함.

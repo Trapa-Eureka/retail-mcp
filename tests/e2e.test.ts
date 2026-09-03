@@ -34,7 +34,6 @@ async function setupServer(): Promise<{ client: Client; warehouse: Warehouse; cl
     warehouse,
     clock,
     config: {
-      databaseUrl: "unused-in-e2e",
       businessTimezone: BUSINESS_TIMEZONE,
       staleThresholdHours: 24,
       syncToolEnabled: true, // e2e에서는 sync_now까지 시나리오에 포함해야 하므로 켠다.

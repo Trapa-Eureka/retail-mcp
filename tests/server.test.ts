@@ -12,8 +12,14 @@ describe("resolveServerConfig", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("DATABASE_URL이 없으면 원인이 담긴 에러를 던진다", () => {
-    expect(() => resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila" })).toThrow(/DATABASE_URL/);
+  it("DATABASE_URL이 없어도 에러 없이 통과한다(T14 — 임베디드 PGlite로 기본 동작)", () => {
+    expect(() => resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila" })).not.toThrow();
+  });
+
+  it("SYNC_TOOL_ENABLED=true인데 DATABASE_URL이 없으면 원인이 담긴 에러를 던진다", () => {
+    expect(() =>
+      resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila", SYNC_TOOL_ENABLED: "true" }),
+    ).toThrow(/DATABASE_URL/);
   });
 
   it("BUSINESS_TIMEZONE이 없으면 원인이 담긴 에러를 던진다", () => {
@@ -61,7 +67,6 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
       warehouse,
       clock: createFixedClock("2026-09-01T00:00:00Z"),
       config: {
-        databaseUrl: "postgres://x",
         businessTimezone: "Asia/Manila",
         staleThresholdHours: 24,
         syncToolEnabled,
