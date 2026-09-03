@@ -121,6 +121,28 @@ describe("mapRowsToDomain", () => {
     expect(result.products[0]?.lowStockThreshold).toBe("10");
   });
 
+  it("같은 SKU가 다른 포장수량(SPEC §14)으로 나오면 거부한다", () => {
+    const rows = [
+      { ...BASE_ROW, 포장수량: "24" },
+      { ...BASE_ROW, 매장명: "마카티점", 포장수량: "12" },
+    ];
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/포장수량이 이전 행/);
+  });
+
+  it("포장수량이 일관되면(또는 둘 다 생략되면) products에 반영된다", () => {
+    const withPackSize = mapRowsToDomain(
+      [
+        { ...BASE_ROW, 포장수량: "24" },
+        { ...BASE_ROW, 매장명: "마카티점", 포장수량: "24" },
+      ],
+      NOW,
+    );
+    expect(withPackSize.products[0]?.packSize).toBe("24");
+
+    const withoutPackSize = mapRowsToDomain([BASE_ROW], NOW);
+    expect(withoutPackSize.products[0]?.packSize).toBeNull();
+  });
+
   it("판매이력 없는 행은 salesPeriodAgg에 들어가지 않는다(임계치 폴백 대상)", () => {
     const result = mapRowsToDomain([BASE_ROW], NOW);
     expect(result.salesPeriodAgg).toEqual([]);

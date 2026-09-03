@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPackRounding,
   avgDailySales,
   calendarWindow,
   computeCsvReorderMetrics,
@@ -9,6 +10,7 @@ import {
   daysOfCover,
   isStockoutRisk,
   reorderQty,
+  roundToPackMultiple,
   sellThroughRatio,
   type CsvHistoryMetricRow,
   type CsvThresholdMetricRow,
@@ -538,5 +540,123 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.soldQtyRaw).toBe(-3);
     expect(row?.soldQty).toBe(0);
     expect(row?.warnings.some((w) => w.includes("환불"))).toBe(true);
+  });
+});
+
+// 팩 단위 반올림(SPEC §14) — 사용자가 제공한 실제 샘플 시트("상품목록"의 포장수량(팩사이즈)
+// 컬럼 + "재고현황"의 계산 제안량/최종 발주량/발주 팩수 컬럼, 2026-09-03 확인)의 값을 그대로
+// 가져왔다. 시트가 이미 `최종 발주량 = ⌈계산 제안량÷포장수량⌉×포장수량`을 미리 계산해뒀으므로,
+// (계산 제안량, 포장수량) → (최종 발주량, 발주 팩수) 그대로를 golden case로 쓴다.
+describe("roundToPackMultiple (SPEC §14, 실제 샘플 시트 골든 케이스)", () => {
+  it.each([
+    // [상품코드, 계산 제안량, 포장수량, 최종 발주량, 발주 팩수]
+    ["P001", 27, 24, 48, 2],
+    ["P002", 3, 12, 12, 1],
+    ["P003", 19, 10, 20, 2],
+    ["P004", 11, 6, 12, 2],
+    ["P005", 11, 4, 12, 3],
+    ["P006", 3, 12, 12, 1],
+    ["P007", 20, 20, 20, 1], // 포장수량의 정확한 배수 — 올림해도 그대로.
+    ["P008", 14, 10, 20, 2],
+  ] as const)(
+    "%s: 제안량 %d개, 포장수량 %d → 최종 발주량 %d(%d팩)",
+    (_code, calcQty, packSize, expectedFinalQty, expectedPackCount) => {
+      const result = roundToPackMultiple(calcQty, packSize);
+      expect(result.finalOrderQty).toBe(expectedFinalQty);
+      expect(result.packCount).toBe(expectedPackCount);
+    },
+  );
+
+  it("packSize가 없으면(낱개 매입 가능) 반올림하지 않고 packCount는 null이다", () => {
+    expect(roundToPackMultiple(27, null)).toEqual({ finalOrderQty: 27, packCount: null });
+    expect(roundToPackMultiple(27, undefined)).toEqual({ finalOrderQty: 27, packCount: null });
+  });
+
+  it("제안량이 0이면 팩도 0개 — packSize가 있어도 1팩으로 반올림하지 않는다", () => {
+    expect(roundToPackMultiple(0, 24)).toEqual({ finalOrderQty: 0, packCount: 0 });
+  });
+
+  it("packSize가 0 이하면 명확한 에러를 던진다", () => {
+    expect(() => roundToPackMultiple(10, 0)).toThrow(/packSize/);
+    expect(() => roundToPackMultiple(10, -5)).toThrow(/packSize/);
+  });
+});
+
+describe("applyPackRounding — computeReorderMetrics 결과에 포장수량을 조인해 감싼다", () => {
+  it("ProductRow.packSize가 있으면 반올림하고, 없으면 원래 reorderQty를 그대로 둔다", () => {
+    const salesAgg: SalesAgg[] = [
+      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "36" },
+      {
+        storeId: "본사",
+        variantId: "P002",
+        name: "저소음 키보드",
+        category: null,
+        soldQtyRaw: "0",
+      },
+    ];
+    const stock: StockRow[] = [
+      {
+        storeId: "본사",
+        variantId: "P001",
+        name: "무선 마우스",
+        inStockRaw: "9",
+        updatedAt: new Date(),
+      },
+      {
+        storeId: "본사",
+        variantId: "P002",
+        name: "저소음 키보드",
+        inStockRaw: "5",
+        updatedAt: new Date(),
+      },
+    ];
+    // windowDays=1로 두면 avgDailySales=soldQtyRaw 그대로라, targetCoverDays=1일 때
+    // reorderQty = max(0, ceil(1*36 - 9)) = 27 — 시트의 P001 계산 제안량과 정확히 같다.
+    const rows = computeReorderMetrics(salesAgg, stock, { windowDays: 1, targetCoverDays: 1 });
+
+    const products: ProductRow[] = [
+      {
+        variantId: "P001",
+        itemId: "P001",
+        name: "무선 마우스",
+        sku: "P001",
+        category: null,
+        packSize: "24",
+      },
+      // P002는 packSize 없음 — 낱개 매입.
+      { variantId: "P002", itemId: "P002", name: "저소음 키보드", sku: "P002", category: null },
+    ];
+
+    const rounded = applyPackRounding(rows, products);
+    const p001 = rounded.find((r) => r.variantId === "P001");
+    const p002 = rounded.find((r) => r.variantId === "P002");
+
+    expect(p001?.reorderQty).toBe(27);
+    expect(p001?.packSize).toBe(24);
+    expect(p001).toMatchObject({ finalOrderQty: 48, packCount: 2 });
+
+    expect(p002?.packSize).toBeNull();
+    expect(p002?.packCount).toBeNull();
+    expect(p002?.finalOrderQty).toBe(p002?.reorderQty); // packSize 없으니 그대로.
+
+    // ReorderMetricRow의 기존 필드도 그대로 보존된다(감싸기만 했지 원본을 바꾸지 않았다).
+    expect(p001?.avgDailySales).toBe(36);
+    expect(p001?.stockoutRisk).toBe(rows.find((r) => r.variantId === "P001")?.stockoutRisk);
+  });
+
+  it("Warehouse에 없는(products 목록에 없는) variantId는 packSize null로 처리한다", () => {
+    const salesAgg: SalesAgg[] = [
+      {
+        storeId: "본사",
+        variantId: "UNKNOWN",
+        name: "미등록 상품",
+        category: null,
+        soldQtyRaw: "10",
+      },
+    ];
+    const rows = computeReorderMetrics(salesAgg, [], { windowDays: 28, targetCoverDays: 21 });
+    const rounded = applyPackRounding(rows, []);
+    expect(rounded[0]?.packSize).toBeNull();
+    expect(rounded[0]?.packCount).toBeNull();
   });
 });

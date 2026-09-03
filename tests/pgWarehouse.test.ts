@@ -50,6 +50,32 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.name).toBe("본점(개명)");
     });
 
+    it("upsertProducts로 packSize(포장수량, SPEC §14)를 저장·갱신할 수 있다", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
+      const { rows } = await db.query<{ pack_size: string | null }>(
+        "select pack_size from products where variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.pack_size).toBe("24");
+
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "12" }]);
+      const after = await db.query<{ pack_size: string | null }>(
+        "select pack_size from products where variant_id = 'var_cola'",
+      );
+      expect(after.rows[0]?.pack_size).toBe("12");
+    });
+
+    it("packSize를 안 주는(undefined) upsert는 이미 저장된 값을 지우지 않는다(coalesce)", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
+      // 다른 채널(예: Loyverse 동기화)이 packSize 없이 다시 upsert해도 값이 유지돼야 한다.
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, name: "코카콜라 500ml(갱신)" }]);
+
+      const { rows } = await db.query<{ pack_size: string | null; name: string }>(
+        "select pack_size, name from products where variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.pack_size).toBe("24");
+      expect(rows[0]?.name).toBe("코카콜라 500ml(갱신)");
+    });
+
     it("upsertSalesLines를 같은 PK로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
       const line: SalesLineRow = {
         receiptId: "R-1",

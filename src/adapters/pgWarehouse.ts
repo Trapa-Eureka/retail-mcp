@@ -128,17 +128,27 @@ async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise
   if (rows.length === 0) return;
   const params: unknown[] = [];
   for (const r of rows) {
-    params.push(r.variantId, r.itemId, r.name, r.sku, r.category, r.lowStockThreshold ?? null);
+    params.push(
+      r.variantId,
+      r.itemId,
+      r.name,
+      r.sku,
+      r.category,
+      r.lowStockThreshold ?? null,
+      r.packSize ?? null,
+    );
   }
   await session.query(
-    `insert into products (variant_id, item_id, name, sku, category, low_stock_threshold)
-     values ${buildValuesPlaceholders(rows.length, 6)}
+    `insert into products (variant_id, item_id, name, sku, category, low_stock_threshold, pack_size)
+     values ${buildValuesPlaceholders(rows.length, 7)}
      on conflict (variant_id) do update set
        item_id = excluded.item_id, name = excluded.name,
        sku = excluded.sku, category = excluded.category,
-       -- Loyverse 동기화(항상 null)가 CSV가 이미 저장해둔 임계치를 조용히 지우지 않도록,
-       -- 이번 upsert가 실제 값을 줄 때만 덮어쓴다(TASKS T16).
-       low_stock_threshold = coalesce(excluded.low_stock_threshold, products.low_stock_threshold)`,
+       -- 어느 채널이든 이 값을 안 채우는 upsert(항상 null)가 다른 채널이 이미 저장해둔 값을
+       -- 조용히 지우지 않도록, 이번 upsert가 실제 값을 줄 때만 덮어쓴다(TASKS T16 low_stock_
+       -- threshold와 같은 패턴 — T24는 pack_size에도 동일하게 적용).
+       low_stock_threshold = coalesce(excluded.low_stock_threshold, products.low_stock_threshold),
+       pack_size = coalesce(excluded.pack_size, products.pack_size)`,
     params,
   );
 }

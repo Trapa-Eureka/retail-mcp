@@ -70,6 +70,35 @@ export function reorderQty(
   return Math.max(0, Math.ceil(targetCoverDays * avgDailySalesValue - inStock));
 }
 
+/**
+ * 팩 단위 반올림(SPEC §14) — reorderQty()가 계산한 개수 단위 제안량을 포장수량(팩사이즈)의
+ * 배수로 올려 실제 발주 가능한 수량을 만든다. reorderQty() 자체는 건드리지 않는다(순수하게
+ * 그 출력을 감싸는 후처리). packSize가 없으면(낱개 매입 가능) 반올림하지 않고 그대로
+ * 돌려준다 — packCount는 그 경우 개념 자체가 없어 null(0이 아니다, "팩 단위가 없다"와
+ * "팩이 0개 필요하다"를 구분한다).
+ */
+export interface PackRoundedOrder {
+  /** 포장수량 배수로 올린 실제 발주량. packSize가 없으면 reorderQtyValue와 같다. */
+  finalOrderQty: number;
+  /** 발주할 팩(박스) 개수. packSize가 없으면 null. */
+  packCount: number | null;
+}
+
+export function roundToPackMultiple(
+  reorderQtyValue: number,
+  packSize: number | null | undefined,
+): PackRoundedOrder {
+  if (packSize === null || packSize === undefined) {
+    return { finalOrderQty: reorderQtyValue, packCount: null };
+  }
+  if (!Number.isFinite(packSize) || packSize <= 0) {
+    throw new Error(`packSize는 0보다 큰 숫자여야 합니다. 받은 값: ${packSize}.`);
+  }
+  if (reorderQtyValue === 0) return { finalOrderQty: 0, packCount: 0 };
+  const packCount = Math.ceil(reorderQtyValue / packSize);
+  return { finalOrderQty: packCount * packSize, packCount };
+}
+
 // ── 사업장 타임존 반개방 기간 경계 (DESIGN §11.3, Clock 주입) ───────────────
 // 외부 날짜 라이브러리 없이 Intl.DateTimeFormat만으로 타임존-안전 자정 변환을 한다.
 // 머신 로컬 타임존에 의존하지 않고, DST가 있는 지역에서도 안전하다.
@@ -330,6 +359,30 @@ export function computeReorderMetrics(
     });
   }
   return rows;
+}
+
+/**
+ * computeReorderMetrics(또는 computeCsvReorderMetrics의 history 행)가 계산한 배열에
+ * roundToPackMultiple()을 (storeId,variantId)로 조인한 ProductRow.packSize를 참조해
+ * 적용한다 — computeReorderMetrics 자체는 건드리지 않는다(TASKS T17이
+ * computeCsvReorderMetrics로 computeReorderMetrics를 감싼 것과 같은 패턴).
+ */
+export type PackRoundedReorderRow = ReorderMetricRow &
+  PackRoundedOrder & { packSize: number | null };
+
+export function applyPackRounding(
+  rows: ReorderMetricRow[],
+  products: ProductRow[],
+): PackRoundedReorderRow[] {
+  const productByVariant = new Map(products.map((p) => [p.variantId, p]));
+  return rows.map((row) => {
+    const product = productByVariant.get(row.variantId);
+    const packSize =
+      product?.packSize !== undefined && product.packSize !== null
+        ? parseNumeric(product.packSize, "포장수량")
+        : null;
+    return { ...row, packSize, ...roundToPackMultiple(row.reorderQty, packSize) };
+  });
 }
 
 // ── CSV/Excel 채널: 셀스루/임계치 분기 (SPEC §12, TASKS T17) ─────────────────
