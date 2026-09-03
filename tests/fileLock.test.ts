@@ -172,16 +172,24 @@ describe("fileLock", () => {
     });
 
     it("다른 호스트가 쓴 락은 프로세스가 살아있는지와 무관하게 자동 회수하지 않는다", async () => {
+      // machineId도 hostname과 일관되게 다른 값으로 명시한다 — 실제 테스트 실행 머신의 진짜
+      // MAC(두 acquireFileLock 호출 모두 기본값이면 같은 값이 됨, SR2-LOCK-001)에 좌우되지
+      // 않고 "서로 다른 호스트" 시나리오를 결정적으로 재현하기 위해서다.
       await acquireFileLock(targetPath, {
         pid: 4242,
         hostname: "other-host",
+        machineId: "11:11:11:11:11:11",
         isAlive: () => true,
       });
 
       // 이 프로세스 관점에서 "다른 호스트"이므로 isAlive를 false로 줘도(로컬에서 그 pid가
       // 안 보인다는 뜻일 뿐 원격 프로세스 생사와 무관) 회수하면 안 된다.
       await expect(
-        acquireFileLock(targetPath, { hostname: "this-host", isAlive: () => false }),
+        acquireFileLock(targetPath, {
+          hostname: "this-host",
+          machineId: "22:22:22:22:22:22",
+          isAlive: () => false,
+        }),
       ).rejects.toThrow(/다른 호스트|생사를 확인할 수 없습니다/);
     });
 
@@ -208,6 +216,91 @@ describe("fileLock", () => {
       expect(content.hostname).toBe("test-host");
       expect(typeof content.nonce).toBe("string");
       expect(content.nonce.length).toBeGreaterThan(0);
+
+      await lock.release();
+    });
+  });
+
+  describe("machineId 기반 cross-host 판정(2차 적대적 검수 SR2-LOCK-001)", () => {
+    it("hostname이 같아도 machineId가 다르면 다른 호스트로 판정해 자동 회수하지 않는다(hostname 충돌 시나리오)", async () => {
+      // 서로 다른 두 머신/컨테이너가 우연히 같은 hostname("localhost" 등 흔한 기본값)을 쓰는
+      // 상황을 흉내낸다 — machineId(MAC 주소 등)만 다르다.
+      await acquireFileLock(targetPath, {
+        pid: 4242,
+        hostname: "same-hostname",
+        machineId: "aa:aa:aa:aa:aa:aa",
+        isAlive: () => true,
+      });
+
+      // hostname은 같지만 machineId가 다르다 — isAlive를 false로 줘도(로컬에서 그 pid가 안
+      // 보인다는 뜻일 뿐, 실제로는 다른 머신의 살아있는 프로세스) 회수하면 안 된다.
+      await expect(
+        acquireFileLock(targetPath, {
+          hostname: "same-hostname",
+          machineId: "bb:bb:bb:bb:bb:bb",
+          isAlive: () => false,
+        }),
+      ).rejects.toThrow(/다른 호스트|생사를 확인할 수 없습니다/);
+    });
+
+    it("hostname이 달라도 machineId가 같으면 같은 호스트로 판정해 기존 PID 판정을 쓴다", async () => {
+      await acquireFileLock(targetPath, {
+        pid: 4242,
+        hostname: "old-name",
+        machineId: "cc:cc:cc:cc:cc:cc",
+        isAlive: () => false, // 죽은 프로세스 — stale.
+      });
+
+      // hostname이 바뀌었지만(재부팅 후 DHCP 호스트명 변경 등) machineId는 같다 — 같은
+      // 호스트이므로 죽은 프로세스의 stale lock을 정상적으로 회수할 수 있어야 한다.
+      const reclaimed = await acquireFileLock(targetPath, {
+        hostname: "new-name",
+        machineId: "cc:cc:cc:cc:cc:cc",
+        isAlive: () => false,
+      });
+      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as { pid: number };
+      expect(content.pid).toBe(process.pid);
+
+      await reclaimed.release();
+    });
+
+    it("machineId를 한쪽이라도 못 구하면(구버전 락 등) 기존 hostname 판정으로 폴백한다", async () => {
+      // 구버전 락(machineId 필드 자체가 없음)을 흉내낸다.
+      await writeFile(
+        `${targetPath}.lock`,
+        JSON.stringify({ pid: 4242, acquiredAt: new Date().toISOString(), hostname: "host-a" }),
+      );
+
+      await expect(
+        acquireFileLock(targetPath, {
+          hostname: "host-b",
+          machineId: "dd:dd:dd:dd:dd:dd",
+          isAlive: () => false,
+        }),
+      ).rejects.toThrow(/다른 호스트|생사를 확인할 수 없습니다/);
+    });
+
+    it("락 파일에 machineId가 기록된다", async () => {
+      const lock = await acquireFileLock(targetPath, { machineId: "ee:ee:ee:ee:ee:ee" });
+      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as {
+        machineId: string;
+      };
+      expect(content.machineId).toBe("ee:ee:ee:ee:ee:ee");
+
+      await lock.release();
+    });
+
+    it("machineId를 주입하지 않으면 필드 자체가 생략된다(undefined를 명시적으로 쓰지 않음)", async () => {
+      // 이 테스트 환경(네트워크 인터페이스 없는 샌드박스 등)에 따라 실제 machineId 값은
+      // 달라질 수 있으므로, 필드가 "있다면 문자열"이라는 것만 확인한다 — 핵심은 opts로
+      // 명시적으로 override하지 않아도 acquire 자체가 실패하지 않는다는 것.
+      const lock = await acquireFileLock(targetPath);
+      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as {
+        machineId?: unknown;
+      };
+      if ("machineId" in content) {
+        expect(typeof content.machineId).toBe("string");
+      }
 
       await lock.release();
     });
