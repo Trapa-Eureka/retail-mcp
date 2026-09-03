@@ -8,7 +8,7 @@
 
 역할 구분 원칙: **조회 = MCP, 예측·발송 = 에이전트.** 에이전트는 MCP와 같은 코어 함수를 소비하는 얇은 스케줄러이며, 숫자 계산은 전부 결정론 코드가 하고 LLM은 요약 문구 작성만 맡는다.
 
-> ⚠️ **데이터소스 전환 결정(2026-09-03)**: 아래 문서·코드는 v0.1(Loyverse POS 연동)을 그대로 설명한다 — 코드는 완성돼 있지만 확정된 파일럿이 없어 실배포는 보류 중이다. 다음 실제 출시는 **CSV/Excel 업로드 기반 데이터소스**를 우선 개발하는 쪽으로 결정했고(Loyverse는 파일럿이 API형 POS 사용을 확인해줄 때 버전업으로 추가), 조회 채널(Claude Code)도 오너가 아니라 개발자/운영자용으로 재정의했다 — 오너 접점은 에이전트의 이메일 리포트뿐이다. 상세는 `docs/SPEC.md` §7·§11·§12 참고.
+> ⚠️ **데이터소스 전환 결정(2026-09-03)**: 아래 "퀵스타트"~"운영 배포 절차"는 v0.1(Loyverse POS 연동)을 설명한다 — 코드는 완성돼 있지만 확정된 파일럿이 없어 실배포는 보류 중이다. 다음 실제 출시는 **CSV/Excel 업로드 기반 데이터소스**를 우선 개발하는 쪽으로 결정했고(Loyverse는 파일럿이 API형 POS 사용을 확인해줄 때 버전업으로 추가), 조회 채널(Claude Code)도 오너가 아니라 개발자/운영자용으로 재정의했다 — 오너 접점은 에이전트의 이메일 리포트뿐이다. **CSV/Excel 채널(v0.2)은 T12~T22로 구현이 끝났다** — 아래 "CSV/Excel 채널 퀵스타트" 참고, 실배포 여부만 파일럿 확인 대기 중인 건 v0.1과 동일하다. 상세는 `docs/SPEC.md` §7·§11·§12 참고.
 
 ## 자매 프로젝트와의 관계
 
@@ -72,9 +72,45 @@ macOS `launchd`는 plist가 필요하다 — `~/Library/LaunchAgents/com.retail-
 npm --prefix /path/to/retail-mcp run agent:reorder -- --sync --confirm
 ```
 
+## CSV/Excel 채널 퀵스타트 (v0.2, 다음 실제 출시 대상)
+
+Loyverse 없이 CSV/Excel 재고 파일만으로 셀스루/저재고 알림을 쓰는 경로다(`docs/SPEC.md` §12). 비개발자 운영자를 전제로 하며 웨어하우스 기본값은 계정 가입이 필요 없는 **임베디드 PGlite**(`.retail-mcp/data/`)다 — Neon 등 네트워크 Postgres를 쓰려면 온보딩에서 연결 문자열(`DATABASE_URL`)을 입력하면 된다. 지점(단일 매장) 모드와 본사(다지점 통합) 모드가 있다.
+
+### 지점 모드 — 재고 파일 감시 + 저재고 알림
+
+```bash
+npm install
+npm run onboard            # 모드(branch) 선택 → 감시/스냅샷 폴더·임계치·수신 이메일 입력
+                            # → .env 저장 + 감시 폴더에 예시 템플릿 CSV(template-example.csv) 생성
+# template-example.csv를 열어 §12 고정 템플릿 컬럼(매장명/상품명/SKU/재고수량 필수,
+# 판매수량+기간/저재고임계치 선택)에 맞춰 실제 재고로 채우거나 같은 형식 파일로 교체한다.
+npm run agent:folder-scan  # 1회 스캔: 파싱 → 적재 → 저재고 판정(기본 SEND_MODE=dry_run) → 스냅샷 갱신
+```
+
+실발송은 다른 스크립트와 동일한 이중 게이트(CLAUDE.md 가드레일 1)다 — `.env`의 `SEND_MODE=live`로 바꾸고 `npm run agent:folder-scan -- --confirm`을 **사람이 직접** 1회 실행해 정상 도착을 확인한 뒤에만 cron에 등록한다:
+
+```bash
+# crontab -e — 매일 07:00 스캔(간격은 사업장 사정에 맞게 조정, SPEC §12 "실행 모델")
+0 7 * * * cd /path/to/retail-mcp && npm run agent:folder-scan -- --confirm >> logs/folder-scan.log 2>&1
+```
+
+### 본사 모드 — 지점 스냅샷 통합 조회
+
+지점 인스턴스는 스캔마다 `CSV_SNAPSHOT_DIR`에 §12 고정 템플릿 그대로의 스냅샷 파일을 갱신한다(사람이 보는 요약이 아니라 다시 읽을 수 있는 산출물). 본사는 그 스냅샷들이 모이는 폴더 — 사내 공유드라이브 동기화, 이메일 첨부 수동 저장, USB 등 이미 쓰는 전송 수단(retail-mcp가 새로 규정하지 않음) — 를 별도 인스턴스로 관찰한다:
+
+```bash
+npm run onboard            # 모드(consolidated) 선택 → 수집 폴더(CSV_COLLECT_DIR) 입력
+npm run agent:folder-scan  # 수집 폴더의 지점 스냅샷 파일 전부를 지점별로 독립 적재
+                            # (한 지점 파싱 실패가 다른 지점에 영향 없음, 본사 모드는 재알림 없음)
+npm run dev                # MCP 서버 연결 후 Claude Code에서 "본점만" 등 매장명으로 자연어 조회
+```
+
+매장명이 이미 필수 컬럼이라 기존 MCP 조회 도구의 지점 필터링이 스키마 변경 없이 그대로 다지점 통합 조회에 쓰인다.
+
 ## 상태
 
 - 2026-09-02: T0~T11(v0.1 전체) 완료. `npm run dev`/`agent:reorder`/`smoke`/`migrate` 모두 실구현이다.
+- 2026-09-03: T12~T22(v0.2 CSV/Excel 채널 전체) 완료. `npm run onboard`/`agent:folder-scan` 실구현, 지점·본사 e2e 시나리오 통과(`tests/e2eCsvChannel.test.ts`).
 
 ## 구현 전 확인사항
 
