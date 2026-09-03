@@ -117,11 +117,66 @@ describe("createResendEmailProvider — 실패 처리", () => {
     await expect(provider.send(MSG)).rejects.toMatchObject({ name: "AmbiguousSendError" });
   });
 
-  it("fetch 자체가 실패(타임아웃이 아님)하면 name은 AmbiguousSendError가 아니다 — Resend에 요청이 닿지도 못했을 가능성이 높다", async () => {
-    const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+  // SR2-MAIL-002(2차 적대적 검수) — 응답-이전 네트워크 오류의 failed/ambiguous 분류.
+  // 아래 픽스처는 Node 24 undici가 실제로 던지는 형태(`TypeError("fetch failed")` + `cause`에
+  // `code`)를 직접 재현해 그대로 옮긴 것이다.
+  function undiciFetchFailed(code: string | undefined, causeMessage: string): TypeError {
+    const cause = new Error(causeMessage);
+    if (code !== undefined) (cause as { code?: string }).code = code;
+    return new TypeError("fetch failed", { cause });
+  }
+
+  it("연결 거부(ECONNREFUSED)는 요청이 서버에 닿지 않은 게 확실하므로 AmbiguousSendError가 아니다(failed)", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(undiciFetchFailed("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:443"));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).not.toBe("AmbiguousSendError");
+    expect((err as Error).message).toMatch(/발송되지 않았습니다/);
+  });
+
+  it("DNS 실패(ENOTFOUND)도 확실한 failed다", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(undiciFetchFailed("ENOTFOUND", "getaddrinfo ENOTFOUND api.resend.com"));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect((err as Error).name).not.toBe("AmbiguousSendError");
+  });
+
+  it("연결 후 응답 없이 소켓이 끊기면(UND_ERR_SOCKET) 본문이 이미 도달했을 수 있으므로 AmbiguousSendError다(SR2-MAIL-002 핵심 회귀)", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValue(undiciFetchFailed("UND_ERR_SOCKET", "other side closed"));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AmbiguousSendError");
+    expect((err as Error).message).toMatch(/발송됐을 수 있으니/);
+  });
+
+  it("ECONNRESET도 AmbiguousSendError다", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(undiciFetchFailed("ECONNRESET", "socket hang up"));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AmbiguousSendError");
+  });
+
+  it("코드가 없는 알 수 없는 응답-이전 오류는 보수적으로 AmbiguousSendError로 분류한다", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(undiciFetchFailed(undefined, "something odd"));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AmbiguousSendError");
+    expect((err as Error).message).toMatch(/코드 없음/);
+  });
+
+  it("cause 체인이 깊어도(2단계) code를 찾아 분류한다", async () => {
+    const inner = Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
+    const middle = new Error("wrapped", { cause: inner });
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause: middle }));
+    const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
+    const err = await provider.send(MSG).catch((e: unknown) => e);
     expect((err as Error).name).not.toBe("AmbiguousSendError");
   });
 
