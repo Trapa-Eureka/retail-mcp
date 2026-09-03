@@ -12,6 +12,7 @@
  * `main()`만 실제 어댑터를 조립하는 CLI 진입점이고, 로직은 전부 이 두 함수에 있다.
  */
 import { randomUUID } from "node:crypto";
+import { parseNamedArg } from "../core/cliArgs.js";
 import { DEFAULT_STALE_THRESHOLD_HOURS, computeFreshness } from "../core/freshness.js";
 import {
   DEFAULT_WINDOW_DAYS,
@@ -448,6 +449,12 @@ async function main(): Promise<void> {
 
   const confirm = process.argv.includes("--confirm");
   const shouldSync = process.argv.includes("--sync");
+  // --run-id=<값>(SR2-MAIL-001, 2차 적대적 검수 대응) — 예전엔 CLI에 이 플래그가 아예 없어
+  // 실행마다 randomUUID()로 새 run_id가 나갔다. Resend timeout 뒤 "발송됐는지 알 수 없음"
+  // 상태(status='unknown')를 사람이 확인 후 재시도할 때 README가 문서화한 "같은 run_id로
+  // 다시 실행"이 실제로는 불가능했던 결함 — 재시도가 새 Idempotency-Key를 써 중복 발송
+  // 위험이 있었다. 지정하지 않으면 기존처럼 randomUUID()로 폴백한다(runReorderAgent 참고).
+  const runId = parseNamedArg(process.argv, "run-id");
   const sendMode = parseSendMode();
   const clock = createSystemClock();
 
@@ -481,6 +488,7 @@ async function main(): Promise<void> {
         businessTimezone,
         sendMode,
         confirm,
+        ...(runId !== undefined ? { runId } : {}),
         ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
       },
     );

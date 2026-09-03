@@ -22,6 +22,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseCsvText } from "csv-parse/sync";
+import { parseNamedArg } from "../core/cliArgs.js";
 import {
   applyPackRounding,
   computeCsvReorderMetrics,
@@ -996,6 +997,9 @@ async function runBranchMain(clock: Clock, handle: { warehouse: Warehouse }): Pr
 
   const confirm = process.argv.includes("--confirm");
   const sendMode = parseSendMode();
+  // --run-id=<값>(SR2-MAIL-001, 2차 적대적 검수 대응) — agent/reorder.ts와 동일한 이유.
+  // 지정하지 않으면 기존처럼 randomUUID()로 폴백한다(runFolderScan 참고).
+  const runId = parseNamedArg(process.argv, "run-id");
 
   const result = await runFolderScan(
     { warehouse: handle.warehouse, clock, notificationProvider: createResendEmailProvider() },
@@ -1004,6 +1008,7 @@ async function runBranchMain(clock: Clock, handle: { warehouse: Warehouse }): Pr
       snapshotDir,
       sendMode,
       confirm,
+      ...(runId !== undefined ? { runId } : {}),
       ...(defaultLowStockThreshold !== undefined ? { defaultLowStockThreshold } : {}),
       ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
       // SCM 입고 실적(선택, SPEC §16) — 없으면 runFolderScan이 기존 동작과 완전히 동일하게 돈다.
