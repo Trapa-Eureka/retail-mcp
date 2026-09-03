@@ -117,4 +117,65 @@ describe("mapScmRowsToPurchaseReceipts", () => {
     const p001 = receipts.find((r) => r.variantId === "P001");
     expect(p001).toMatchObject({ receivedQty: "30", vendor: "스마트유통" });
   });
+
+  describe("동일 매장·SKU·날짜 복수 입고 합산(006 DATA-008, TASKS T33)", () => {
+    it("같은 날짜 두 건은 축소 없이 수량이 합산된다", () => {
+      const receipts = mapScmRowsToPurchaseReceipts(
+        [VALID_INBOUND_ROW, { ...VALID_INBOUND_ROW, 수량: "15", 거래처: "다른거래처" }],
+        "본사",
+      );
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]?.receivedQty).toBe("45");
+    });
+
+    it("합산 대상이 아닌 감사용 필드(단가·거래처)는 마지막 행 값을 남긴다", () => {
+      const receipts = mapScmRowsToPurchaseReceipts(
+        [VALID_INBOUND_ROW, { ...VALID_INBOUND_ROW, 수량: "15", 거래처: "다른거래처" }],
+        "본사",
+      );
+      expect(receipts[0]?.vendor).toBe("다른거래처");
+    });
+
+    it("매장이 다르면(같은 SKU·날짜) 합산하지 않는다 — PK 단위와 정확히 같다", () => {
+      const receiptsA = mapScmRowsToPurchaseReceipts([VALID_INBOUND_ROW], "본사A");
+      const receiptsB = mapScmRowsToPurchaseReceipts([VALID_INBOUND_ROW], "본사B");
+      expect(receiptsA[0]?.storeId).toBe("본사A");
+      expect(receiptsB[0]?.storeId).toBe("본사B");
+      // 두 매장을 한 배치로 합쳐도 서로 합산되지 않아야 한다.
+      const merged = mapScmRowsToPurchaseReceipts(
+        [{ ...VALID_INBOUND_ROW }, { ...VALID_INBOUND_ROW }],
+        "본사",
+      );
+      expect(merged).toHaveLength(1); // 같은 매장이면 합산.
+      const differentDates = mapScmRowsToPurchaseReceipts(
+        [VALID_INBOUND_ROW, { ...VALID_INBOUND_ROW, 일자: "2026-07-02" }],
+        "본사",
+      );
+      expect(differentDates).toHaveLength(2); // 날짜가 다르면 합산하지 않는다.
+      expect(differentDates.map((r) => r.receivedQty)).toEqual(["30", "30"]);
+    });
+
+    it("같은 날짜 SKU가 3건 이상이어도 전부 합산된다", () => {
+      const receipts = mapScmRowsToPurchaseReceipts(
+        [
+          VALID_INBOUND_ROW,
+          { ...VALID_INBOUND_ROW, 수량: "10" },
+          { ...VALID_INBOUND_ROW, 수량: "5" },
+        ],
+        "본사",
+      );
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]?.receivedQty).toBe("45");
+    });
+
+    it("서로 다른 SKU는 독립적으로 처리된다(합산이 SKU를 건너뛰지 않음)", () => {
+      const receipts = mapScmRowsToPurchaseReceipts(
+        [VALID_INBOUND_ROW, { ...VALID_INBOUND_ROW, 상품코드: "P002", 수량: "8" }],
+        "본사",
+      );
+      expect(receipts).toHaveLength(2);
+      expect(receipts.find((r) => r.variantId === "P001")?.receivedQty).toBe("30");
+      expect(receipts.find((r) => r.variantId === "P002")?.receivedQty).toBe("8");
+    });
+  });
 });

@@ -75,6 +75,65 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.pack_size).toBe("24");
       expect(rows[0]?.name).toBe("코카콜라 500ml(갱신)");
     });
+  });
+
+  describe("upsertProducts — nullable 필드 명시적 clear(006 DATA-005, TASKS T33)", () => {
+    it("packSize를 null로 주는 upsert는 이미 저장된 값을 지운다(undefined와 다름)", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: null }]);
+
+      const { rows } = await db.query<{ pack_size: string | null }>(
+        "select pack_size from products where variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.pack_size).toBeNull();
+    });
+
+    it("lowStockThreshold를 null로 주는 upsert는 이미 저장된 값을 지운다", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, lowStockThreshold: "10" }]);
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, lowStockThreshold: null }]);
+
+      const { rows } = await db.query<{ low_stock_threshold: string | null }>(
+        "select low_stock_threshold from products where variant_id = 'var_cola'",
+      );
+      expect(rows[0]?.low_stock_threshold).toBeNull();
+    });
+
+    it("한 배치 안에서 다른 SKU가 packSize를 지워도(null) 이 upsert가 안 건드리는 다른 필드(threshold)는 그대로다", async () => {
+      await warehouse.upsertProducts([
+        { ...PRODUCT_COLA, lowStockThreshold: "10", packSize: "24" },
+      ]);
+      // 이 upsert 배치는 packSize에 대해서만 정보가 있다(null=clear) — threshold는 undefined라
+      // 손대지 않는다.
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: null }]);
+
+      const { rows } = await db.query<{
+        pack_size: string | null;
+        low_stock_threshold: string | null;
+      }>("select pack_size, low_stock_threshold from products where variant_id = 'var_cola'");
+      expect(rows[0]?.pack_size).toBeNull();
+      expect(rows[0]?.low_stock_threshold).toBe("10");
+    });
+
+    it("배치 안 여러 행이 서로 다른 SKU를 다뤄도 각자 정확히 반영된다(배치 판정은 필드 단위, 행 단위 아님)", async () => {
+      await warehouse.upsertProducts([
+        { ...PRODUCT_COLA, packSize: "24" },
+        { ...PRODUCT_CHIPS, packSize: "12" },
+      ]);
+      // 같은 배치 안에서 COLA는 값을 지우고, CHIPS는 새 값을 준다 — 배치 판정("이 필드에
+      // 대해 조금이라도 정보가 있는 행이 하나라도 있는가")이 true이므로 두 행 다
+      // excluded.pack_size로 덮어써야 한다(null이든 값이든).
+      await warehouse.upsertProducts([
+        { ...PRODUCT_COLA, packSize: null },
+        { ...PRODUCT_CHIPS, packSize: "6" },
+      ]);
+
+      const { rows } = await db.query<{ variant_id: string; pack_size: string | null }>(
+        "select variant_id, pack_size from products order by variant_id",
+      );
+      const byId = Object.fromEntries(rows.map((r) => [r.variant_id, r.pack_size]));
+      expect(byId["var_cola"]).toBeNull();
+      expect(byId["var_chips"]).toBe("6");
+    });
 
     it("upsertSalesLines를 같은 PK로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
       const line: SalesLineRow = {

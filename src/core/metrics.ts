@@ -539,11 +539,25 @@ export function computeCsvReorderMetrics(
 
 export interface StockReconciliationOptions {
   /**
-   * 기초재고 — 계산 대상 기간 시작 시점의 실사 재고. 키는 `${storeId}:${variantId}`. 없는
-   * 키는 0으로 간주한다(SCM 원장을 그 시점부터 새로 시작한 경우와 같은 취급 — 온보딩 시
-   * 1회 실사값을 입력받는 흐름은 이후 태스크에서 다룬다).
+   * 기초재고 — 계산 대상 기간 시작 시점의 실사 재고. 키는 `${storeId}:${variantId}`.
+   *
+   * **006 DATA-006(TASKS T33) 대응**: 키가 없는 항목은 예전엔 조용히 0으로 간주해 계산에
+   * 썼지만(SCM 원장을 그 시점부터 새로 시작한 경우와 정말로 값이 없는 경우를 구분 못 함),
+   * 이제는 "기초재고를 모른다"는 뜻으로 취급해 그 행을 `insufficientData: true`로 표시하고
+   * `discrepancy`를 단정적인 경고로 내보내지 않는다(계산 자체는 여전히 0을 대입해 참고용
+   * 숫자로 남긴다 — 완전히 숨기지는 않는다). 온보딩 시 1회 실사값을 입력받는 흐름은 여전히
+   * 이후 태스크 — 그 전까지는 이 옵션을 실제로 채워 넘기는 호출자가 없으므로 모든 행이
+   * `insufficientData: true`가 되는 게 현재는 정상이다.
    */
   openingStock?: Record<string, number>;
+  /**
+   * SCM 입고 실적 기간과 판매 데이터 기간이 실제로 겹치는지(006 DATA-006, TASKS T33) — 호출자
+   * (예: `agent/folderScan.ts`)가 두 기간을 직접 비교해 넘긴다. `false`면 모든 행이
+   * `insufficientData: true`가 되고 이유에 포함된다. **생략하면(undefined) 이 조건은 검사하지
+   * 않는다** — `core/metrics.ts` 단위 테스트가 매번 기간을 안 넘기고도 계산 로직만 검증할 수
+   * 있게 하기 위한 것으로, 실제 운영 경로는 항상 명시적으로 넘긴다.
+   */
+  periodsOverlap?: boolean;
 }
 
 export interface StockReconciliationRow {
@@ -566,8 +580,29 @@ export interface StockReconciliationRow {
   actualStock: number | null;
   /** actualStock − expectedStock. actualStock이 없으면 null. */
   discrepancy: number | null;
+  /** 수치상 불일치 여부(순수 계산 결과) — `insufficientData`와 무관하게 discrepancy!==0이면
+   * true다. "확정된 문제"로 취급할지는 `insufficientData`를 함께 봐야 한다(006 DATA-006). */
   hasDiscrepancy: boolean;
+  /**
+   * 기초재고를 모르거나(openingStock에 이 키가 없음) SCM/판매 데이터 기간이 서로 겹치지
+   * 않아(periodsOverlap===false) `discrepancy`를 신뢰할 수 없다(006 DATA-006, TASKS T33).
+   * true면 `discrepancy`는 여전히 계산돼 있지만(참고용 숫자), "도난·파손·실사오차"처럼 확정
+   * 원인을 단정하는 경고는 `warnings`에 넣지 않는다 — 호출자는 이 행을 "문제 발견"이 아니라
+   * "대사 불가"로 취급해야 한다.
+   */
+  insufficientData: boolean;
+  /** insufficientData가 true인 이유(사람이 읽는 문장, 원인+대응 포함). insufficientData가
+   * false면 항상 빈 배열. */
+  insufficientDataReasons: string[];
   warnings: string[];
+}
+
+/** 두 날짜 구간이 겹치는지(경계 포함) — SCM 입고 기간 vs 판매 기간 비교에 쓴다(006 DATA-006). */
+export function periodsOverlap(
+  a: { start: Date; end: Date },
+  b: { start: Date; end: Date },
+): boolean {
+  return a.start.getTime() <= b.end.getTime() && b.start.getTime() <= a.end.getTime();
 }
 
 /**
@@ -599,6 +634,20 @@ export function computeStockReconciliation(
     const purchaseAgg = purchasesByKey.get(key);
     const salesAgg = salesByKey.get(key);
     const warnings: string[] = [];
+    const insufficientDataReasons: string[] = [];
+
+    const openingStockKnown = key in openingStockByKey;
+    if (!openingStockKnown) {
+      insufficientDataReasons.push(
+        "기초재고 실사값이 없어 0으로 가정했습니다 — 이 가정이 틀리면 discrepancy가 실제와 다릅니다.",
+      );
+    }
+    if (opts.periodsOverlap === false) {
+      insufficientDataReasons.push(
+        "SCM 입고 실적 기간과 판매 데이터 기간이 겹치지 않아 같은 기간을 비교한 게 아닙니다.",
+      );
+    }
+    const insufficientData = insufficientDataReasons.length > 0;
 
     const openingStock = openingStockByKey[key] ?? 0;
 
@@ -626,7 +675,10 @@ export function computeStockReconciliation(
     }
 
     const discrepancy = actualStock === null ? null : actualStock - expectedStock;
-    if (discrepancy !== null && discrepancy !== 0) {
+    // insufficientData면 discrepancy 숫자 자체는 남기되(참고용), "도난·파손·실사오차"처럼
+    // 확정 원인을 단정하는 경고는 내보내지 않는다(006 DATA-006 — "경고 문구도 확정 원인이
+    // 아닌 불일치 사실만 표현한다"). 대신 insufficientDataReasons가 "왜 못 믿는지"를 말한다.
+    if (!insufficientData && discrepancy !== null && discrepancy !== 0) {
       warnings.push(
         `입고 원장으로 계산한 예상 재고(${expectedStock})와 실제 재고(${actualStock})가 ` +
           `${discrepancy}만큼 다릅니다 — 도난·파손·실사오차 등 원장에 안 잡히는 변동을 확인하세요.`,
@@ -646,6 +698,8 @@ export function computeStockReconciliation(
       actualStock,
       discrepancy,
       hasDiscrepancy: discrepancy !== null && discrepancy !== 0,
+      insufficientData,
+      insufficientDataReasons,
       warnings,
     });
   }

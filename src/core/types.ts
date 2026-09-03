@@ -116,8 +116,20 @@ export interface ProductRow {
   category: string | null;
   /**
    * 품목별 저재고 임계치 override(SPEC §12, TASKS T16) — CSV/Excel 채널 전용, Loyverse
-   * 경로는 항상 undefined/null이다. 생략하면 기존 필드처럼 다루던 코드가 그대로 동작하도록
-   * optional로 둔다. 실제로 읽어 임계치 판정에 쓰는 것은 T17의 몫이다.
+   * 경로는 항상 undefined다. 실제로 읽어 임계치 판정에 쓰는 것은 T17의 몫이다.
+   *
+   * **세 값의 의미가 서로 다르다(006 DATA-005, TASKS T33)** — upsert가 어떻게 반영할지가
+   * 값마다 다르므로 셋을 섞어 쓰지 않는다:
+   * - `undefined` = "이 upsert는 이 필드에 대해 아무 정보가 없다"(CSV/Excel이면 파일에 이
+   *   컬럼 자체가 없음, 구버전 템플릿과의 하위 호환) → 기존 DB 값을 그대로 둔다.
+   * - `null` = "명시적으로 지운다"(CSV/Excel이면 컬럼은 있지만 이 행의 셀이 비어 있음) →
+   *   기존 값이 있어도 null로 덮어쓴다.
+   * - 값 = 이 값으로 설정.
+   *
+   * `pgWarehouse.ts`의 `upsertProductsOn`이 이 구분을 실제로 반영한다 — 배치(한 파일) 전체에
+   * 걸쳐 "어느 한 행이라도 undefined가 아니면" 그 필드는 이번 upsert가 소유권을 가진 것으로
+   * 보고 컬럼 전체를 덮어쓴다(컬럼 존재 여부는 파일 헤더 단위 속성이라 한 파일 안에서
+   * 행마다 갈리지 않는다 — 갈린다면 전부 undefined이거나 전부 아니거나 둘 중 하나).
    */
   lowStockThreshold?: Numeric | null;
   /**
@@ -125,6 +137,9 @@ export interface ProductRow {
    * 가능하다는 뜻 — 재주문 제안량을 반올림하지 않는다. lowStockThreshold와 달리 CSV/Excel
    * 채널 전용이 아니다(소스 중립적) — 어느 채널이 채우든 상관없다. 실제로 이 값을 채워
    * 반올림에 쓰는 것은 core/metrics.ts의 roundToPackMultiple/applyPackRounding 몫이다.
+   *
+   * `undefined`/`null`/값 세 상태의 의미는 `lowStockThreshold`와 동일하다(006 DATA-005,
+   * TASKS T33) — 위 문서 참고.
    */
   packSize?: Numeric | null;
 }

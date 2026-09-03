@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: CSV/Excel 지점·본사 흐름, snapshot, SCM 대사
 - 판정: **출시 차단 — 정상 테스트를 통과하지만 운영 데이터가 조용히 소실·잔존·중복 통지될 수 있음**
-- 상태: **부분 RESOLVED(T31, 2026-09-03)** — DATA-001~004 해결. DATA-005~008은 T33, 전체 재검수는 T37에서 진행. tombstone/일일 다이제스트 정책은 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2~12.3에 반영됨.
+- 상태: **RESOLVED(T33, 2026-09-03)** — DATA-001~008 전부 해결. 전체 재검수는 T37에서 진행. tombstone/일일 다이제스트 정책은 `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2~12.3에, nullable clear/SCM insufficient_data/scm_status/입고 합산은 `docs/DESIGN.md` §12.7에 반영됨.
 
 ## DATA-001 — snapshot export가 `포장수량`을 소실함
 
@@ -48,6 +48,7 @@
 - 근거: `low_stock_threshold`와 `pack_size`가 `coalesce(excluded, existing)`로 갱신된다. 새 authoritative CSV에서 셀을 비워도 기존 값은 지워지지 않는다.
 - 영향: 팩 단위 구매를 중단하거나 임계치를 기본값으로 되돌려도 과거 설정이 계속 적용돼 잘못된 발주 수량/경고가 생성된다.
 - 수정 기준: “필드 미제공”과 “명시적 null로 제거”를 타입에서 구분하거나 source별 우선순위/소유권을 정의한다. clear 동작을 회귀 테스트한다.
+- **해결(T33, 2026-09-03)**: `ProductRow.lowStockThreshold`/`packSize`(이미 `?: Numeric | null`이던 타입)의 `undefined`(정보 없음)/`null`(명시적으로 지움)/값 세 상태를 실제로 구분해 반영한다(`core/types.ts` 문서 갱신). `csvExcelParser.ts`의 `mapRowsToDomain`이 raw 행에 그 컬럼 키가 있었는지(csv-parse는 헤더 있으면 빈 셀도 키를 만듦)로 판정 — XLSX는 `parseExcelFile`이 헤더의 모든 컬럼을 행마다 미리 `undefined`로 시드해둔 뒤 실제 셀 값으로 덮어써 같은 성질을 갖게 했다(착수 중 발견 — `eachCell({includeEmpty:false})`이 빈 셀을 건너뛰어 그 전엔 "컬럼 없음"과 "빈 셀"을 구분할 수 없었다). `pgWarehouse.ts`의 `upsertProductsOn`은 배치(한 파일) 전체에 "이 필드에 조금이라도 정보가 있는 행이 하나라도 있는가"만 판정해 SET절 자체를 고른다 — 있으면 `excluded.x`(null도 그대로 반영, clear), 없으면 `products.x`(기존 값 보존). 컬럼 존재 여부가 파일 헤더 단위 속성이라 한 배치 안에서 행마다 갈리지 않는다는 성질을 이용한 설계다. 테스트: `tests/csvExcelParser.test.ts`(신규 describe, CSV/XLSX 둘 다 컬럼없음/빈셀/값 3가지 + SKU 간 불일치 거부), `tests/pgWarehouse.test.ts`(신규 describe 4 tests, clear/배치 혼합 케이스).
 
 ## DATA-006 — SCM 대사가 기초재고 0과 기간 불일치를 정상 입력처럼 사용함
 
@@ -56,6 +57,7 @@
 - 근거: 기초재고를 제공하지 않아 기본 0을 사용하고, SCM 파일 기간과 판매기간이 같은지 검증하지 않는다. SPEC §16도 이를 알려진 한계로 적었지만 결과는 실제 이메일 경고에 포함된다.
 - 영향: 운영 시작 전부터 존재한 재고와 서로 다른 기간의 입고/판매를 비교해 대량의 거짓 “도난·파손·실사오차” 경고를 보낼 수 있다.
 - 수정 기준: opening snapshot과 공통 대사 기간이 없으면 reconciliation을 계산하지 않고 `insufficient_data`로 표시한다. 기간이 겹치는지 검증하고 경고 문구도 확정 원인이 아닌 불일치 사실만 표현한다.
+- **해결(T33, 2026-09-03)**: `core/metrics.ts`의 `StockReconciliationRow`에 `insufficientData: boolean` + `insufficientDataReasons: string[]` 신설. 기초재고는 `openingStock`에 그 (store,variant) 키가 없으면(온보딩 실사값 입력 흐름은 여전히 이후 태스크라 지금은 항상 없음) `insufficientData: true`, 기간은 새 `periodsOverlap` 옵션(호출자가 SCM 입고 기간과 판매 기간을 직접 비교해 넘김, 순수 함수 `periodsOverlap()`)이 `false`면 마찬가지다. `discrepancy` 숫자 자체는 참고용으로 여전히 계산해두지만(완전히 숨기지 않음), `insufficientData`면 "도난·파손·실사오차 확인 필요" 같은 확정 원인을 단정하는 문구를 `warnings`에 넣지 않는다. `agent/folderScan.ts`는 확정 불일치(`hasDiscrepancy && !insufficientData`)만 `FolderScanResult.reconciliation`에 남기고, insufficientData 여부는 SKU별 노이즈 없이 `scmStatus`(DATA-007과 통합, 아래) 한 줄 요약으로만 알린다. 오늘 시점에는 opening stock을 실제로 채워 넘기는 호출자가 없어 **모든 SCM 대사가 insufficientData가 되는 게 정상**이다 — 온보딩 실사값 입력 태스크가 생기면 그때부터 확정 불일치가 나온다. 테스트: `tests/metrics.test.ts`(신규 describe 2개, `insufficientData`/`periodsOverlap` 각각), `tests/folderScan.test.ts`(insufficientData e2e, 확정 불일치 발송 이메일에 확정 문구 없음 확인).
 
 ## DATA-007 — SCM 실패가 구조화된 결과에서 사라짐
 
@@ -64,6 +66,7 @@
 - 근거: 폴더 접근·파싱·DB 적재 오류를 모두 console warning 후 빈 배열로 바꾼다. `FolderScanResult`에는 skipped/error 상태가 없다.
 - 영향: 자동 실행 환경에서 사용자는 저재고 이메일을 정상 결과로 받으면서 SCM 대사가 실패했다는 사실을 놓칠 수 있다. “데이터 없음”과 “처리 실패”가 구분되지 않는다.
 - 수정 기준: 부가 기능 실패 격리는 유지하더라도 result/email/운영 로그에 `scm_status`, 오류 코드, 사용 파일, 데이터 신선도를 포함한다.
+- **해결(T33, 2026-09-03)**: `agent/folderScan.ts`에 `ScmStatus` 타입 신설(`not_configured`/`no_file`/`failed`(오류 메시지 포함)/`ok`(사용 파일·입고 건수·DATA-006 `insufficientData` 포함)) — `ingestScmReceipts`가 `console.warn` 후 빈 배열로 삼키던 실패를 이제 구조화된 값으로도 반환한다(콘솔 경고는 그대로 유지 — 실시간 로그도 계속 남는다). `FolderScanResult.scmStatus`로 모든 반환 경로(no_suggestions/dry_run/unchanged/sent)에 노출하고, 실제 report가 발송될 때는 `renderAlertText`가 SKU별 목록이 아니라 한 줄 요약(`[SCM 처리 실패]`/`[SCM 재고 정합성 참고]`)으로 이메일 본문에도 넣는다 — "정상 결과처럼 보이는 이메일에 SCM 실패가 묻힌다"는 지적을 실제로 막는다. DATA-006의 `insufficientData`와 자연스럽게 통합됐다(같은 `scmStatus.ok` 케이스의 한 필드). 테스트: `tests/folderScan.test.ts`(not_configured/no_file/failed/ok 각 케이스, 발송 이메일 본문에 요약 문구 포함 확인).
 
 ## DATA-008 — 같은 날짜의 복수 입고가 덮어써짐
 
@@ -72,6 +75,7 @@
 - 근거: PK가 `(store_id, variant_id, received_at)`이고 event id가 없어 같은 날 같은 SKU의 두 입고를 합산하지 않고 마지막 값으로 upsert한다.
 - 영향: 실제 입고 합계가 축소되어 예상재고와 정합성 계산이 틀린다. 문서화된 한계지만 npm 일반 배포에서 조용한 데이터 손실로 이어진다.
 - 수정 기준: 원본 행 번호/문서 번호/content hash 같은 안정적 event key를 도입하거나 import 전에 동일 날짜 행을 명시적으로 합산하고 중복 파일 idempotency를 별도로 보장한다.
+- **해결(T33, 2026-09-03)**: 안정적 event key 도입 대신(원본 SCM 시트에 그 정보 자체가 없다) "import 전 합산" 쪽을 채택했다 — `core/scmSchema.ts`의 `mapScmRowsToPurchaseReceipts`가 반환 직전에 `aggregateSameDayReceipts()`로 (매장,SKU,입고일) 단위 수량을 합산한다. 단가·통화·거래처(감사 추적용, 재고 정합성 계산엔 안 쓰임)는 합산할 수 없는 값이라 마지막 행 것을 남긴다. `pgWarehouse.ts`의 `upsertPurchaseReceiptsOn`에 이 계약을 문서화(다른 호출자를 추가할 땐 같은 방식으로 미리 합산해야 함을 명시). 같은 파일을 반복 스캔해도(idempotency) 매번 같은 합산 결과를 그대로 대입(assignment)하므로 중복 누적되지 않는다. 테스트: `tests/scmSchema.test.ts`(신규 describe 5 tests — 2건/3건 이상 합산, 감사 필드 마지막 값, 매장 분리, SKU 분리).
 
 ## 데이터 재검수 기준
 
@@ -79,7 +83,7 @@
 - [x] authoritative snapshot의 누락 행 처리 정책 구현(T31)
 - [x] unchanged 파일 재발송 0건(T31 — 실제 발송 시도 경로 한정)
 - [x] snapshot atomic write/reader handoff(T31)
-- [ ] nullable 설정 clear 지원 — T33
-- [ ] SCM 대사에 opening stock·기간·실패 상태 포함 — T33
-- [ ] 복수 입고와 재import 모두 정확한 합계 — T33
+- [x] nullable 설정 clear 지원(T33)
+- [x] SCM 대사에 opening stock·기간·실패 상태 포함(T33)
+- [x] 복수 입고와 재import 모두 정확한 합계(T33)
 

@@ -160,7 +160,21 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     }) as unknown[];
     const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
 
-    expect(roundTripped).toEqual(original);
+    // SEC-004/DATA-005 상호작용: 스냅샷 고정 템플릿(T31 COLUMNS)은 저재고임계치·포장수량
+    // 컬럼을 항상 포함한다 — 원본에 컬럼 자체가 없던(undefined, "정보 없음") 값은 재수입 시
+    // "컬럼은 있지만 셀이 비어 있음"(null, 명시적으로 지움)으로 정규화된다. 스냅샷은 항상
+    // 완전한 시점 이미지이므로 이 재해석은 의도된 동작이다(006 DATA-005, TASKS T33) — 그래서
+    // products만 이 정규화를 반영해 비교하고 나머지는 완전 일치를 그대로 요구한다.
+    expect(roundTripped.stores).toEqual(original.stores);
+    expect(roundTripped.inventory).toEqual(original.inventory);
+    expect(roundTripped.salesPeriodAgg).toEqual(original.salesPeriodAgg);
+    expect(roundTripped.products).toEqual(
+      original.products.map((p) => ({
+        ...p,
+        lowStockThreshold: p.lowStockThreshold ?? null,
+        packSize: p.packSize ?? null,
+      })),
+    );
   });
 
   it("수식 접두사로 시작하는 매장명·상품명·SKU도 왕복 후 원래 값 그대로 복원된다(SEC-004, TASKS T32)", () => {
@@ -188,7 +202,17 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
 
     // 왕복 후 escape 접두사 없이 원래 도메인 데이터와 완전히 일치해야 한다(machine 재수입 경로).
-    expect(roundTripped).toEqual(original);
+    // lowStockThreshold/packSize는 원본에 컬럼이 없어 undefined였지만, 고정 템플릿 export는
+    // 그 컬럼을 항상 포함하므로 재수입 시 null(명시적으로 지움)로 정규화된다 — 006 DATA-005,
+    // TASKS T33, 위 다른 왕복 테스트와 동일한 이유.
+    expect(roundTripped).toEqual({
+      ...original,
+      products: original.products.map((p) => ({
+        ...p,
+        lowStockThreshold: p.lowStockThreshold ?? null,
+        packSize: p.packSize ?? null,
+      })),
+    });
     expect(roundTripped.stores[0]?.id).toBe("=SUM(A1)");
     expect(roundTripped.products[0]?.name).toBe("+HYPERLINK(evil.com)");
   });
