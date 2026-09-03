@@ -233,3 +233,47 @@ retail-mcp/
 `DEFAULT_STALE_THRESHOLD_HOURS=24`, env `STALE_THRESHOLD_HOURS`로 조정)를 MCP 조회 도구
 (`src/mcp/tools.ts`)와 에이전트 리포트(`agent/reorder.ts`의 `buildReorderReport()`) 둘 다 공유한다
 — SPEC §9 "모든 조회와 리포트"에 stale 경고가 적용되게 하는 단일 지점이다.
+
+## 12. v0.2 배포·안정성 설계 확장 (2026-09-03, npm 출시 전 적대적 검수 대응 — TASKS T28)
+
+`docs/004~008` 적대적 검수(40건)와 `docs/SPEC.md` §18의 정책 확정을 구현 계약으로 옮긴다. DESIGN이 "구현의 진실의 원천"이라는 문서 서두 원칙에 따라, 여기 적힌 계약과 실제 코드가 다르면 문서 기준으로 코드를 고친다. 각 절 끝에 담당 TASKS 번호를 표시한다 — 이 절 자체는 계약만 정의하고 구현하지 않는다.
+
+### 12.1 빌드/bin 구조 (REL-002/003/004, TASKS T29)
+
+- **공개 계약**: `retail-mcp`는 CLI/MCP 서버 제품이다. 라이브러리로서의 `exports`는 이번 범위에서 제공하지 않는다(필요해지면 별도 결정).
+- **빌드**: `tsc`로 `src/**/*.ts` → `dist/**/*.js` + `.d.ts`. 소스 트리 직접 실행(`tsx`)은 개발용으로만 남기고, `devDependencies`에 유지한다 — 게시된 패키지는 `dist/`의 순수 JS만으로 동작해야 한다(`tsx`가 없는 `npm install --omit=dev` 환경 포함).
+- **`bin`**: MCP 서버 진입점(`dist/server.js`)과 온보딩 CLI(`dist/cli/onboard.js`)에 각각 shebang(`#!/usr/bin/env node`)을 붙이고 `package.json.bin`에 등록한다. 폴더 스캔·재주문 에이전트는 `npm run agent:*` 스크립트로만 노출하고(cron이 호출하는 대상이라 별도 전역 bin이 필요 없다), 필요해지면 후속 태스크에서 재검토한다.
+- **`files` allowlist**: `dist/`, `migrations/`, `README.md`, `LICENSE`, `.env.example`을 포함하고 `tests/`, `tests/fixtures/`, `docs/`(내부 검수 문서), ESLint/Vitest 설정, 원본 `.ts` 소스는 제외한다. `npm pack --dry-run` 결과 파일 목록을 release gate에 고정한다(TASKS T29 완료 기준).
+- **검증**: tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치한 뒤 `npx retail-mcp --help`(또는 MCP initialize)까지 확인하는 스모크 테스트를 release gate에 추가한다(QA-001, TASKS T29).
+
+### 12.2 authoritative snapshot 교체 계약 — tombstone (DATA-002, TASKS T31)
+
+SPEC §18이 확정한 정책의 구현 계약이다.
+
+- **경계 정의**: "authoritative 경계"는 (a) 지점 모드의 감시 폴더 최신 파일 1개, (b) 본사 통합 모드의 지점별 스냅샷 파일 1개(지점마다 독립) — 이미 §12(구 버전, 실제 사용 절차)가 규정한 "지점 스냅샷 파일이 끝까지 성공 파싱된 뒤에만 그 지점의 watermark를 커밋"과 같은 단위다.
+- **스키마**: `inventory_levels`와 `sales_period_agg`(및 CSV 채널이 관리하는 `products`)에 `active boolean not null default true`(또는 동등한 상태 컬럼)를 추가한다. 물리 삭제(`DELETE`)는 하지 않는다 — 재활성화·감사 추적을 위해서다.
+- **트랜잭션 계약**: 한 authoritative 스캔의 upsert 트랜잭션 안에서, "이번 스캔의 (매장,SKU) 집합에 없지만 그 매장에 대해 이전에 `active=true`였던 행"을 같은 트랜잭션으로 `active=false`로 전이한다 — upsert와 tombstone이 원자적으로 함께 커밋되거나 함께 롤백된다(부분 상태 금지, CLAUDE.md 구현 해석 보충의 "전체 페이지 성공 후에만 watermark 커밋" 원칙과 동일 정신).
+- **소비 측 계약**: 재주문 계산(`computeReorderMetrics`/`computeCsvReorderMetrics`), 저재고 알림, 기본 MCP 조회는 `active=true` 행만 본다. `inventory_status` 등 진단 목적 조회에는 비활성 포함 옵션을 열어둘 수 있다(구현 시 결정).
+- **본사 통합 모드 격리**: tombstone 판정은 지점별 독립 트랜잭션 안에서만 그 지점의 이전 상태와 비교한다 — 다른 지점의 (매장,SKU)를 이번 지점 스캔의 누락으로 오판하지 않는다.
+
+### 12.3 파일 idempotency + 일일 다이제스트 (DATA-003/004, TASKS T31)
+
+SPEC §18이 확정한 정책의 구현 계약이다.
+
+- **입력 identity**: 감시 폴더 경로(source identity) + 선택된 최신 파일의 content hash(sha256, mtime만으로는 OPS-003의 동률 문제와 겹쳐 신뢰할 수 없다)를 계산해 이전 실행과 비교한다.
+- **watermark 저장**: `sync_state`(기존 테이블, `resource` 자유 문자열 재사용 — 새 스키마 불필요)에 `csv_branch_digest:<watchDir>` 같은 키로 `{contentHash, lastSentAt}`를 JSON으로 저장한다(cursor 컬럼이 text이므로 JSON 문자열로 직렬화).
+- **판정 로직**: (1) content hash가 이전과 다르면 무조건 처리하고 발송 여부는 기존 이슈 유무로 판단, 발송 시 `lastSentAt` 갱신. (2) content hash가 같으면, 사업장 타임존 기준 `lastSentAt`으로부터 24시간(또는 로컬 자정 경계 — 구현 시 확정)이 지났는지 확인 — 안 지났으면 `unchanged`로 조용히 종료(발송 없음, 로그만), 지났으면 같은 내용이라도 다이제스트 1회 발송 후 `lastSentAt` 갱신.
+- **SCM 대사 결과와의 관계**: DATA-007(SCM 실패 상태 노출)과 연동 — SCM 처리 실패도 "이슈"로 취급해 하루 다이제스트에 포함될 수 있게 한다(완전 무음 방지).
+- **atomic snapshot write**: `folderScan.ts`의 snapshot export는 고정 파일명(`snapshot.csv`)에 직접 `writeFile`하지 않고, 같은 디렉터리의 임시 파일(`snapshot.csv.tmp-<runId>`)에 쓴 뒤 `fsync` 후 `rename`으로 교체한다(POSIX rename은 원자적). 본사 수집 프로세스는 확장자가 `.tmp-*`인 파일을 무시한다(ready marker 대신 임시 파일명 자체를 신호로 쓴다 — 새 파일 형식을 추가하지 않는다).
+
+### 12.4 explore_sql 격리 확정 — role 강제 + PGlite 재검토 (SEC-001/002, TASKS T30)
+
+SPEC §18의 정책 확정을 구현 계약으로 옮긴다. §6/§17의 2단계 방어(`sqlValidator` 1차 + `BEGIN READ ONLY` 2차)는 유지하되, "이 두 겹이면 안전하다"는 기존 전제를 낮추고 아래를 추가한다.
+
+- **전용 role 필수**: 운영 배포에서 `EXPLORE_SQL_ENABLED=true`로 켤 때는 `pgWarehouse`가 열리는 DB role에 `pg_advisory_lock`류 volatile 함수, `set_config`, 확장 함수 실행 권한이 없어야 한다 — README "권한 분리" 절의 권장을 필수 체크리스트로 격상한다. 코드에서 role 권한을 강제로 조회·검증하지는 않는다(운영 DB role 구성은 배포자 책임 영역, 가드레일 4의 기존 원칙과 동일) — 대신 문서와 초기 경고 로그로 명시한다.
+- **회귀 테스트**: `pg_try_advisory_lock`/`pg_advisory_unlock`, `set_config('statement_timeout', ...)` 재정의를 이용한 우회를 `tests/exploreSqlExecutor.test.ts`에 공격 시나리오로 고정한다(005 SEC-001/002가 재현한 그대로) — "막는다"가 아니라 "이 두 겹만으로는 못 막는 부분이 있고, 그래서 role 제한이 필수"라는 사실 자체를 문서화하는 회귀 테스트로 남긴다.
+- **PGlite 노출 재검토**: PGlite는 `statement_timeout` 미집행(§17 기존 한계)에 더해 role 기반 함수 실행 제한을 지원하지 않는다 — `EXPLORE_SQL_ENABLED=true` + PGlite(임베디드) 조합은 SEC-002의 DoS 경로에 그대로 노출된다. 이 조합이 감지되면(웨어하우스 팩토리가 이미 pg/pglite 분기를 알고 있다) 서버 기동 로그에 명확한 경고를 남긴다 — 강제 차단 여부는 T30 구현 중 최종 확정.
+
+### 12.5 원자적 파일 쓰기 — 공통 유틸리티 (DATA-004, TASKS T31)
+
+12.3의 atomic snapshot write와 SEC-005(`.env` 0600 원자 쓰기)가 같은 패턴(임시 파일 → flush → rename)을 필요로 한다 — `src/adapters/atomicFile.ts`(신규, 순수 IO 유틸리티)로 공용화한다: `writeFileAtomic(path, content, { mode? })`. `onboard.ts`의 `.env` 쓰기와 `folderScan.ts`의 snapshot 쓰기가 이 유틸리티를 공유한다.

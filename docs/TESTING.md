@@ -87,3 +87,41 @@
 - [ ] Summarizer 입력에 토큰·이메일 주소·불필요한 원시 영수증 데이터가 없음
 
 커버리지 리포트와 50k행 성능 가드는 `TASKS.md`의 **T10**에서 완료한다(T9는 MCP 기능 회귀 테스트까지 담당).
+
+## 8. 출시 게이트 및 공격 회귀 테스트 (2026-09-03, docs/004~008 적대적 검수 대응 — TASKS T28)
+
+npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`)가 지적한 대로, 지금까지의 게이트(`npm run check` + 위 §1~§7)는 저장소 소스 트리와 devDependency가 설치된 환경만 검증하고 실제 npm 설치·운영 경계·공격 시나리오는 검증하지 않는다(008 QA-001~006). 아래를 **release gate**(npm publish 전 필수, 매 로컬 `npm run check`와는 별도)로 추가한다 — 각 항목의 실제 구현은 담당 TASKS 번호에서 진행한다.
+
+**패키징 게이트 (TASKS T29)**
+
+- [ ] `npm pack --dry-run`의 파일 목록이 `files` allowlist와 일치(`dist`/`migrations`/`README`/`LICENSE`/`.env.example`만)
+- [ ] tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치 후 `bin` 실행 또는 MCP initialize까지 성공(QA-001)
+
+**보안 게이트 (TASKS T30, T32)**
+
+- [ ] `pg_advisory_lock`류 volatile 함수, `set_config` 재정의를 이용한 explore_sql 우회 시도가 회귀 테스트로 고정됨(SEC-001/002)
+- [ ] snapshot CSV formula injection(`=`/`+`/`-`/`@` 시작 값) escape 및 round-trip 테스트(SEC-004)
+- [ ] 대형/압축폭탄 XLSX·대량 CSV에 대한 파일 크기·행·셀 길이 상한 테스트(SEC-003)
+- [ ] `npm audit --omit=dev` 0건 또는 근거·만료일이 기록된 승인된 예외(SEC-006)
+
+**데이터 정확성 게이트 (TASKS T31, T33)**
+
+- [ ] snapshot export → import 왕복 시 `포장수량` 보존(DATA-001)
+- [ ] authoritative 스캔에서 사라진 SKU/매장이 tombstone 처리되고 재주문·저재고 계산에서 제외됨(DATA-002)
+- [ ] 동일 파일로 cron을 반복 실행해도 재발송이 없고, 마지막 발송으로부터 하루가 지나면 변경 없이도 다이제스트 1회가 발송됨(DATA-003)
+- [ ] snapshot 파일 쓰기 도중 프로세스가 죽어도 이전 정상 snapshot이 손상되지 않음(atomic write, DATA-004)
+- [ ] SCM 기초재고·기간 불일치 시 `insufficient_data`로 표시되고 거짓 discrepancy가 발생하지 않음(DATA-006)
+- [ ] SCM 처리 실패가 결과/이메일에 `scm_status`로 노출됨(DATA-007)
+- [ ] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008)
+
+**운영 신뢰성 게이트 (TASKS T34)**
+
+- [ ] `db.close()` 실패 시에도 파일 락이 해제됨(OPS-001)
+- [ ] latest file 동률(mtime 동일) 시 결정론적으로 처리됨(OPS-003)
+- [ ] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음(OPS-004)
+
+**Postgres 계약 게이트 (TASKS T35, CI 전용)**
+
+- [ ] CI service Postgres에서 migration, transaction rollback, READ ONLY role, advisory lock cleanup, explore_sql timeout을 component test(QA-004) — PGlite와 실 Postgres의 이미 알려진 차이(§17 statement_timeout 미집행 등)가 실 Postgres에서는 재현되지 않음을 별도로 확인한다.
+
+이 절의 각 항목은 007/008이 지적한 "376개 테스트가 통과해도 게시된 패키지가 실행 불가능하거나 공격에 취약할 수 있다"는 간극을 메우기 위한 것이다 — §1~§7의 기존 게이트를 대체하지 않고 추가한다.

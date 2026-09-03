@@ -333,3 +333,46 @@ T25가 "실 Google Sheets 연동이 없어 의미 없다"며 미룬 재고 정�
 - `server.ts` — `ServerConfig.exploreSqlEnabled`, `RegisterToolsDeps.exploreSqlExecutor`, `EXPLORE_SQL_ENABLED=true`일 때만 등록(조립 누락 시 명확한 에러, `sync_now`와 같은 패턴).
 - `.env.example` — `EXPLORE_SQL_ENABLED=false`.
 - 테스트: `tests/sqlValidator.test.ts`(1차 방어선 단위 테스트 — 정상 케이스, 블록리스트, 세미콜론 다중문장, CTE 위장, 주석 오탐 방지, 식별자 부분일치 오탐 방지), `tests/exploreSqlExecutor.test.ts`(2차 방어선 — READ ONLY 실증, LIMIT/캡, 롤백, 존재하지 않는 테이블 에러), `tests/mcpTools.test.ts`(얇은 조립 계층), `tests/server.test.ts`(EXPLORE_SQL_ENABLED 게이팅, `SYNC_TOOL_ENABLED` 테스트와 대칭), `tests/pgWarehouse.test.ts`(T9의 "읽기 전용 role" 테스트에 explore_sql 케이스 추가).
+
+## 18. npm 출시 전 적대적 검수 대응 — 배포·데이터·보안 정책 확정 (2026-09-03, TASKS T28)
+
+v0.2 대기열(§13~§17) 완료 직후 npm publish 준비 전 사용자 지시로 코드 검수(`/code-review`)를 실행했다. 판정은 **출시 차단** — `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`에 40건, `docs/009_DOCUMENTATION_CHANGE_STRATEGY.md`에 문서 정합성 5건을 기록했다. 이 절은 `docs/009`가 권고한 "①규범 문서 먼저" 단계에 해당한다 — 구현이 아니라 정책 확정만 담는다. finding ID(REL-\*/SEC-\*/DATA-\*/OPS-\*/QA-\*/DOC-\*)는 각 004~008 문서를 참조한다. 실제 구현은 `docs/TASKS.md` T29~T37에서 진행한다.
+
+### npm 배포 대상 (REL-001/005/008, DOC-004)
+
+사용자 확인(2026-09-03, AskUserQuestion)으로 확정:
+
+- **범위**: `@trapa-eureka/retail-mcp` — scoped, 공개(public) 배포. `publishConfig.access=public`을 명시해 scoped 패키지가 기본값인 restricted로 실수 게시되지 않게 한다.
+- **이름 재사용 위험 회피**: unscoped `retail-mcp`는 2026-01-12 unpublish 이력이 있는 이름이라(REL-008) npm이 일정 기간 재사용을 막을 수 있다 — 계정 소유 scope를 쓰면 이 불확실성 자체가 사라진다.
+- **라이선스**: MIT. LICENSE 파일과 `package.json.license`/`author`/`repository`/`bugs`/`homepage`를 일치시킨다(REL-005).
+- 이 결정 전까지는 `private: true`를 유지한다 — 실제 `private` 해제와 `bin`/`exports`/`main`/빌드 파이프라인/`files` allowlist 구현은 T29.
+
+### 데이터 보존 정책 — authoritative snapshot에서 누락된 SKU/매장 (DATA-002)
+
+파일 기반 채널(CSV/Excel 폴더 스캔, §12)은 "이번 스캔 파일이 현재 상태의 authoritative 원천"이라는 전제로 설계됐다. 그런데 실제 upsert는 "현재 파일의 행"만 갱신할 뿐 이전 스캔에 있었지만 새 파일에 없는 행을 지우지 않아, 판매 중단·폐기·지점 철수 품목이 DB에 영구 잔존하며 재주문 제안에 계속 섞일 수 있다(006 DATA-002).
+
+- **정책: 자동 tombstone.** 최신 authoritative 스캔(지점 모드의 감시 폴더 최신 파일, 본사 모드의 지점별 스냅샷)에 더 이상 나타나지 않는 (매장,SKU)/`inventory_levels`/`sales_period_agg` 행은 **비활성 상태로 표시**한다 — 물리적으로 삭제하지 않고 이력은 보존한다.
+- 비활성 행은 재주문 제안·저재고 알림·MCP 조회 결과(기본 필터)에서 **제외**한다. 다시 파일에 나타나면 자동으로 재활성화한다(같은 스캔 upsert 경로).
+- tombstone 판정은 "같은 authoritative 경계(같은 매장의 같은 채널) 안에서 이번 스캔에 없음"으로 한정한다 — 본사 통합 모드가 여러 지점 스냅샷을 취합할 때, 다른 지점의 데이터를 이번 지점 스캔의 누락으로 오판하지 않는다(§12 "다지점 헤드오피스 통합 조회"의 지점별 독립 트랜잭션 원칙과 일치).
+- 구현 계약은 DESIGN §12.2, 실제 구현은 TASKS T31.
+
+### 반복 발송 정책 — 파일이 안 바뀌어도 cron마다 재처리되는 문제 (DATA-003)
+
+지점 폴더 스캔은 최신 파일의 경로/mtime/hash를 이전 실행과 비교하지 않고 매 실행 새 `runId`를 생성한다 — 사용자가 파일을 갱신하지 않아도 cron 주기(예: 매일 07:00)마다 동일한 저재고 이메일이 반복 발송될 수 있다(006 DATA-003).
+
+- **정책: 파일 변경 여부와 무관하게 하루 최대 1회 다이제스트를 보장하고, 같은 날 안에서는 재발송을 억제한다.** 완전 무음(변경 없으면 절대 안 보냄)은 채택하지 않는다 — "SCM/파일 처리가 조용히 실패해서 아무 알림도 못 받는" 상황(DATA-007과도 연결)을 피하기 위해 최소 하루 1회는 보낸다는 걸 사용자가 명시적으로 선택했다(AskUserQuestion, 2026-09-03).
+- 판정 기준: source identity(감시 폴더 경로) + 파일 content hash/mtime로 "이번 스캔 입력이 마지막 발송 시점과 동일한가"를 본다. 동일하면 **마지막 발송 이후 사업장 타임존 기준 하루(24시간 또는 로컬 자정 경계 중 구현 시 결정, DESIGN §12.3)가 지났는지**를 추가로 확인한다 — 안 지났으면 `unchanged`로 조용히 종료, 지났으면 같은 내용이라도 다이제스트로 발송한다.
+- 파일이 실제로 바뀌었으면(내용 변경) 하루 상한과 무관하게 즉시 발송한다 — 상한은 "변경 없는 반복"만 억제한다.
+- 구현 계약은 DESIGN §12.3, 실제 구현은 TASKS T31.
+
+### explore_sql 허용조건 강화 (SEC-001/002)
+
+§17이 설계한 2단계 방어(`sqlValidator` 1차 + `BEGIN READ ONLY` 2차)는 **테이블/시퀀스 쓰기**는 실제로 막지만, `pg_advisory_lock`류 volatile 함수의 세션 부수효과나 사용자 SELECT 안에서의 `set_config()` 재정의(예: `statement_timeout`을 0으로 되돌리기)까지는 막지 못한다는 것을 005가 실증했다 — `BEGIN READ ONLY`는 "쓰기 금지"이지 "부수효과 없는 샌드박스"가 아니다.
+
+- **정책**: `BEGIN READ ONLY`가 최종 방어선이라는 §17의 설계 전제를 낮춘다 — 이제 "쓰기 자체는 막는다"까지만 보장하고, **운영 배포는 explore_sql 전용의, 위험 함수 실행 권한이 없는 DB role을 필수로 요구**한다(README "권한 분리"의 권장을 필수로 격상). 임의 표현식 허용 대신 허용 schema/table로 제한된 쿼리로 좁히는 방향은 이번엔 채택하지 않는다 — `explore_sql`의 정의 자체가 "고정 쿼리 형태가 없는 유일한 예외"(가드레일 4)이기 때문이다. 대신 role 제한 + 공격 회귀 테스트로 방어한다.
+- **PGlite 노출 재검토**: PGlite는 `statement_timeout`을 집행하지 않을 뿐 아니라(§17 기존 한계) role 기반 함수 실행 제한 자체를 지원하지 않는다 — 임베디드 PGlite에서 explore_sql을 켜면 SEC-002가 지적한 DoS 경로(느린 쿼리를 취소할 수단이 없음)에 그대로 노출된다. `EXPLORE_SQL_ENABLED=true`이고 웨어하우스가 PGlite 경로일 때는 **명확한 경고**를 노출하거나(운영자가 의도적으로 켠 것인지 확인), 최소한 문서에서 "PGlite + explore_sql" 조합을 권장하지 않는다고 명시한다 — 완전 차단할지 경고로 둘지는 구현 시점(T30)에 확정한다.
+- 구현 계약은 DESIGN §12.4, 실제 구현·회귀 테스트는 TASKS T30.
+
+### 나머지 P0/P1 검수 항목
+
+위 3가지 외의 004~008 나머지 항목(REL-002~004/006/007, SEC-003~007, DATA-001/004~008, OPS-001~006, QA-001~006)은 새로운 정책 결정이 필요하지 않은 순수 구현/테스트 보강이다 — 각 검수 문서의 "수정 기준"을 그대로 구현 계약으로 채택하고, DESIGN §12에 필요한 설계만 추가한다. TASKS T29~T35에 우선순위(P0/P1)별로 배정했다.
