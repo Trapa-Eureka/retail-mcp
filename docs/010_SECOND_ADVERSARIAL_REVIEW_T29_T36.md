@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: P0 3/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
+- 처리 진행 상황: P0 4/6 RESOLVED(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN.
 
 ## 실행 검증
 
@@ -166,6 +166,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: provider에는 runId를 idempotency key로 넘기지만 CLI 실행마다 random UUID를 만든다. timeout/unknown 후 다음 cron 또는 일반 CLI 재실행은 같은 보고서에도 새 key를 사용한다. 사용자가 CLI에서 이전 runId를 지정하는 인터페이스도 없다.
 - 영향: Resend의 동일-key dedupe가 적용되지 않아 “발송됐지만 응답을 못 받은” 실행 뒤 동일 이메일이 다시 전송될 수 있다.
 - 수정 기준: 보고서 identity(수신자+보고기간+내용 hash 등)에서 안정적인 delivery key를 만들거나 unknown 상태를 다음 실행이 조회해 사람 확인 전 같은 digest 발송을 막는다. 실제 CLI 재실행 경로로 검증한다.
+- **RESOLVED**: `--run-id=<값>` CLI 플래그를 `agent/reorder.ts`/`agent/folderScan.ts`(지점 모드) 둘 다에 추가했다(`src/core/cliArgs.ts`의 `parseNamedArg`, 순수 함수라 단위 테스트 가능 — `runReorderAgent`/`runFolderScan` 자체의 `opts.runId` 전달은 이미 T34에서 테스트돼 있었다, 빠진 건 CLI 진입점의 argv 파싱뿐이었다). 지정 안 하면 기존처럼 `randomUUID()`로 폴백한다. 실제 `npx tsx src/agent/folderScan.ts --run-id=smoke-test-run-42`로 완료 로그의 `run_id`가 정확히 그 값으로 나오는 걸 직접 재현·확인, 플래그 생략 시 랜덤 UUID로 폴백하는 것도 재확인. README "이메일 발송 재시도" 절에 실제 명령 예시를 반영.
 
 ### SR2-MAIL-002 — timeout 이외 네트워크 오류도 결과가 불확실할 수 있음
 
