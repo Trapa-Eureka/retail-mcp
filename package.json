@@ -1,12 +1,36 @@
 {
-  "name": "retail-mcp",
+  "name": "@trapa-eureka/retail-mcp",
   "version": "0.1.0",
-  "private": true,
   "description": "리테일 다지점 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트",
+  "license": "MIT",
+  "author": "Trapa Eureka",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Trapa-Eureka/retail-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Trapa-Eureka/retail-mcp/issues"
+  },
+  "homepage": "https://github.com/Trapa-Eureka/retail-mcp#readme",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "retail-mcp": "dist/server.js",
+    "retail-mcp-onboard": "dist/cli/onboard.js"
+  },
+  "main": "dist/server.js",
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
     "test": "vitest run",
@@ -20,10 +44,13 @@
     "agent:reorder": "tsx src/agent/reorder.ts",
     "agent:folder-scan": "tsx src/agent/folderScan.ts",
     "onboard": "tsx src/cli/onboard.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js",
+    "prepack": "npm run build",
+    "verify:pack": "tsx scripts/verifyPack.ts"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.4.1",
     "@types/pg": "^8.23.1",
@@ -40,6 +67,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
+    "@electric-sql/pglite": "^0.5.8",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "csv-parse": "^5.6.0",
     "csv-stringify": "^6.8.3",

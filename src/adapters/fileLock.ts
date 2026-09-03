@@ -8,7 +8,8 @@
  * 락 파일은 보호 대상 디렉터리 밖에 둔다(`{targetPath}.lock`) — PGlite 데이터 디렉터리
  * 안에 낯선 파일을 넣지 않기 위해서다.
  */
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 export interface FileLock {
   /** 이 프로세스가 보유한 락이 맞는지 확인 후 락 파일을 지운다. 다른 프로세스 소유면 무시한다. */
@@ -69,6 +70,13 @@ function lockPathFor(targetPath: string): string {
 
 async function tryCreateLockFile(lockPath: string, content: LockFileContent): Promise<boolean> {
   try {
+    // 락 파일의 부모 디렉터리가 아직 없을 수 있다 — 예를 들어 임베디드 PGlite 기본 경로
+    // `.retail-mcp/data`(DESIGN §12.1, 새 설치 첫 실행)는 그 부모 `.retail-mcp/`조차 아직
+    // 없는 완전히 새 디렉터리에서 시작한다. 착수 중 발견(QA-001 tarball smoke test,
+    // `scripts/verifyPack.ts`) — mkdir 없이 바로 `wx`로 쓰면 ENOENT로 실패했다. `recursive:
+    // true`라 이미 있어도 안전하고, 동시에 두 프로세스가 mkdir해도 에러 없이 성공한다(POSIX
+    // mkdir -p와 동일 시맨틱) — 아래 'wx' 배타 생성이 실제 경합 조정을 맡는다.
+    await mkdir(path.dirname(lockPath), { recursive: true });
     // 'wx': 파일이 이미 있으면 실패하는 배타적 생성 — 단일 syscall이라 두 프로세스가 동시에
     // 시도해도 하나만 성공한다(TOCTOU 경합 없음, SPEC §12 스파이크가 재현한 문제의 해결책).
     await writeFile(lockPath, JSON.stringify(content), { flag: "wx" });

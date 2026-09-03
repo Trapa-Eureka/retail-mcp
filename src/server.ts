@@ -1,13 +1,16 @@
+#!/usr/bin/env node
 /**
  * MCP 서버 진입점 (DESIGN.md §6, §9). 도구 6종을 등록하는 조립만 한다 — 로직은
  * `src/mcp/tools.ts`에 있다(CLAUDE.md "server.ts는 도구 등록·조립만, 로직 없음").
+ *
+ * npm 패키지 `bin`(TASKS T29, DESIGN §12.1) — `package.json.bin.retail-mcp`가 빌드된
+ * `dist/server.js`를 가리킨다. shebang은 tsc가 소스 첫 줄 그대로 산출물에 보존한다.
  *
  * 조회 도구 5종(sell_through/inventory_status/stockout_risk/reorder_suggestions/sync_status)은
  * 항상 등록한다. `sync_now`(쓰기)는 `SYNC_TOOL_ENABLED=true`일 때만 등록한다 — 운영 기본값은
  * 비활성이다(DESIGN §11.4). 동시 `sync_now` 호출은 advisory lock으로 하나만 통과시키고
  * 나머지는 즉시 "실행 중" 에러를 받는다(TESTING §7).
  */
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,6 +23,7 @@ import {
   EXPLORE_SQL_MAX_TIMEOUT_MS,
 } from "./adapters/exploreSqlExecutor.js";
 import { createLoyverseClientFromEnv } from "./adapters/loyverseClient.js";
+import { isMainModule } from "./adapters/mainModule.js";
 import { createSystemClock } from "./adapters/systemClock.js";
 import { createWarehouseFromEnv } from "./adapters/warehouseFactory.js";
 import { DEFAULT_STALE_THRESHOLD_HOURS } from "./core/freshness.js";
@@ -371,8 +375,7 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMainModule) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
