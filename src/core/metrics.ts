@@ -3,7 +3,15 @@
  * 수식의 진실의 원천은 DESIGN.md §3(= SPEC.md §2와 동일해야 한다). 코드·문서가 다르면
  * 문서 기준으로 코드를 고친다(WORKFLOW.md — "테스트를 수식에 맞추는" 방향의 수정 금지).
  */
-import type { Clock, Numeric, SalesAgg, StockRow } from "./types.js";
+import type {
+  Clock,
+  InventoryRow,
+  Numeric,
+  ProductRow,
+  SalesAgg,
+  SalesPeriodAggRow,
+  StockRow,
+} from "./types.js";
 
 // ── 경계: Numeric(문자열) → number 파싱 정책 ────────────────────────────
 // numeric 컬럼은 문자열로 넘어온다(pg/PGlite 공통). 여기서만 명시적으로 number로 바꾸고,
@@ -321,4 +329,147 @@ export function computeReorderMetrics(
     });
   }
   return rows;
+}
+
+// ── CSV/Excel 채널: 셀스루/임계치 분기 (SPEC §12, TASKS T17) ─────────────────
+//
+// Loyverse는 querySalesAgg로 "호출자가 원하는 임의 기간"을 다시 집계할 수 있지만, CSV/Excel
+// 채널은 그렇지 않다 — sales_period_agg 한 행이 "그 스캔이 읽은 파일이 보고한 기간 하나"를
+// 대표할 뿐, 원장(raw transaction)이 없어 다른 기간으로 재집계할 수 없다. 그래서 여기는
+// Warehouse.querySalesPeriodAgg(SalesAgg[] 반환 — 의도적으로 기간 정보가 없다, TASKS T12)가
+// 아니라 T16이 막 파싱한 원본 행(SalesPeriodAggRow — periodStart/periodEnd 보존)을 직접
+// 받는다. 이 함수는 T18(폴더 스캔)이 파싱 직후, 아직 웨어하우스에 쓰기 전에 호출하는 걸
+// 전제한다 — DB 재조회가 필요 없다.
+//
+// computeReorderMetrics 자체는 건드리지 않는다(이미 소스 중립적) — 대신 판매이력이 있는
+// (매장,SKU)들을 "실제 기간 길이(day)"별로 묶어 그룹마다 한 번씩 그 함수를 그 기간에 맞는
+// windowDays로 호출한다. 한 파일 안에 기간 길이가 다른 행이 섞여 있어도(품목마다 다른
+// 판매기간을 적어도) 각자 맞는 windowDays로 계산된다.
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+export interface CsvMetricsOptions extends ReorderOptions {
+  /** 품목별 저재고임계치(ProductRow.lowStockThreshold) override가 없을 때 쓰는 전역 기본값. */
+  defaultLowStockThreshold: number;
+}
+
+/** 판매이력이 있어 §2 근사식(avgDailySales/daysOfCover/stockoutRisk/reorderQty/셀스루)을 그대로 적용한 행. */
+export type CsvHistoryMetricRow = ReorderMetricRow & {
+  mode: "history";
+  /** 같은 원시 판매량/재고로 계산한 근사 셀스루(§2) — computeSellThrough와 동일한 정의. */
+  sellThrough: number | null;
+};
+
+/** 판매이력이 없어 셀스루/재주문 계산을 건너뛰고 단순 임계치로만 판정한 행(SPEC §12). */
+export interface CsvThresholdMetricRow {
+  mode: "no_history";
+  storeId: string;
+  variantId: string;
+  name: string;
+  category: string | null;
+  inStockRaw: number;
+  inStock: number;
+  /** 이 품목에 실제로 적용된 임계치(품목별 override 우선, 없으면 defaultLowStockThreshold). */
+  threshold: number;
+  belowThreshold: boolean;
+  warnings: string[];
+}
+
+export type CsvMetricRow = CsvHistoryMetricRow | CsvThresholdMetricRow;
+
+function csvKey(storeId: string, variantId: string): string {
+  return `${storeId}:${variantId}`;
+}
+
+/**
+ * CSV/Excel 채널의 재고 스캔 1회 분(T16 `ParsedCsvExcelFile`의 inventory/salesPeriodAgg/
+ * products)을 받아, 판매이력 유무로 분기해 지표를 계산한다(SPEC §12 "판매이력 없을 때:
+ * 임계치 폴백"). 순수 함수 — 웨어하우스 조회 없음.
+ */
+export function computeCsvReorderMetrics(
+  inventory: InventoryRow[],
+  salesPeriodAgg: SalesPeriodAggRow[],
+  products: ProductRow[],
+  opts: CsvMetricsOptions,
+): CsvMetricRow[] {
+  const productByVariant = new Map(products.map((p) => [p.variantId, p]));
+  const stockByKey = new Map(inventory.map((r) => [csvKey(r.storeId, r.variantId), r]));
+  const salesByKey = new Map(salesPeriodAgg.map((s) => [csvKey(s.storeId, s.variantId), s]));
+
+  // 실제 기간 길이(일)별로 묶는다 — 파일 안에 서로 다른 기간 길이가 섞여 있을 수 있다.
+  const groupsByWindowDays = new Map<number, SalesPeriodAggRow[]>();
+  for (const s of salesPeriodAgg) {
+    const windowDays = (s.periodEnd.getTime() - s.periodStart.getTime()) / MS_PER_DAY;
+    const group = groupsByWindowDays.get(windowDays) ?? [];
+    group.push(s);
+    groupsByWindowDays.set(windowDays, group);
+  }
+
+  const historyRows: CsvHistoryMetricRow[] = [];
+  for (const [windowDays, group] of groupsByWindowDays) {
+    const salesAgg: SalesAgg[] = group.map((s) => {
+      const p = productByVariant.get(s.variantId);
+      return {
+        storeId: s.storeId,
+        variantId: s.variantId,
+        name: p?.name ?? s.variantId,
+        category: p?.category ?? null,
+        soldQtyRaw: s.soldQty,
+      };
+    });
+    const stockRows: StockRow[] = [];
+    for (const s of group) {
+      const inv = stockByKey.get(csvKey(s.storeId, s.variantId));
+      if (!inv) continue;
+      const p = productByVariant.get(s.variantId);
+      stockRows.push({
+        storeId: inv.storeId,
+        variantId: inv.variantId,
+        name: p?.name ?? inv.variantId,
+        inStockRaw: inv.inStock,
+        updatedAt: inv.updatedAt,
+      });
+    }
+
+    for (const row of computeReorderMetrics(salesAgg, stockRows, { ...opts, windowDays })) {
+      historyRows.push({
+        ...row,
+        mode: "history",
+        sellThrough: sellThroughRatio(row.soldQty, row.inStock),
+      });
+    }
+  }
+
+  const noHistoryRows: CsvThresholdMetricRow[] = [];
+  for (const inv of inventory) {
+    if (salesByKey.has(csvKey(inv.storeId, inv.variantId))) continue; // history 쪽에서 처리됨.
+    const p = productByVariant.get(inv.variantId);
+    const warnings: string[] = [];
+
+    const inStockRaw = parseNumeric(inv.inStock, "재고수량");
+    const inStock = Math.max(0, inStockRaw);
+    if (inStockRaw < 0) {
+      warnings.push(`현재고가 음수(${inStockRaw})입니다 — 계산에는 0을 사용했습니다.`);
+    }
+
+    const threshold =
+      p?.lowStockThreshold !== undefined && p.lowStockThreshold !== null
+        ? parseNumeric(p.lowStockThreshold, "저재고임계치")
+        : opts.defaultLowStockThreshold;
+
+    noHistoryRows.push({
+      mode: "no_history",
+      storeId: inv.storeId,
+      variantId: inv.variantId,
+      name: p?.name ?? inv.variantId,
+      category: p?.category ?? null,
+      inStockRaw,
+      inStock,
+      threshold,
+      belowThreshold: inStock < threshold,
+      warnings,
+    });
+  }
+
+  return [...historyRows, ...noHistoryRows];
 }
