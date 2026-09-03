@@ -15,17 +15,33 @@
  * 이 모듈이 하는 로컬 PGlite 자동 마이그레이션은 CLAUDE.md 가드레일 5("프로덕션
  * `DATABASE_URL` 마이그레이션은 사람만")의 대상이 아니다 — 원격 프로덕션 DB가 아니라
  * 로컬 임베디드 DB 초기화다.
+ *
+ * network Postgres(DATABASE_URL) 경로는 반대로 아무 마이그레이션도 자동 적용하지 않는다
+ * (가드레일 5). 대신 `ensureNetworkMigrationsApplied()`(SR2-REL-001, 2차 적대적 검수)를
+ * 호출자(server.ts/agent 진입점)가 명시적으로 실행해, 스키마가 없거나 일부만 적용된 상태를
+ * raw Postgres 에러가 아니라 "무엇을 해야 하는지"까지 담은 메시지로 즉시 알린다. 이 점검을
+ * `createNetworkWarehouse()` 안에 넣지 않은 건 의도적이다 — `createWarehouseFromEnv()`는
+ * DATABASE_URL이 있어도 실제 네트워크 연결을 시도하지 않는다는 게 기존에 이미 보장돼 있던
+ * 계약이라(warehouseFactory.test.ts "실제 연결은 시도하지 않음"), 여기서 깨면 안 된다.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
 import type { Warehouse } from "../core/types.js";
 import { acquireFileLock, type FileLock } from "./fileLock.js";
-import { loadMigrations, runMigrations, createPgliteExecutor } from "./migrationRunner.js";
+import {
+  checkPendingMigrations,
+  loadMigrations,
+  runMigrations,
+  createPgliteExecutor,
+  type SqlExecutor,
+} from "./migrationRunner.js";
 import {
   createPgConnectionProvider,
   createPgliteConnectionProvider,
   createPgWarehouse,
+  withSession,
   type DbConnectionProvider,
+  type DbSession,
 } from "./pgWarehouse.js";
 
 /** `DATABASE_URL` 미설정 시 임베디드 PGlite 데이터를 저장할 기본 경로(프로세스 작업 디렉터리 기준). */
@@ -147,4 +163,46 @@ export async function createWarehouseFromEnv(
 
   const dataDir = opts.dataDir ?? env["RETAIL_MCP_DATA_DIR"] ?? DEFAULT_EMBEDDED_DATA_DIR;
   return createEmbeddedWarehouse(dataDir);
+}
+
+function sqlExecutorFromSession(session: DbSession): SqlExecutor {
+  return {
+    async exec(sql) {
+      await session.query(sql);
+    },
+    async query<T extends Record<string, unknown>>(sql: string) {
+      return session.query<T>(sql);
+    },
+  };
+}
+
+/**
+ * SR2-REL-001(2차 적대적 검수) — network Postgres(`handle.kind === "pg"`) 경로에서 스키마가
+ * 없거나 일부만 적용된 상태를 raw Postgres 에러("relation ... does not exist")가 아니라
+ * 실행할 명령까지 담은 명확한 메시지로 알린다. 아무것도 쓰지 않는다(읽기 전용, 가드레일 4/5
+ * 대상 아님). embedded PGlite 경로(`handle.kind === "pglite"`)는 `createEmbeddedWarehouse`가
+ * 기동 시 이미 자동 마이그레이션을 마쳤으므로 이 함수는 그 경우 아무 일도 하지 않는다.
+ *
+ * `createWarehouseFromEnv()` 자체에는 넣지 않았다 — 그 함수는 DATABASE_URL이 있어도 실제
+ * 네트워크 연결을 시도하지 않는다는 기존 계약(warehouseFactory.test.ts 회귀)을 지키기
+ * 위해서다. 호출자(server.ts/agent 진입점)가 handle을 얻은 직후 명시적으로 호출한다.
+ *
+ * `DATABASE_URL` 원문(자격증명 포함)은 이 함수의 어떤 출력에도 남기지 않는다(CLAUDE.md 구현
+ * 해석 보충).
+ */
+export async function ensureNetworkMigrationsApplied(handle: WarehouseHandle): Promise<void> {
+  if (handle.kind !== "pg") return;
+
+  const migrations = await loadMigrations();
+  const { pending } = await withSession(handle.connectionProvider, (session) =>
+    checkPendingMigrations(sqlExecutorFromSession(session), migrations),
+  );
+  if (pending.length === 0) return;
+
+  throw new Error(
+    `DATABASE_URL이 가리키는 데이터베이스에 아직 스키마가 없거나 일부만 적용돼 있습니다 ` +
+      `(대기 중인 마이그레이션 ${pending.length}건: ${pending.join(", ")}). ` +
+      "npx retail-mcp-migrate로 대상과 대기 중인 마이그레이션을 먼저 확인(dry-run)한 뒤, " +
+      "npx retail-mcp-migrate --confirm으로 적용하고 다시 실행하세요.",
+  );
 }

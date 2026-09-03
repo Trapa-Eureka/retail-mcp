@@ -44,9 +44,16 @@ retail-mcp                                 # MCP 서버 stdio 실행 — claude 
 
 **데이터 위치**: `DATABASE_URL`을 안 정하면 임베디드 PGlite가 기본값이고, 데이터는 **`retail-mcp`를 실행하는 현재 작업 디렉터리 기준** `.retail-mcp/data/`(또는 `RETAIL_MCP_DATA_DIR`로 override)에 생긴다 — 전역 설치라도 이 경로는 실행 시점의 CWD에 종속된다. 서로 다른 디렉터리에서 실행하면 서로 다른(독립된) 로컬 DB가 생긴다는 뜻이다 — 지점별로 폴더를 분리해 쓰는 CSV/Excel 채널에는 의도된 동작이지만, cron/launchd 등록 시 반드시 같은 작업 디렉터리(`cd`)를 고정해야 한다(위 "cron/launchd 등록 예시" 참고).
 
-**마이그레이션**: 임베디드 PGlite는 첫 실행에 자동 적용된다(사람 개입 불필요, `warehouseFactory.ts`). **외부 `DATABASE_URL`(Neon/Supabase 등)을 쓰면 현재 npm 패키지에는 마이그레이션 CLI가 없다** — `scripts/migrate.ts`는 저장소 전용이라(devDependency `tsx` 필요, `package.json.files`/빌드 산출물에 포함 안 됨) 게시된 패키지만 설치해서는 실행할 수 없다. 외부 DB를 쓰려면 지금은 이 저장소를 clone해 `npm run migrate`를 실행해야 한다 — **이 간극은 T37(tarball 최종 재검수)에서 마이그레이션 bin 추가 여부를 결정한다**(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md` REL-006).
+**마이그레이션**: 임베디드 PGlite는 첫 실행에 자동 적용된다(사람 개입 불필요, `warehouseFactory.ts`). **외부 `DATABASE_URL`(Neon/Supabase 등)을 쓰면 `retail-mcp-migrate` bin으로 직접 적용한다**(SR2-REL-001, 2차 적대적 검수 — `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md` REL-006이 지적한 간극을 해소):
 
-**업그레이드**: `npm install -g @trapa-eureka/retail-mcp@latest`로 새 버전을 받는다. 마이그레이션 파일은 순번이 매겨져 있고 이미 적용된 건 건너뛰므로(체크섬까지 같으면) 버전을 올려도 임베디드 PGlite 데이터는 안전하다 — 외부 DB는 위 "마이그레이션" 항목과 같은 이유로 새 마이그레이션이 추가된 버전에서는 저장소 clone으로 `npm run migrate`가 필요하다.
+```bash
+retail-mcp-migrate            # dry-run(기본) — 대상 DB(host/db명만, 자격증명은 안 보임)와 대기 중인 마이그레이션 목록만 보여준다
+retail-mcp-migrate --confirm  # 실제로 적용한다
+```
+
+`DATABASE_URL`을 설정한 채로 `retail-mcp`/`retail-mcp-onboard`의 에이전트 명령을 실행했는데 스키마가 없거나 일부만 적용돼 있으면, raw Postgres 에러 대신 위 명령을 안내하는 에러로 즉시 멈춘다. `scripts/migrate.ts`(저장소 전용, `npm run migrate`)는 여전히 존재하지만 이 저장소를 clone한 개발자 전용이다 — 게시된 패키지에는 포함되지 않는다.
+
+**업그레이드**: `npm install -g @trapa-eureka/retail-mcp@latest`로 새 버전을 받는다. 마이그레이션 파일은 순번이 매겨져 있고 이미 적용된 건 건너뛰므로(체크섬까지 같으면) 버전을 올려도 임베디드 PGlite 데이터는 안전하다 — 외부 DB는 새 버전이 마이그레이션을 추가했다면 위와 같이 `retail-mcp-migrate --confirm`을 한 번 실행하면 된다.
 
 **제거**: `npm uninstall -g @trapa-eureka/retail-mcp`는 패키지 코드만 지운다 — 데이터(`.retail-mcp/data/`)와 `.env`는 그대로 남는다(재설치 시 데이터 보존을 위한 의도된 동작). 데이터까지 지우려면 그 디렉터리를 직접 삭제한다.
 

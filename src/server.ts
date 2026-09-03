@@ -25,7 +25,10 @@ import {
 import { createLoyverseClientFromEnv } from "./adapters/loyverseClient.js";
 import { isMainModule } from "./adapters/mainModule.js";
 import { createSystemClock } from "./adapters/systemClock.js";
-import { createWarehouseFromEnv } from "./adapters/warehouseFactory.js";
+import {
+  createWarehouseFromEnv,
+  ensureNetworkMigrationsApplied,
+} from "./adapters/warehouseFactory.js";
 import { DEFAULT_STALE_THRESHOLD_HOURS } from "./core/freshness.js";
 import {
   DEFAULT_LEAD_TIME_DAYS,
@@ -354,6 +357,10 @@ export async function createRetailMcpServer(): Promise<{
 }> {
   const config = resolveServerConfig();
   const handle = await createWarehouseFromEnv();
+  // SR2-REL-001(2차 적대적 검수) — network Postgres(DATABASE_URL) 경로에서 스키마가 없거나
+  // 일부만 적용됐으면 raw Postgres 에러 대신 여기서 명확한 안내로 즉시 멈춘다. embedded
+  // PGlite 경로는 이미 자동 마이그레이션됐으므로 no-op.
+  await ensureNetworkMigrationsApplied(handle);
   const clock = createSystemClock();
 
   const server = new McpServer({ name: "retail-mcp", version: "0.1.0" });

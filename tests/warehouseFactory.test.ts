@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireFileLock, FileLockBusyError } from "../src/adapters/fileLock.js";
-import { createWarehouseFromEnv } from "../src/adapters/warehouseFactory.js";
+import {
+  createPgliteExecutor,
+  loadMigrations,
+  runMigrations,
+} from "../src/adapters/migrationRunner.js";
+import { createPgliteConnectionProvider, createPgWarehouse } from "../src/adapters/pgWarehouse.js";
+import {
+  createWarehouseFromEnv,
+  ensureNetworkMigrationsApplied,
+  type WarehouseHandle,
+} from "../src/adapters/warehouseFactory.js";
 
 describe("createWarehouseFromEnv", () => {
   let dir: string;
@@ -119,5 +129,64 @@ describe("createWarehouseFromEnv", () => {
       closeSpy.mockRestore();
       await rm(lockPath, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ensureNetworkMigrationsApplied(2차 적대적 검수 SR2-REL-001)", () => {
+  // 실 네트워크 Postgres 없이도 "pg" 경로의 로직(kind 분기 + 대기 마이그레이션 판정 +
+  // 에러 메시지)을 검증하기 위해, PGlite 기반 connectionProvider를 "pg"로 표시한 가짜
+  // WarehouseHandle을 만든다 — ensureNetworkMigrationsApplied는 connectionProvider를 통해서만
+  // DB에 접근하므로 실제 저장소가 pg든 PGlite든 이 함수 입장에서는 구분되지 않는다.
+  function fakeNetworkHandle(db: PGlite): WarehouseHandle {
+    const connectionProvider = createPgliteConnectionProvider(db);
+    return {
+      warehouse: createPgWarehouse(connectionProvider),
+      kind: "pg",
+      connectionProvider,
+      close: () => Promise.resolve(),
+    };
+  }
+
+  it("kind가 pglite면 스키마 상태와 무관하게 아무 것도 하지 않는다(embedded 경로는 이미 자동 마이그레이션됨)", async () => {
+    const db = new PGlite(); // 마이그레이션을 일부러 적용하지 않은 완전히 빈 상태.
+    const connectionProvider = createPgliteConnectionProvider(db);
+    const handle: WarehouseHandle = {
+      warehouse: createPgWarehouse(connectionProvider),
+      kind: "pglite",
+      connectionProvider,
+      close: () => Promise.resolve(),
+    };
+
+    await expect(ensureNetworkMigrationsApplied(handle)).resolves.toBeUndefined();
+  });
+
+  it("kind가 pg이고 스키마가 완전히 비어 있으면(대기 중인 마이그레이션 전부) retail-mcp-migrate로 안내하는 에러를 던진다", async () => {
+    const handle = fakeNetworkHandle(new PGlite());
+
+    await expect(ensureNetworkMigrationsApplied(handle)).rejects.toThrow(
+      /retail-mcp-migrate.*--confirm/s,
+    );
+  });
+
+  it("kind가 pg이고 모든 마이그레이션이 이미 적용돼 있으면 통과한다", async () => {
+    const db = new PGlite();
+    const migrations = await loadMigrations();
+    await runMigrations(createPgliteExecutor(db), migrations);
+    const handle = fakeNetworkHandle(db);
+
+    await expect(ensureNetworkMigrationsApplied(handle)).resolves.toBeUndefined();
+  });
+
+  it("kind가 pg이고 일부만 적용돼 있으면 대기 중인 id를 정확히 나열한다", async () => {
+    const db = new PGlite();
+    const migrations = await loadMigrations();
+    const firstOnly = migrations.slice(0, 1);
+    await runMigrations(createPgliteExecutor(db), firstOnly);
+    const handle = fakeNetworkHandle(db);
+
+    const lastId = migrations[migrations.length - 1]?.id;
+    await expect(ensureNetworkMigrationsApplied(handle)).rejects.toThrow(
+      lastId !== undefined ? new RegExp(lastId) : /./,
+    );
   });
 });

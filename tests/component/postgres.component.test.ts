@@ -26,12 +26,21 @@ import {
 } from "../../src/adapters/advisoryLock.js";
 import { createExploreSqlExecutor } from "../../src/adapters/exploreSqlExecutor.js";
 import {
+  applyMigrationsToDatabaseUrl,
+  checkPendingMigrationsForDatabaseUrl,
+} from "../../src/adapters/migratePg.js";
+import {
+  checkPendingMigrations,
   createPgExecutor,
   loadMigrations,
   runMigrations,
   type Migration,
 } from "../../src/adapters/migrationRunner.js";
 import { createPgConnectionProvider } from "../../src/adapters/pgWarehouse.js";
+import {
+  createWarehouseFromEnv,
+  ensureNetworkMigrationsApplied,
+} from "../../src/adapters/warehouseFactory.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
@@ -187,6 +196,55 @@ describe.skipIf(!TEST_DATABASE_URL)("Postgres 컴포넌트 테스트(QA-004, TAS
       const executor = createExploreSqlExecutor(createPgConnectionProvider(pool));
       const result = await executor.execute("select 1 as x", { timeoutMs: 5000 });
       expect(result.rows).toEqual([{ x: 1 }]);
+    });
+  });
+
+  // SR2-REL-001(2차 적대적 검수) — npm 배포 migration CLI(`retail-mcp-migrate`)와 network
+  // Postgres 시작 시 사전 점검을 real Postgres 기준으로 확인한다. PGlite 단위 테스트
+  // (tests/migrateRunner.test.ts, tests/warehouseFactory.test.ts)가 이미 로직 자체를
+  // 검증했으므로, 여기서는 "real pg.Pool 배선이 실제로 동작하는가"만 추가로 확인한다.
+  describe("network Postgres migration CLI/사전 점검(SR2-REL-001) — real Postgres 배선 확인", () => {
+    it("빈 스키마(별도 임시 schema)에서는 checkPendingMigrations가 전체를 pending으로 본다 — SQLSTATE 42P01 감지가 PGlite뿐 아니라 real Postgres에서도 동작", async () => {
+      const client = await pool.connect();
+      const tempSchema = `qa_rel001_empty_${Date.now()}`;
+      try {
+        await client.query(`create schema "${tempSchema}"`);
+        await client.query(`set search_path to "${tempSchema}"`);
+        const migrations = await loadMigrations();
+        const status = await checkPendingMigrations(createPgExecutor(client), migrations);
+        expect(status.pending).toEqual(migrations.map((m) => m.id));
+      } finally {
+        await client.query("reset search_path").catch(() => undefined);
+        await client.query(`drop schema if exists "${tempSchema}" cascade`);
+        client.release();
+      }
+    });
+
+    it("applyMigrationsToDatabaseUrl/checkPendingMigrationsForDatabaseUrl: 적용 후 pending이 비고 재실행해도 멱등하다(retail-mcp-migrate가 실제로 쓰는 pg.Pool 배선)", async () => {
+      const migrations = await loadMigrations();
+
+      const result = await applyMigrationsToDatabaseUrl(TEST_DATABASE_URL as string);
+      expect(result.applied.length + result.skipped.length).toBe(migrations.length);
+
+      const status = await checkPendingMigrationsForDatabaseUrl(TEST_DATABASE_URL as string);
+      expect(status.pending).toEqual([]);
+
+      // 멱등성 — 이미 다 적용된 상태에서 다시 적용해도 전부 건너뛴다.
+      const second = await applyMigrationsToDatabaseUrl(TEST_DATABASE_URL as string);
+      expect(second.applied).toEqual([]);
+    });
+
+    it("ensureNetworkMigrationsApplied: createWarehouseFromEnv(DATABASE_URL)로 만든 real pg 웨어하우스가 스키마 적용 후 통과한다", async () => {
+      // 위 테스트가 이미 public 스키마에 전체 마이그레이션을 적용해뒀다.
+      const handle = await createWarehouseFromEnv({
+        env: { DATABASE_URL: TEST_DATABASE_URL },
+      });
+      try {
+        expect(handle.kind).toBe("pg");
+        await expect(ensureNetworkMigrationsApplied(handle)).resolves.toBeUndefined();
+      } finally {
+        await handle.close();
+      }
     });
   });
 });

@@ -56,6 +56,7 @@
 - 영향: 전역 실행이나 다른 working directory에서 서로 다른 DB가 생성될 수 있고, 사용자는 데이터 위치와 백업 방법을 알 수 없다.
 - 수정 기준: OS별 안정적인 사용자 데이터 디렉터리 또는 명시적 `RETAIL_MCP_DATA_DIR` 요구를 결정하고 install/upgrade/uninstall/backup 문서를 추가한다.
 - **부분 해결(T36, 2026-09-03)**: README에 "설치(npm 게시 후)" 절을 신설 — 정책 자체는 이미 코드로 확정돼 있던 것(CWD 기준 `.retail-mcp/data`, `RETAIL_MCP_DATA_DIR` override, `warehouseFactory.ts`)을 문서화만 했다. install(`npm install -g`)/업그레이드(`npm install -g @latest`, 마이그레이션 순번+체크섬으로 안전)/제거(`npm uninstall -g`, 데이터는 안 지워짐) 절차를 명시. **착수 중 발견한 진짜 간극**: 외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI가 게시된 npm 패키지에 없다 — `scripts/migrate.ts`는 `package.json.files`/`tsconfig.build.json`의 `dist` 빌드 산출물에 포함되지 않는 저장소 전용 스크립트다(devDependency `tsx` 필요). 임베디드 PGlite 경로는 자동 마이그레이션이라 영향 없다. 이 간극은 README에 명시하고 **T37에서 마이그레이션 bin 추가 여부를 결정**하도록 남겨뒀다(코드 변경은 T36 범위 밖).
+- **완전 해결(2026-09-04, 2차 적대적 검수 SR2-REL-001)**: `retail-mcp-migrate` bin을 `package.json.bin`에 등록하고 `src/cli/migrate.ts`로 구현 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션 목록만 표시, 자격증명은 안 보임), 실제 적용은 `--confirm`(가드레일 1의 dry_run+--confirm 이중 게이트와 같은 패턴을 migration에도 적용). `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`는 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`(`warehouseFactory.ts`)로 스키마 누락을 raw Postgres 에러 대신 이 명령을 안내하는 에러로 즉시 알린다. `scripts/verifyPack.ts`(release gate)가 실제 tarball에서 bin 실행·에러 경로를 확인하고, `tests/component/postgres.component.test.ts`가 real Postgres 대상 적용·멱등성을 확인한다.
 
 ## REL-007 — publish 전 자동 차단 게이트가 없음
 

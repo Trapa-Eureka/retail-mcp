@@ -38,10 +38,10 @@ CI(`.github/workflows/ci.yml`, TASKS T35)가 매 push/PR에서 위 게이트 대
 src/
   core/        # 순수 로직: metrics(셀스루·커버일수·재주문량), csvSchema, scmSchema, sqlValidator, 타입 — 외부 IO 없음
   etl/         # Loyverse 동기화 오케스트레이션 (LoyverseClient + Warehouse 조립, 커서 관리)
-  adapters/    # loyverseClient, pgWarehouse, csvExcelParser, resendProvider, exploreSqlExecutor, fileLock, warehouseFactory
+  adapters/    # loyverseClient, pgWarehouse, csvExcelParser, resendProvider, exploreSqlExecutor, fileLock, warehouseFactory, migratePg
   mocks/       # FixtureLoyverseClient, PGlite 웨어하우스 헬퍼, MockNotificationProvider, FixedClock
   agent/       # reorder.ts(Loyverse 경로) / folderScan.ts(CSV/Excel 경로, 지점·본사 모드) — 스케줄 실행 진입점, 얇은 오케스트레이션만
-  cli/         # onboard.ts — 대화형 설정 CLI (`npm run onboard`)
+  cli/         # onboard.ts — 대화형 설정 CLI (`npm run onboard`) / migrate.ts — npm 배포 bin `retail-mcp-migrate`(SR2-REL-001)
   mcp/         # tools.ts — MCP 도구 로직(server.ts는 등록·조립만)
   server.ts    # MCP 서버 진입점 (도구 등록·조립만, 로직 없음)
 migrations/    # 001_init.sql ... 순번 SQL 파일
@@ -80,6 +80,7 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(실 Po
 - 2026-09-02: 최초 작성.
 - 2026-09-03: v0.2(CSV/Excel 채널, SCM 대사, 팩단위 반올림, `explore_sql`) 완료 + npm 출시 전 적대적 검수(`docs/004~009`) 반영 — 스택/레이아웃/가드레일을 v0.2 실제 구조로 갱신, "v0.1 데이터 소스는 Loyverse 단일"만 남기지 않고 v0.2 전환 상태를 명시. 낡은 규칙 삭제는 없음(v0.1 규칙은 여전히 유효, v0.2가 추가된 것).
 - 2026-09-03(T36): T29~T35 완료를 반영해 명령어 목록(coverage/onboard/agent:folder-scan/cleanup/verify:pack)·소스 레이아웃(scripts/, tests/component/, .github/workflows/)·가드레일 2(tests/component/** 예외)·출시 전 검수 절을 갱신. 재검토 결과 삭제할 낡은 규칙은 없었음 — v0.1 규칙(가드레일 1/2/3/5/6, Loyverse 경로)은 실배포 보류와 무관하게 여전히 코드에 실존하고 테스트로 지켜짐.
+- 2026-09-04: 2차 적대적 검수(`docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`) P0 SR2-REL-001 해결 — `retail-mcp-migrate` bin 추가로 남아 있던 마지막 npm 패키징 간극(`docs/004` REL-006)을 닫았다. 소스 레이아웃(`src/cli/migrate.ts`, `src/adapters/migratePg.ts`)·출시 전 검수 절을 갱신. 삭제할 낡은 규칙은 없음 — 이 변경은 기존 가드레일 5("프로덕션 마이그레이션은 사람만")를 유지한 채 그 실행 방법만 npm 배포 사용자에게 제공한 것.
 
 ## 구현 해석 보충 (2026-09-02 문서 점검)
 
@@ -97,4 +98,4 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(실 Po
 - 지점 폴더 스캔의 저재고 알림은 **하루 최대 1회 다이제스트를 보장**한다 — 파일이 안 바뀌어도 완전 무음은 아니다(SCM 실패 등 "조용한 실패"를 놓치지 않기 위해). `docs/SPEC.md` §18, `docs/DESIGN.md` §12.3.
 - npm 공개 배포 대상은 `@trapa-eureka/retail-mcp`(scoped, `publishConfig.access=public`, MIT) — unscoped `retail-mcp`는 이름 재사용 불확실성(2026-01-12 unpublish 이력)이 있어 채택하지 않는다.
 - **CI가 이 저장소에 존재한다**(`.github/workflows/ci.yml`, T35) — 매 push/PR에서 지원 OS/Node matrix, coverage threshold, 실 Postgres 컴포넌트 테스트, dependency audit/secret scan/SBOM을 돈다. 새 코드가 이 게이트를 깨면 머지하지 않는다.
-- **외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI는 아직 npm 패키지에 없다**(`scripts/migrate.ts`는 저장소 전용, `files`/빌드 산출물 미포함) — README "설치" 절에 이 간극을 명시했고, bin 추가 여부는 T37에서 결정한다(`docs/004` REL-006).
+- **외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI**: `retail-mcp-migrate` bin(SR2-REL-001, 2차 적대적 검수, `docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`)이 이 간극을 해소했다 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션만 표시, 자격증명은 안 보임), 실제 적용은 `--confirm`. `scripts/migrate.ts`(저장소 전용, `files`/빌드 산출물 미포함)는 여전히 개발자 전용으로 남아 있고, 실제 적용 로직은 `src/adapters/migratePg.ts`를 함께 쓴다. `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`는 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`로 스키마 누락을 raw Postgres 에러 대신 이 명령을 안내하는 에러로 즉시 알린다(`docs/004` REL-006 완전 해소).

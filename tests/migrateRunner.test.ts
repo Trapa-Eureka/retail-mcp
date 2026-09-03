@@ -1,6 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "vitest";
 import {
+  checkPendingMigrations,
   computeChecksum,
   createPgliteExecutor,
   runMigrations,
@@ -100,5 +101,48 @@ describe("withAdvisoryLock", () => {
     const fakeClient = { query: () => Promise.resolve({ rows: [] }) };
     const result = await withAdvisoryLock(fakeClient, 123, () => Promise.resolve(42));
     expect(result).toBe(42);
+  });
+});
+
+describe("checkPendingMigrations(2차 적대적 검수 SR2-REL-001)", () => {
+  it("schema_migrations 테이블 자체가 없으면(완전히 빈 DB) 전체를 pending으로 본다", async () => {
+    const executor = freshExecutor();
+    const migrations = [
+      migration("001_a", "create table a (id int)"),
+      migration("002_b", "create table b (id int)"),
+    ];
+
+    const status = await checkPendingMigrations(executor, migrations);
+    expect(status.pending).toEqual(["001_a", "002_b"]);
+  });
+
+  it("전부 적용돼 있으면 pending이 비어 있다", async () => {
+    const executor = freshExecutor();
+    const migrations = [migration("001_a", "create table a (id int)")];
+    await runMigrations(executor, migrations);
+
+    const status = await checkPendingMigrations(executor, migrations);
+    expect(status.pending).toEqual([]);
+  });
+
+  it("일부만 적용돼 있으면 나머지만 pending으로 표시한다", async () => {
+    const executor = freshExecutor();
+    const first = migration("001_a", "create table a (id int)");
+    const second = migration("002_b", "create table b (id int)");
+    await runMigrations(executor, [first]);
+
+    const status = await checkPendingMigrations(executor, [first, second]);
+    expect(status.pending).toEqual(["002_b"]);
+  });
+
+  it("테이블 누락이 아닌 다른 조회 실패는 pending으로 오인하지 않고 그대로 던진다", async () => {
+    const executor: SqlExecutor = {
+      exec: () => Promise.reject(new Error("사용 안 함")),
+      query: () => Promise.reject(new Error("연결이 끊어졌습니다(시뮬레이션)")),
+    };
+
+    await expect(
+      checkPendingMigrations(executor, [migration("001_a", "create table a (id int)")]),
+    ).rejects.toThrow("연결이 끊어졌습니다");
   });
 });

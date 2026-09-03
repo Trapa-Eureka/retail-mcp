@@ -24,7 +24,8 @@
   },
   "bin": {
     "retail-mcp": "dist/server.js",
-    "retail-mcp-onboard": "dist/cli/onboard.js"
+    "retail-mcp-onboard": "dist/cli/onboard.js",
+    "retail-mcp-migrate": "dist/cli/migrate.js"
   },
   "main": "dist/server.js",
   "files": [
@@ -51,7 +52,7 @@
     "onboard": "tsx src/cli/onboard.ts",
     "smoke": "tsx scripts/smoke.ts",
     "clean": "rm -rf dist",
-    "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js",
+    "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js dist/cli/migrate.js",
     "prepack": "npm run build",
     "verify:pack": "tsx scripts/verifyPack.ts",
     "test:pg-component": "vitest run --config vitest.component.config.ts",

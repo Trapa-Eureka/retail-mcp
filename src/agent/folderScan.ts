@@ -57,7 +57,10 @@ import {
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { logStructured } from "../adapters/structuredLog.js";
 import { createSystemClock } from "../adapters/systemClock.js";
-import { createWarehouseFromEnv } from "../adapters/warehouseFactory.js";
+import {
+  createWarehouseFromEnv,
+  ensureNetworkMigrationsApplied,
+} from "../adapters/warehouseFactory.js";
 
 /** ProductRow.lowStockThreshold override가 없을 때 쓰는 기본 임계치(SPEC §12). */
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
@@ -1074,6 +1077,11 @@ async function main(): Promise<void> {
   // DATABASE_URL이 없으면 임베디드 PGlite로 기동한다(T14, SPEC §12).
   const handle = await createWarehouseFromEnv();
   try {
+    // SR2-REL-001(2차 적대적 검수) — network Postgres(DATABASE_URL) 경로에서 스키마가 없거나
+    // 일부만 적용됐으면 raw Postgres 에러 대신 여기서 명확한 안내로 즉시 멈춘다. embedded
+    // PGlite 경로는 이미 자동 마이그레이션됐으므로 no-op.
+    await ensureNetworkMigrationsApplied(handle);
+
     if (mode === "consolidated") {
       await runConsolidatedMain(clock, handle);
     } else {
