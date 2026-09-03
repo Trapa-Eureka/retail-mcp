@@ -31,9 +31,16 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   },
 ];
 
-/** 이 마커가 매치된 줄에 있으면 테스트 픽스처/예시로 보고 건너뛴다(고의로 넣은 가짜 값). */
-const PLACEHOLDER_LINE_MARKER =
-  /fake|example|placeholder|dummy|changeme|xxx|your_|should[-_ ]never|not[-_]?real|시뮬레이션|가짜|예시/i;
+/**
+ * 이 정확한 문자열이 매치와 같은 줄에 있어야만 테스트 픽스처로 보고 건너뛴다.
+ *
+ * 예전엔 `fake|example|placeholder|dummy|...` 같은 흔한 영단어 아무거나 하나만 있어도
+ * 건너뛰었다 — 이건 실제 시크릿과 같은 줄에 우연히(또는 의도적으로) 그런 단어가 있으면
+ * 그대로 우회된다(2차 적대적 검수 SR2-SEC-001, `const productionKey = "sk-ant-실제키"; //
+ * example` 로 직접 재현·확인). 흔한 단어 대신 우연히 나올 일이 없는 전용 마커 하나로
+ * 좁혔다 — 필요하면 뒤에 사유를 자유롭게 붙인다(`// secretscan-allow: 테스트 픽스처`).
+ */
+const EXPLICIT_ALLOW_MARKER = "secretscan-allow";
 
 /** localhost/127.0.0.1 대상 연결 문자열은 자격증명이 진짜여도 유출 위험이 사실상 없다(원격 접근 불가) — 항상 건너뛴다. */
 function isLocalhostConnectionString(match: string): boolean {
@@ -65,7 +72,7 @@ export function scanContentForSecrets(filePath: string, content: string): Secret
       const upToMatch = content.slice(0, match.index).split("\n");
       const lineNumber = upToMatch.length;
       const lineText = lines[lineNumber - 1] ?? "";
-      if (PLACEHOLDER_LINE_MARKER.test(lineText)) {
+      if (lineText.includes(EXPLICIT_ALLOW_MARKER)) {
         continue;
       }
       findings.push({
