@@ -48,6 +48,19 @@ function optionalNonNegativeNumber(label: string) {
   return z.preprocess(blankToUndefined, nonNegativeNumber(label).optional());
 }
 
+/** 포장수량(팩사이즈, SPEC §14) — 0은 "포장 단위 없음"과 구분이 안 돼 의미가 없으므로 0 초과. */
+function optionalPositiveNumber(label: string) {
+  return z.preprocess(
+    blankToUndefined,
+    z.coerce
+      .number({ error: `${label}은(는) 숫자여야 합니다.` })
+      .refine((n) => Number.isFinite(n) && n > 0, {
+        message: `${label}은(는) 0보다 큰 숫자여야 합니다.`,
+      })
+      .optional(),
+  );
+}
+
 function optionalDate(label: string) {
   return z.preprocess(
     blankToUndefined,
@@ -79,6 +92,9 @@ export const csvRowSchema = z
     단가: optionalNonNegativeNumber("단가"),
     통화: optionalCurrencyCode(),
     저재고임계치: optionalNonNegativeNumber("저재고임계치"),
+    // SPEC §14 "팩 단위 반올림" — 선택 컬럼. 없으면 낱개 매입 가능한 품목으로 취급한다
+    // (기존 템플릿에 이 컬럼이 없어도 그대로 파싱된다 — 하위 호환).
+    포장수량: optionalPositiveNumber("포장수량"),
   })
   .superRefine((row, ctx) => {
     const hasSales = row.판매수량 !== undefined;

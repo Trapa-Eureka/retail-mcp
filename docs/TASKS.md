@@ -63,12 +63,17 @@
 
 ## v0.2 대기열 — CSV/Excel 이후로 미룬 항목
 
-CSV/Excel 채널(T12~T22)과 무관한 항목들이다 — `explore_sql`(읽기 전용 롤) / 팩 단위 반올림은 여전히 착수 금지(트리거 없음). SCM 시트 연동 / 정통 셀스루는 사용자가 실제 샘플 시트를 제공해(2026-09-03) T23으로 부분 착수했다(아래). (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
+CSV/Excel 채널(T12~T22)과 무관한 항목들이다 — `explore_sql`(읽기 전용 롤)은 여전히 착수 금지(트리거 없음 — 시트/데이터와 무관한 보안 설계 항목). SCM 시트 연동 / 정통 셀스루 / 팩 단위 반올림은 사용자가 실제 샘플 시트를 제공해(2026-09-03) T23·T24로 착수했다(아래). (이전 버전에 있던 "StoreHub CSV 폴백 파서"는 SPEC §11 재검토로 폐기 — CSV/Excel은 폴백이 아니라 T12~T22의 주 데이터소스로 승격됐다.)
 
 ### T23 — SCM 입고 실적 스키마 + 재고 정합성 검증 · 상태: DONE(2026-09-03) · 의존: 없음(v0.1/T12~T22와 독립)
 - 목표: 사용자가 제공한 실제 샘플 구글시트("발주, 입고 데이터" — 상품목록/입출고내역/재고현황/판매요약/대시보드 5탭)를 근거로, SCM 입고 실적을 적재하는 스키마·웨어하우스 계층과 그걸로 계산하는 "정통 셀스루"·"재고 정합성 검증"을 구현한다. 실제 Google Sheets API 연동(자격증명·의존성 결정)은 이번 스코프 밖 — 시트 스냅샷을 테스트 픽스처로만 쓴다(사용자 확인, "지금은 픽스처로만" 선택).
 - 완료 기준: [x] `purchase_receipts` 스키마 + upsert 멱등·FK 테스트 [x] `queryPurchaseAgg`가 `querySalesAgg`와 대칭 형태로 기간·매장 필터 동작 [x] SCM 시트 원시 행 zod 스키마 + "구분=입고만 반영, 출고는 스킵" 도메인 변환 함수 [x] 재고 정합성 검증(원장 예상재고 vs 실사재고 discrepancy) + 정통 셀스루 계산, 실제 샘플 시트 숫자로 골든 케이스 [x] check 통과
 - **완료**: `migrations/004_purchase_receipts.sql`(PK `store_id,variant_id,received_at`), `core/types.ts`(`PurchaseReceiptRow`/`PurchaseAgg`/`Warehouse.upsertPurchaseReceipts`·`queryPurchaseAgg`), `adapters/pgWarehouse.ts` 구현, `core/scmSchema.ts`(원시 행 zod 스키마 + `mapScmRowsToPurchaseReceipts` — 구분=출고는 의도적으로 건너뜀, retail-mcp의 판매 원천은 Loyverse/CSV라 이중 계산 방지), `core/metrics.ts`의 `computeStockReconciliation`. **발견**: 정통 셀스루(판매÷(기초재고+입고))는 재고가 보존되는 한 §2 근사식(판매÷(판매+기말재고))과 대수적으로 항상 같은 값 — 진짜 가치는 "더 정확한 숫자"가 아니라 입고 원장 기준 예상 재고와 POS/CSV 실사 재고를 대사해 도난·파손·실사오차를 잡아내는 재고 정합성 검증. 샘플 시트에 "발주"(미입고) 상태 컬럼이 없어 원래 SCM 연동이 노렸던 "미입고 주문을 재주문 제안에서 빼는" 기능은 시트에 그 컬럼이 추가돼야 후속 가능(범위 밖으로 명시). MCP 도구·에이전트 배선, 실 Google Sheets 어댑터는 실 연동 방식(서비스 계정 vs 공개 링크 CSV export)이 결정된 뒤 별도 태스크. 상세는 `docs/SPEC.md` §13. check 통과(304 테스트 = 기존 278 + 신규 26).
+
+### T24 — 팩 단위 반올림 · 상태: DONE(2026-09-03) · 의존: 없음(v0.1/T12~T23과 독립)
+- 목표: 사용자가 §13 샘플 시트에 `포장수량(팩사이즈)` 컬럼과 검증용 계산 결과(계산 제안량/최종 발주량/발주 팩수)를 채워 새로 업로드한 시트를 근거로, `reorderQty()`가 계산한 개수 단위 재주문 제안량을 포장수량(팩/박스 단위)의 배수로 올리는 후처리 계산을 구현한다.
+- 완료 기준: [x] `products.pack_size` 스키마 + upsert 멱등·coalesce 테스트(다른 채널이 값을 안 줘도 지우지 않음) [x] `reorderQty()` 자체는 변경 없이, 그 결과를 감싸는 순수 함수로 팩 단위 반올림 구현 [x] 시트가 미리 계산해둔 8개 품목(계산 제안량→최종 발주량/발주 팩수) 전부 golden case로 검증 [x] packSize 없음(낱개 매입)·제안량 0(팩도 0개)·packSize 0 이하(에러) 경계 케이스 [x] check 통과
+- **완료**: `migrations/005_product_pack_size.sql`(`products.pack_size`, nullable, `>0` 체크), `core/types.ts`의 `ProductRow.packSize`(소스 중립적 — `lowStockThreshold`와 달리 CSV 전용이 아니다), `adapters/pgWarehouse.ts`(`low_stock_threshold`와 같은 coalesce 패턴). `core/metrics.ts`에 두 함수 추가 — `roundToPackMultiple(reorderQtyValue, packSize)`(§2 5개 순수 수식과 나란한 스칼라 함수, `reorderQty()` 자체는 무변경) + `applyPackRounding(rows, products)`(TASKS T17이 `computeCsvReorderMetrics`로 `computeReorderMetrics`를 감싼 것과 같은 패턴으로 배열에 적용). **CSV/Excel 템플릿에도 선택 컬럼으로 추가**하기로 결정(사용자가 "우선 optional 컬럼으로" 선택) — `core/csvSchema.ts`에 `포장수량`(optional, 0 초과) 추가, `adapters/csvExcelParser.ts`가 `저재고임계치`와 같은 방식으로 같은 SKU 값 일관성을 검증해 `ProductRow.packSize`로 변환. 기존 템플릿(컬럼 없음)은 그대로 통과(하위 호환). **MCP 도구·에이전트 배선은 이번 스코프 밖**(T23과 동일한 결정) — T18 폴더 스캔의 알림 로직에 `applyPackRounding`을 실제로 연결하는 건 후속 태스크, 지금은 파싱 결과가 packSize를 담아 나른다는 것까지만 보장한다. golden case 8개(제안량→최종발주량/발주팩수) 전부 시트가 자체 계산해둔 값과 정확히 일치 확인. 상세는 `docs/SPEC.md` §14. check 통과(324 테스트 = 기존 304 + 신규 20).
 
 ## v0.2 백로그 — CSV/Excel 채널 (SPEC §12, 2026-09-03 설계)
 

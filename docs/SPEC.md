@@ -226,3 +226,22 @@ UTF-8을 기본 가정하지 않는다. 한국어 윈도우 엑셀 저장은 CP9
 - `src/core/scmSchema.ts` — 확인한 샘플 시트 "입출고내역" 탭 헤더 그대로(일자/구분/상품코드/상품명/수량/단가/거래처)를 zod로 검증하는 `scmReceiptRowSchema`, 그리고 구분=입고 행만 걸러 `PurchaseReceiptRow[]`로 변환하는 `mapScmRowsToPurchaseReceipts`.
 - `src/core/metrics.ts` — `computeStockReconciliation(inventory, purchases, sales, opts)`. `opts.openingStock`(키 `${storeId}:${variantId}`)로 기초재고를 명시할 수 있고, 없으면 0(그 시점부터 원장을 새로 시작한 것으로 취급 — 온보딩 시 1회 실사값을 입력받는 흐름은 이후 태스크).
 - 테스트: `tests/scmSchema.test.ts`, `tests/metrics.test.ts`(`computeStockReconciliation` describe), `tests/pgWarehouse.test.ts`(`purchase_receipts`/`queryPurchaseAgg`) — 골든 케이스 숫자(P001: 입고 30·판매 21·실사재고 9)는 실제 확인한 샘플 시트 값 그대로다.
+
+## 14. 팩 단위 반올림 (2026-09-03, v0.2 대기열 착수)
+
+`docs/TASKS.md` "v0.2 대기열"의 "팩 단위 반올림"을, 사용자가 §13 샘플 시트에 `포장수량(팩사이즈)` 컬럼과 검증용 계산 결과(계산 제안량/최종 발주량/발주 팩수)를 채워 업로드한 새 버전을 근거로 착수한다.
+
+### 배경
+
+`reorderQty()`(§2)가 계산하는 재주문 제안량은 개수 단위다. 실제 발주는 공급자가 정한 팩/박스 단위로만 가능한 경우가 많다 — 계산상 27개가 필요해도 24개입 1박스 단위로만 살 수 있으면 실제로는 48개(2박스)를 발주해야 한다. 이 기능은 그 후처리 단계다.
+
+### 구현
+
+- `migrations/005_product_pack_size.sql` — `products.pack_size`(nullable numeric, `pack_size > 0` 체크). 없으면 낱개 매입 가능한 품목으로 취급한다.
+- `core/types.ts` — `ProductRow.packSize`(optional). `lowStockThreshold`와 달리 **소스 중립적**이다(CSV/Excel 전용이 아니다) — 어느 채널이 채우든 상관없다.
+- `adapters/pgWarehouse.ts` — `upsertProductsOn`이 `pack_size`도 함께 upsert한다. `low_stock_threshold`와 같은 `coalesce` 패턴(TASKS T16) — 이 값을 안 채우는 upsert가 다른 채널이 이미 저장해둔 값을 조용히 지우지 않는다.
+- `core/metrics.ts` — **`reorderQty()` 자체는 건드리지 않는다.** 그 대신:
+  - `roundToPackMultiple(reorderQtyValue, packSize)` — §2의 5개 순수 수식과 나란한 순수 함수. `packSize`가 없으면 반올림 없이 그대로 반환(`packCount: null` — "팩 단위가 없다"와 "팩이 0개 필요하다"를 구분). 제안량이 0이면 `packSize`가 있어도 1팩으로 올리지 않는다(0팩).
+  - `applyPackRounding(rows, products)` — `computeReorderMetrics`(또는 `computeCsvReorderMetrics`의 history 행)가 만든 배열에 `(storeId,variantId)`로 조인한 `ProductRow.packSize`를 적용한다. TASKS T17이 `computeCsvReorderMetrics`로 `computeReorderMetrics`를 감싼 것과 같은 패턴 — 원본 함수는 변경 없음.
+- **CSV/Excel 템플릿에도 선택 컬럼으로 추가했다** — `core/csvSchema.ts`에 `포장수량`(optional, 0 초과)을 추가하고 `adapters/csvExcelParser.ts`가 `저재고임계치`와 같은 방식으로 같은 SKU의 값 일관성을 검증해 `ProductRow.packSize`로 변환한다. 기존 템플릿(이 컬럼이 없는 파일)은 그대로 통과한다 — 하위 호환. **T18 폴더 스캔의 실제 발주 알림 로직에 `applyPackRounding`을 연결하는 건 이번 스코프 밖**(에이전트 배선 제외, T23과 동일한 결정) — 지금은 파싱 결과가 `packSize`를 담아 나른다는 것까지만 보장한다.
+- 테스트: `tests/metrics.test.ts`(`roundToPackMultiple`/`applyPackRounding` describe — 골든 케이스는 §13 시트가 자체적으로 미리 계산해둔 8개 품목의 `계산 제안량→최종 발주량/발주 팩수` 값을 그대로 사용), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts`(`pack_size` upsert·coalesce).

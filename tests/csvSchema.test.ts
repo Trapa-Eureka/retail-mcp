@@ -118,6 +118,23 @@ describe("csvRowSchema / parseCsvRow", () => {
     });
   });
 
+  describe("포장수량 (SPEC §14 팩 단위 반올림)", () => {
+    it("생략하면 undefined다(낱개 매입 가능한 품목으로 취급)", () => {
+      const row = parseCsvRow(BASE);
+      expect(row.포장수량).toBeUndefined();
+    });
+
+    it("있으면 숫자로 파싱된다", () => {
+      const row = parseCsvRow({ ...BASE, 포장수량: "24" });
+      expect(row.포장수량).toBe(24);
+    });
+
+    it("0 이하이면 거부한다", () => {
+      expect(() => parseCsvRow({ ...BASE, 포장수량: "0" })).toThrow(/포장수량/);
+      expect(() => parseCsvRow({ ...BASE, 포장수량: "-1" })).toThrow(/포장수량/);
+    });
+  });
+
   describe("csvRowSchema (safeParse 직접 사용도 가능)", () => {
     it("실패 시 issues에 path가 채워진다", () => {
       const result = csvRowSchema.safeParse({ ...BASE, 매장명: "" });

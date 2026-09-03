@@ -120,6 +120,13 @@ export interface ProductRow {
    * optional로 둔다. 실제로 읽어 임계치 판정에 쓰는 것은 T17의 몫이다.
    */
   lowStockThreshold?: Numeric | null;
+  /**
+   * 공급자가 출고하는 최소 팩/박스 단위(SPEC §14, "팩 단위 반올림"). 없으면 낱개 매입이
+   * 가능하다는 뜻 — 재주문 제안량을 반올림하지 않는다. lowStockThreshold와 달리 CSV/Excel
+   * 채널 전용이 아니다(소스 중립적) — 어느 채널이 채우든 상관없다. 실제로 이 값을 채워
+   * 반올림에 쓰는 것은 core/metrics.ts의 roundToPackMultiple/applyPackRounding 몫이다.
+   */
+  packSize?: Numeric | null;
 }
 
 export interface SalesLineRow {
