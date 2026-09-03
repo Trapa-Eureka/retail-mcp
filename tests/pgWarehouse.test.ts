@@ -767,6 +767,38 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
+  describe("queryProducts (SPEC §14/TASKS T25 — packSize 등 ProductRow 전체 필드 조회)", () => {
+    beforeEach(async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
+    });
+
+    it("variantIds를 생략하면 전체 상품을 variant_id 순으로 반환한다", async () => {
+      const products = await warehouse.queryProducts();
+      expect(products.map((p) => p.variantId)).toEqual(["var_chips", "var_cola"]);
+      const cola = products.find((p) => p.variantId === "var_cola");
+      expect(cola).toMatchObject({ name: "코카콜라 500ml", sku: "SKU-COLA", packSize: "24" });
+    });
+
+    it("variantIds를 주면 그 상품만 반환한다(packSize 없는 상품은 null)", async () => {
+      const products = await warehouse.queryProducts(["var_chips"]);
+      expect(products).toEqual([
+        {
+          variantId: "var_chips",
+          itemId: "itm_chips",
+          name: "Piattos",
+          sku: "SKU-CHIPS",
+          category: "스낵",
+          lowStockThreshold: null,
+          packSize: null,
+        },
+      ]);
+    });
+
+    it("빈 배열을 주면 빈 결과를 반환한다(전체 조회와 구분)", async () => {
+      expect(await warehouse.queryProducts([])).toEqual([]);
+    });
+  });
+
   describe("읽기 전용 역할 분리", () => {
     beforeEach(async () => {
       await db.exec("create role app_readonly");

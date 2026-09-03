@@ -439,6 +439,37 @@ async function queryStoresOn(session: DbSession, storeId?: string): Promise<Stor
 }
 
 /**
+ * `variantIds`를 생략하면(undefined) 전체, 빈 배열을 주면 빈 결과(`= any('{}')`가 자연스럽게
+ * 그렇게 동작한다 — 별도 분기 불필요).
+ */
+async function queryProductsOn(session: DbSession, variantIds?: string[]): Promise<ProductRow[]> {
+  const { rows } = await session.query<{
+    variant_id: string;
+    item_id: string;
+    name: string;
+    sku: string | null;
+    category: string | null;
+    low_stock_threshold: string | null;
+    pack_size: string | null;
+  }>(
+    `select variant_id, item_id, name, sku, category, low_stock_threshold, pack_size
+     from products
+     where ($1::text[] is null or variant_id = any($1::text[]))
+     order by variant_id`,
+    [variantIds ?? null],
+  );
+  return rows.map((r) => ({
+    variantId: r.variant_id,
+    itemId: r.item_id,
+    name: r.name,
+    sku: r.sku,
+    category: r.category,
+    lowStockThreshold: r.low_stock_threshold,
+    packSize: r.pack_size,
+  }));
+}
+
+/**
  * 이중 발송 방지 예약 패턴(DESIGN §11.5): status='sending'은 **항상 새 INSERT로만** 시도한다.
  * `agent_send_log_run_id_active_idx`(run_id당 sending/sent 최대 1건)가 이 INSERT를 원자적
  * 잠금으로 만든다 — 같은 run_id로 이미 sending/sent 행이 있으면 unique violation으로 실패하고,
@@ -524,6 +555,7 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     queryPurchaseAgg: (q) => queryPurchaseAggOn(session, q),
     queryStock: (q) => queryStockOn(session, q),
     queryStores: (storeId) => queryStoresOn(session, storeId),
+    queryProducts: (variantIds) => queryProductsOn(session, variantIds),
     logAgentSend: (e) => logAgentSendOn(session, e),
   };
 }
@@ -571,6 +603,8 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     queryPurchaseAgg: (q) => withSession(provider, (session) => queryPurchaseAggOn(session, q)),
     queryStock: (q) => withSession(provider, (session) => queryStockOn(session, q)),
     queryStores: (storeId) => withSession(provider, (session) => queryStoresOn(session, storeId)),
+    queryProducts: (variantIds) =>
+      withSession(provider, (session) => queryProductsOn(session, variantIds)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
   };
 }

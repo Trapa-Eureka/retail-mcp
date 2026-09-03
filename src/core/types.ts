@@ -316,6 +316,12 @@ export interface Warehouse {
    * 존재하지 않는 store_id 필터 검증(T9 MCP 도구 공용)에 쓴다. storeId를 주면 그 매장만.
    */
   queryStores(storeId?: string): Promise<StoreRow[]>;
+  /**
+   * 상품 목록 조회(T25) — `sales_lines`/`inventory_levels` 조인만으로는 노출되지 않는
+   * `ProductRow` 전체 필드(특히 `packSize`, SPEC §14)를 읽어와야 하는 곳(예: 재주문 리포트의
+   * 팩 단위 반올림)에 쓴다. `variantIds`를 생략하면 전체, 빈 배열이면 빈 결과.
+   */
+  queryProducts(variantIds?: string[]): Promise<ProductRow[]>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
 }
 
@@ -348,6 +354,15 @@ export interface ReorderLineItem {
   /** null = 무한(∞) 커버 — 판매 없음. */
   daysOfCover: number | null;
   reorderQty: number;
+  /**
+   * 팩 단위 반올림(SPEC §14, TASKS T24/T25) — `ProductRow.packSize`가 없으면(낱개 매입
+   * 가능) `finalOrderQty === reorderQty`이고 `packSize`/`packCount`는 null.
+   */
+  packSize: number | null;
+  /** 실제 발주 가능한 수량(포장수량 배수로 올림). packSize가 없으면 reorderQty와 같다. */
+  finalOrderQty: number;
+  /** 발주할 팩(박스) 개수. packSize가 없으면 null. */
+  packCount: number | null;
 }
 
 export interface ReorderStoreSection {

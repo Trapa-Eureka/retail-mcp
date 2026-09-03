@@ -131,6 +131,10 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
               avgDailySales: 2,
               daysOfCover: 0,
               reorderQty: 42,
+              // PRODUCT_COLA/PRODUCT_CHIPS 둘 다 packSize를 안 줬다 — 낱개 매입 취급.
+              packSize: null,
+              finalOrderQty: 42,
+              packCount: null,
             },
           ],
         },
@@ -145,12 +149,29 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
               avgDailySales: 1,
               daysOfCover: 5,
               reorderQty: 16,
+              packSize: null,
+              finalOrderQty: 16,
+              packCount: null,
             },
           ],
         },
       ]);
       expect(report.dataLastSyncedAt).toEqual(new Date(NOW_ISO));
       expect(countSuggestions(report)).toBe(2);
+    });
+
+    it("packSize(포장수량, SPEC §14/TASKS T25)가 있으면 최종 발주량을 팩 배수로 올린다", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]); // 제안량 42 → 2팩=48
+      await seedSalesAndStock(warehouse);
+      const report = await buildReorderReport(
+        { warehouse, clock: createFixedClock(NOW_ISO) },
+        { businessTimezone: BUSINESS_TIMEZONE, storeId: "store_main" },
+      );
+      const cola = report.stores[0]?.items[0];
+      expect(cola?.reorderQty).toBe(42);
+      expect(cola?.packSize).toBe(24);
+      expect(cola?.finalOrderQty).toBe(48);
+      expect(cola?.packCount).toBe(2);
     });
   });
 

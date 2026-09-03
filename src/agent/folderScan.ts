@@ -22,9 +22,20 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeCsvReorderMetrics, type CsvMetricsOptions } from "../core/metrics.js";
+import {
+  applyPackRounding,
+  computeCsvReorderMetrics,
+  type CsvHistoryMetricRow,
+  type CsvMetricsOptions,
+} from "../core/metrics.js";
 import { exportSnapshotCsv } from "../core/snapshotExport.js";
-import type { AgentSendStatus, Clock, NotificationProvider, Warehouse } from "../core/types.js";
+import type {
+  AgentSendStatus,
+  Clock,
+  NotificationProvider,
+  ProductRow,
+  Warehouse,
+} from "../core/types.js";
 import { parseInventoryFile } from "../adapters/csvExcelParser.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { createSystemClock } from "../adapters/systemClock.js";
@@ -84,21 +95,46 @@ export interface FolderScanAlertItem {
   mode: "history" | "no_history";
   inStock: number;
   reason: string;
+  /**
+   * 팩 단위 반올림(SPEC §14, TASKS T25) — history 모드에서만 채워진다. no_history 모드는
+   * 판매이력이 없어 재주문 제안량 자체를 계산할 수 없다(T17 설계).
+   */
+  reorderQty?: number;
+  finalOrderQty?: number;
+  packCount?: number | null;
 }
 
-function alertsFrom(metrics: ReturnType<typeof computeCsvReorderMetrics>): FolderScanAlertItem[] {
+function alertsFrom(
+  metrics: ReturnType<typeof computeCsvReorderMetrics>,
+  products: ProductRow[],
+): FolderScanAlertItem[] {
+  // history 모드 행만 팩 단위 반올림 대상이다(no_history는 reorderQty 자체가 없다, T17).
+  const historyRows = metrics.filter((m): m is CsvHistoryMetricRow => m.mode === "history");
+  const packRoundedByKey = new Map(
+    applyPackRounding(historyRows, products).map((r) => [`${r.storeId}:${r.variantId}`, r]),
+  );
+
   const alerts: FolderScanAlertItem[] = [];
   for (const row of metrics) {
     if (row.mode === "history") {
       if (!row.stockoutRisk) continue;
       const cover = row.daysOfCover === null ? "∞" : row.daysOfCover.toFixed(1);
+      // applyPackRounding은 historyRows 전체를 1:1로 감쌌으므로 이 키는 항상 존재한다.
+      const rounded = packRoundedByKey.get(`${row.storeId}:${row.variantId}`)!;
+      const orderQtyText =
+        rounded.packSize !== null && rounded.packCount !== null
+          ? `, 제안수량 ${rounded.reorderQty} → 최종 발주량 ${rounded.finalOrderQty}(${rounded.packCount}팩)`
+          : `, 제안수량 ${rounded.reorderQty}`;
       alerts.push({
         storeId: row.storeId,
         variantId: row.variantId,
         name: row.name,
         mode: "history",
         inStock: row.inStock,
-        reason: `품절 위험 — 재고커버 ${cover}일`,
+        reason: `품절 위험 — 재고커버 ${cover}일${orderQtyText}`,
+        reorderQty: rounded.reorderQty,
+        finalOrderQty: rounded.finalOrderQty,
+        packCount: rounded.packCount,
       });
     } else {
       if (!row.belowThreshold) continue;
@@ -222,7 +258,7 @@ export async function runFolderScan(
     parsed.products,
     metricsOpts,
   );
-  const alerts = alertsFrom(metrics);
+  const alerts = alertsFrom(metrics, parsed.products);
 
   const snapshotFileName = opts.snapshotFileName ?? DEFAULT_SNAPSHOT_FILE_NAME;
   const snapshotPath = path.join(opts.snapshotDir, snapshotFileName);
