@@ -24,27 +24,21 @@
  * 목록(`src/core/auditAllowlist.ts`) 밖의 새 advisory가 나오면 여기서도 **fail-closed**로
  * 반드시 막는다.
  */
-import { execFileSync } from "node:child_process";
 import {
   ACCEPTED_ADVISORIES,
   checkAdvisoriesAgainstAllowlist,
   extractAdvisoryUrls,
   isValidAuditReport,
 } from "../core/auditAllowlist.js";
+import { runNpmAuditJsonWithRetry } from "./npmAudit.js";
 
-/** npm audit를 실행한다. 실행 자체가 실패하면(레지스트리 접근 불가 등) null을 반환한다. */
-export function runNpmAuditJson(): string | null {
-  try {
-    return execFileSync("npm", ["audit", "--omit=dev", "--json"], { encoding: "utf8" });
-  } catch (err) {
-    // npm audit는 취약점이 발견되기만 해도 0이 아닌 종료 코드로 끝난다 — 그 경우엔 JSON
-    // 리포트 자체가 stdout에 담겨 있다(진짜 실행 실패와 구분해야 한다).
-    const withStdout = err as { stdout?: unknown };
-    if (typeof withStdout.stdout === "string" && withStdout.stdout.trim().length > 0) {
-      return withStdout.stdout;
-    }
-    return null;
-  }
+/**
+ * npm audit를 실행한다(유효한 리포트를 못 얻으면 제한 재시도 — `npmAudit.ts` 참고). 끝까지 실행
+ * 자체가 실패하면(레지스트리 접근 불가 등) null을 반환한다. 재시도는 정책을 바꾸지 않는다 —
+ * 무효 결과에 대한 fail-open 판정은 여전히 `evaluateLockfileAudit`가 한다.
+ */
+export function runNpmAuditJson(): Promise<string | null> {
+  return runNpmAuditJsonWithRetry();
 }
 
 /**

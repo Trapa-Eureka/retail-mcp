@@ -24,6 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { runNpmAuditJsonWithRetry } from "../src/adapters/npmAudit.js";
 import {
   ACCEPTED_ADVISORIES,
   checkAdvisoriesAgainstAllowlist,
@@ -190,23 +191,29 @@ async function verifyMigrateBin(installDir: string): Promise<void> {
  * (TASKS T35) — `scripts/auditLockfile.ts`(CI 매 PR, dev lockfile 기준)도 같은 로직이
  * 필요해져서다. 여기 있던 승인 목록·근거·재검토 기한 주석도 그 파일로 옮겼다.
  */
-function verifyDependencyAudit(installDir: string): void {
+async function verifyDependencyAudit(installDir: string): Promise<void> {
   heading("6) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인");
-  let stdout: string;
-  try {
-    stdout = execFileSync("npm", ["audit", "--omit=dev", "--json"], {
-      cwd: installDir,
-      encoding: "utf8",
-    });
-  } catch (err) {
-    // npm audit는 취약점이 있으면 0이 아닌 종료 코드로 끝난다 — JSON 리포트 자체는 그래도
-    // stdout에 담겨 있다(execFileSync가 던지는 에러 객체가 들고 있다).
-    const withStdout = err as { stdout?: unknown };
-    if (typeof withStdout.stdout !== "string") throw err;
-    stdout = withStdout.stdout;
+  // 유효한 리포트를 못 얻으면 제한 재시도한다(`src/adapters/npmAudit.ts` — Node 22 러너의 npm이
+  // 폐기 예정 quick 엔드포인트로 fallback해 400을 받는 일시 실패가 CI에서 반복 관측됨). 재시도를
+  // 다 써도 무효면 아래 기존 fail-closed 판정이 그대로 적용된다 — 정책은 바뀌지 않는다.
+  const stdout = await runNpmAuditJsonWithRetry({ cwd: installDir });
+  if (stdout === null) {
+    throw new Error(
+      "npm audit 실행 자체가 재시도 후에도 실패했습니다(레지스트리 접근 불가 등으로 추정) — " +
+        "release gate는 이 상태를 통과시키지 않습니다. 네트워크 상태를 확인하고 다시 시도하세요.",
+    );
   }
 
-  const parsed: unknown = JSON.parse(stdout);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    throw new Error(
+      "npm audit 출력이 재시도 후에도 JSON으로 파싱되지 않습니다 — release gate는 이 상태를 " +
+        `통과시키지 않습니다.\n${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
   if (!isValidAuditReport(parsed)) {
     // SR2-AUD-001/002(2차 적대적 검수) — 예전엔 여기서도 {"error": {...}} 같은 무효 응답을
     // 파싱만 성공하면 "취약점 0건"으로 통과시켰다. 이 스크립트는 release gate(T37이 최종
@@ -265,7 +272,7 @@ async function main(): Promise<void> {
     await verifyMcpServerBin(installDir);
     await verifyOnboardBin(installDir);
     await verifyMigrateBin(installDir);
-    verifyDependencyAudit(installDir);
+    await verifyDependencyAudit(installDir);
     heading("전부 통과");
     console.log(`tarball fresh-install 검증 완료 (임시 디렉터리: ${workDir})`);
   } finally {
