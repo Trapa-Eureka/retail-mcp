@@ -128,7 +128,7 @@
 | SR2-CI-004 | P1 | branch protection/required checks 미검증 | **수동/사람**(저장소 설정) | GitHub ruleset `22244613`(main, PR 필수·required checks 7·bypass 0) — 저장소 밖 설정이라 테스트 불가. `docs/TASKS.md` T37 사람 확인 항목 + 확인 명령(`gh api repos/…/rules/branches/main`). 매 PR 머지가 ruleset을 통과하는 것이 상시 검증(#67이 첫 사례) | #67 |
 | SR2-CI-003 | P2 | job `timeout-minutes` 없음 | CI 전용(구성) | `ci.yml` 네 job의 `timeout-minutes`(test 50 / audit 30 / coverage 25 / postgres-component 15, 관측 최대치 약 2배 — 근거 주석 포함). 재조정 규칙은 TESTING.md §8. 검증은 매 PR의 CI가 상한 안에서 통과하는 것 | #69 |
 | SR2-LOCK-003 | P2 | release의 확인 후 삭제가 비원자적 | **ACCEPTED · 수동/사람** | 코드 변경 없음 — POSIX/Node 표준으로 원자적 "내용 일치 시 삭제"가 불가, 대안 3종(flock/rename/inode 재확인) 기각 근거는 `DESIGN.md` §12.8. 완화는 README "PGlite 락 복구"의 수동 복구 규약(삭제만, 실행 중 프로세스 있으면 금지). 경합은 결정적 재현 불가라 자동 테스트 없음; 기존 `tests/fileLock.test.ts`의 "release 시점에 다른 pid 소유면 지우지 않는다"가 비경합 경로의 소유권 검증을 고정 | #70 |
-| SR2-SEC-005 | P2 | 실제 사용 credential 종류 커버 부족(npm/GitHub token, `LOYVERSE_API_TOKEN` 값 등) | **예정** | `src/core/secretScan.ts` 패턴 확장 — 착수 시 `tests/secretScan.test.ts`에 종류별 케이스 추가 + `SECURITY.md`에 경량 스캐너 한계 명시 예정 | — |
+| SR2-SEC-005 | P2 | 실제 사용 credential 종류 커버 부족(npm/GitHub token, `LOYVERSE_API_TOKEN` 값 등) | 자동화됨 | `tests/secretScan.test.ts`("credential 커버리지 확장" describe 7 tests — LOYVERSE 대입식·GitHub·npm·Google·Bearer 탐지 + 오탐 방어 + 마커/preview 규칙, 자기 검증 유지). 한계는 `SECURITY.md` "자체 시크릿 스캐너의 한계" 항목 | #71 |
 
 **부수 조치(finding 아님)**: 위 PR들의 CI에서 관측된 환경 문제 3건 — `tests/performance.test.ts` 예산 5s→10s(#52), `vitest.config.ts` `hookTimeout` 20s(#57), `npm audit` 무효 리포트 제한 재시도 `src/adapters/npmAudit.ts` + `tests/npmAudit.test.ts`(#62). 원본 문서 머리의 "부수 조치" 줄 참고.
 

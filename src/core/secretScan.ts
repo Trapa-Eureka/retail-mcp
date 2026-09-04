@@ -12,6 +12,16 @@
  * 완벽한 시크릿 탐지가 목표가 아니다(엔트로피 분석 등은 하지 않는다) — 이 프로젝트가
  * 실제로 다루는 시크릿 형태(클라우드 키 접두사, PEM 블록, DB 연결 문자열의 자격증명)에
  * 한정한 목적 지향적 검사다.
+ *
+ * 커버 범위의 기준(2차 적대적 검수 SR2-SEC-005): `.env.example`의 시크릿 4종(가드레일 6 —
+ * `LOYVERSE_API_TOKEN`/`DATABASE_URL`/`RESEND_API_KEY`/`ANTHROPIC_API_KEY`) + CI/publish 흐름이
+ * 취급하는 자격증명(npm publish 토큰, GitHub 토큰, Actions 로그에 찍힐 수 있는 Bearer 헤더) +
+ * SCM 시트 연동에서 만날 수 있는 Google 자격증명(API 키, 서비스 계정 JSON). 이 저장소가 쓰지
+ * 않는 서비스(Slack 등)는 넣지 않는다 — 패턴은 "이 프로젝트가 실제로 다루는 것"에 한정한다는
+ * 원칙을 유지한다. 형식이 공개돼 있지 않은 Loyverse 토큰은 값 형태가 아니라 **대입식**
+ * (`LOYVERSE_API_TOKEN=<값>`)으로 잡는다 — 그래서 `.env.example`의 빈 값은 매치되지 않는다.
+ * 한계(SECURITY.md에도 명시): 알려진 접두사·대입식만 본다. 형식 없는 임의 문자열 시크릿
+ * (예: 변수명 없이 붙여 넣은 hex 토큰)은 잡지 못한다.
  */
 
 export interface SecretPattern {
@@ -29,6 +39,32 @@ export const SECRET_PATTERNS: SecretPattern[] = [
     name: "Postgres 연결 문자열(자격증명 포함)",
     regex: /\bpostgres(?:ql)?:\/\/[^:\s'"]+:[^@\s'"]+@[^\s'"]+/g,
   },
+  // ── SR2-SEC-005 추가분 ──────────────────────────────────────────────────
+  // Loyverse 액세스 토큰은 공개된 접두사/길이 형식이 없다(백오피스에서 발급하는 불투명 문자열).
+  // 그래서 값 형태 대신 "환경변수 이름에 실제 값을 대입한 줄"을 잡는다 — `.env`가 실수로
+  // 커밋되거나 문서/테스트에 진짜 값을 붙여 넣는 경우가 이 프로젝트에서 현실적인 유출 경로다.
+  // 값은 16자 이상만(짧은 placeholder·빈 값 제외), 따옴표는 있어도 없어도 된다. 공백은
+  // `[ \t]`로만 — `\s`는 줄바꿈까지 포함해서 `LOYVERSE_API_TOKEN=`(빈 값) 다음 줄의 텍스트를
+  // 값으로 오인했다(착수 중 docs/DESIGN.md의 .env 예시에서 실제 오탐 → 회귀 테스트).
+  {
+    name: "LOYVERSE_API_TOKEN 대입(실제 값)",
+    regex: /\bLOYVERSE_API_TOKEN[ \t]*[=:][ \t]*['"]?[A-Za-z0-9._~+/=-]{16,}/g,
+  },
+  // GitHub 토큰 — classic PAT/OAuth/user-to-server/server-to-server/refresh(접두사 + 36자)와
+  // fine-grained PAT(`github_pat_` + 82자, 여기서는 22자 이상으로 느슨하게).
+  { name: "GitHub 토큰", regex: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b/g },
+  { name: "GitHub fine-grained PAT", regex: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g },
+  // npm 액세스 토큰(granular/automation/publish 공통 접두사 `npm_` + 36자).
+  { name: "npm 액세스 토큰", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  // Google — API 키(`AIza` + 35자)와 서비스 계정 JSON(고유 키 이름 `private_key_id`가 있는 JSON
+  // 객체. 그 파일엔 PEM 개인키도 함께 들어 있어 위 PEM 패턴도 같이 걸리지만, PEM이 여러 줄로
+  // 쪼개져 있거나 escape된 `\n` 형태면 PEM 패턴은 놓칠 수 있어 키 이름으로도 잡는다).
+  { name: "Google API 키", regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { name: "Google 서비스 계정 JSON", regex: /"private_key_id"[ \t]*:[ \t]*"[0-9a-f]{20,}"/g },
+  // HTTP Authorization 헤더에 하드코딩된 Bearer 토큰(20자 이상). 코드의 `Bearer ${token}`
+  // 템플릿은 `$`가 문자 클래스에 없어 매치되지 않는다 — 실제 값이 붙어 있을 때만. 공백은
+  // 같은 줄로 한정(위 LOYVERSE 패턴과 같은 이유).
+  { name: "Bearer 토큰(하드코딩)", regex: /\bBearer[ \t]+[A-Za-z0-9._~+/=-]{20,}/g },
 ];
 
 /**

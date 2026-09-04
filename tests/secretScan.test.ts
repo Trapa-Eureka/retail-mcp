@@ -126,6 +126,109 @@ describe("scanContentForSecrets (QA-006, TASKS T35)", () => {
     expect(findings[0]?.matchPreview).not.toContain("MNOP");
   });
 
+  describe("credential 커버리지 확장(2차 적대적 검수 SR2-SEC-005)", () => {
+    // 전부 런타임 조합(SR2-SEC-002 규칙) — 이 파일 어느 줄에도 완성 패턴이 남지 않는다.
+    const tok36 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"; // 36자
+    const ghToken = (prefix: string): string => assemble(prefix, "_", tok36);
+    const ghFinePat = (): string => assemble("github_", "pat_", "11ABCDEFG0", tok36);
+    const npmToken = (): string => assemble("npm", "_", tok36);
+    const googleApiKey = (): string => assemble("AIza", "SyA1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q"); // 4+35
+    const saJson = (): string =>
+      assemble(
+        '{ "type": "service_account", "',
+        "private_key",
+        '_id": "',
+        "0123456789abcdef0123456789abcdef",
+        '" }',
+      );
+    const bearerLine = (token: string): string => assemble("Authorization: ", "Bearer", " ", token);
+    const loyverseAssign = (sep: string, value: string): string =>
+      assemble("LOYVERSE_", "API_TOKEN", sep, value);
+
+    it("LOYVERSE_API_TOKEN에 실제 값을 대입한 줄을 찾는다(.env 커밋·문서 붙여 넣기 경로)", () => {
+      const cases = [
+        loyverseAssign("=", "0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c"),
+        loyverseAssign(' = "', '0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c"'),
+        loyverseAssign(": '", "abcdefghijklmnopqrstuvwxyz'"),
+      ];
+      for (const content of cases) {
+        const findings = scanContentForSecrets(".env", content);
+        expect(
+          findings.map((f) => f.patternName),
+          `놓친 줄: ${content}`,
+        ).toEqual(["LOYVERSE_API_TOKEN 대입(실제 값)"]);
+      }
+    });
+
+    it("LOYVERSE_API_TOKEN의 빈 값·짧은 placeholder·env 읽기 코드는 오탐하지 않는다", () => {
+      const benign = [
+        loyverseAssign("=", ""), // .env.example 그대로
+        loyverseAssign("=", "your-token"), // 16자 미만
+        'const apiToken = process.env["LOYVERSE_API_TOKEN"];',
+        "LOYVERSE_API_TOKEN이 없습니다. Loyverse 백오피스 > 액세스 토큰에서 발급해 .env에 추가하세요.",
+        // 착수 중 실제 오탐(docs/DESIGN.md의 .env 예시): 빈 값 다음 줄에 16자 이상 텍스트가 오면
+        // `\s*`가 줄바꿈을 넘어 그걸 값으로 봤다 — 공백은 같은 줄로만 한정해야 한다.
+        [loyverseAssign("=", ""), "DATABASE_URL_PLACEHOLDER_NEXT_LINE"].join("\n"),
+        [loyverseAssign("=", ""), "", `${assemble("Bearer", " ")}\n${"x".repeat(30)}`].join("\n"),
+      ];
+      for (const content of benign) {
+        expect(scanContentForSecrets("a.ts", content), `오탐: ${content}`).toEqual([]);
+      }
+    });
+
+    it("GitHub 토큰(classic 5종 접두사, fine-grained PAT)을 찾는다", () => {
+      for (const prefix of ["ghp", "gho", "ghu", "ghs", "ghr"]) {
+        const findings = scanContentForSecrets("ci.yml", `token: ${ghToken(prefix)}`);
+        expect(
+          findings.map((f) => f.patternName),
+          prefix,
+        ).toEqual(["GitHub 토큰"]);
+      }
+      const fine = scanContentForSecrets("a.ts", `const t = "${ghFinePat()}";`);
+      expect(fine.map((f) => f.patternName)).toEqual(["GitHub fine-grained PAT"]);
+    });
+
+    it("npm 액세스 토큰을 찾고, npm_으로 시작하는 일반 식별자는 오탐하지 않는다", () => {
+      expect(
+        scanContentForSecrets(".npmrc", `//registry.npmjs.org/:_authToken=${npmToken()}`).map(
+          (f) => f.patternName,
+        ),
+      ).toEqual(["npm 액세스 토큰"]);
+      expect(scanContentForSecrets("a.ts", "const npm_audit_result = run();")).toEqual([]);
+      expect(
+        scanContentForSecrets("a.ts", `const short = "${assemble("npm_", "abc123")}";`),
+      ).toEqual([]);
+    });
+
+    it("Google API 키와 서비스 계정 JSON을 찾는다", () => {
+      expect(
+        scanContentForSecrets("a.ts", `key: "${googleApiKey()}"`).map((f) => f.patternName),
+      ).toEqual(["Google API 키"]);
+      expect(scanContentForSecrets("sa.json", saJson()).map((f) => f.patternName)).toEqual([
+        "Google 서비스 계정 JSON",
+      ]);
+    });
+
+    it("하드코딩된 Bearer 토큰은 찾고, 템플릿(`Bearer ${token}`)·짧은 값은 오탐하지 않는다", () => {
+      expect(
+        scanContentForSecrets("a.ts", bearerLine("eyJhbGciOiJIUzI1NiJ9.realTokenValue123")).map(
+          (f) => f.patternName,
+        ),
+      ).toEqual(["Bearer 토큰(하드코딩)"]);
+      // 실제 코드(loyverseClient.ts/resendProvider.ts)의 형태 — `$`가 문자 클래스에 없어 매치 안 됨.
+      expect(scanContentForSecrets("a.ts", "Authorization: `Bearer ${apiToken}`,")).toEqual([]);
+      expect(scanContentForSecrets("a.md", bearerLine("<token>"))).toEqual([]);
+      expect(scanContentForSecrets("a.md", bearerLine("abc"))).toEqual([]);
+    });
+
+    it("새 패턴도 secretscan-allow 마커와 matchPreview 8자 규칙을 그대로 따른다", () => {
+      const allowed = `${assemble("token: ", ghToken("ghp"))} // secretscan-allow: 픽스처`;
+      expect(scanContentForSecrets("a.ts", allowed)).toEqual([]);
+      const [finding] = scanContentForSecrets("a.ts", `t = ${ghToken("ghp")}`);
+      expect(finding?.matchPreview).toBe("ghp_ABCD...");
+    });
+  });
+
   it("자기 검증: 이 테스트 파일의 소스 자체를 스캔하면 발견 0건이다(SR2-SEC-002 — SELF_EXCLUDE 없이도 CI를 통과해야 한다)", () => {
     // scripts/secretScan.ts가 이 파일을 다른 파일과 똑같이 스캔한다. 여기서 실패하면
     // 누군가 완성된 시크릿 리터럴을 픽스처로 다시 넣었다는 뜻이다 — 위 assemble()류 헬퍼로
