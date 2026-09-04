@@ -40,8 +40,8 @@ src/
   etl/         # Loyverse 동기화 오케스트레이션 (LoyverseClient + Warehouse 조립, 커서 관리)
   adapters/    # loyverseClient, pgWarehouse, csvExcelParser, resendProvider, exploreSqlExecutor, fileLock, warehouseFactory, migratePg
   mocks/       # FixtureLoyverseClient, PGlite 웨어하우스 헬퍼, MockNotificationProvider, FixedClock
-  agent/       # reorder.ts(Loyverse 경로) / folderScan.ts(CSV/Excel 경로, 지점·본사 모드) — 스케줄 실행 진입점, 얇은 오케스트레이션만
-  cli/         # onboard.ts — 대화형 설정 CLI (`npm run onboard`) / migrate.ts — npm 배포 bin `retail-mcp-migrate`(SR2-REL-001)
+  agent/       # reorder.ts(Loyverse 경로) / folderScan.ts(CSV/Excel 경로, 지점·본사 모드) — 스케줄 실행 진입점, 얇은 오케스트레이션만. npm 배포 bin `retail-mcp-reorder`/`retail-mcp-scan`(T37 게시 전 점검에서 추가 — 설치 사용자가 핵심 기능을 실행할 명령이 없었음)
+  cli/         # onboard.ts — 대화형 설정 CLI (`npm run onboard`, bin `retail-mcp-onboard` — 발송 설정 Resend 키·발신 주소도 선택 질문) / migrate.ts — npm 배포 bin `retail-mcp-migrate`(SR2-REL-001)
   mcp/         # tools.ts — MCP 도구 로직(server.ts는 등록·조립만)
   server.ts    # MCP 서버 진입점 (도구 등록·조립만, 로직 없음)
 migrations/    # 001_init.sql ... 순번 SQL 파일

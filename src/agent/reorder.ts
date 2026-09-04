@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * 재주문 제안 에이전트 (DESIGN.md §7).
  *

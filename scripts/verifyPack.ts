@@ -4,7 +4,8 @@
  *
  * 저장소 소스가 아니라 **실제로 게시될 tarball**을 검증한다: 빌드 → `npm pack` → 완전히 새
  * 디렉터리에 `npm install --omit=dev`로 설치(개발 의존성 `tsx` 등이 없는 환경) → 설치된
- * `bin`(`retail-mcp`, `retail-mcp-onboard`, `retail-mcp-migrate`)을 실제로 실행해 확인한다.
+ * `bin`(`retail-mcp`, `retail-mcp-onboard`, `retail-mcp-migrate`, `retail-mcp-scan`,
+ * `retail-mcp-reorder`)을 실제로 실행해 확인한다.
  *
  * - `retail-mcp`: 실제 MCP 클라이언트로 stdio 연결해 `tools/list`가 운영 기본값(조회 도구
  *   5종만, `sync_now`/`explore_sql`은 비활성)과 일치하는지 확인한다.
@@ -118,7 +119,8 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
   await mkdir(onboardCwd, { recursive: true });
 
   // collectOnboardAnswers() 질문 순서 그대로: 모드 → DB 연결문자열(비우면 임베디드) →
-  // 감시폴더 → 스냅샷폴더 → 임계치(비우면 기본값) → 수신 이메일.
+  // 감시폴더 → 스냅샷폴더 → 임계치(비우면 기본값) → 수신 이메일 → Resend API 키(비우면 발송
+  // 설정 생략, 발신 주소는 묻지 않음).
   const answers = ["branch", "", "./watch", "./snapshot", "", "smoke@example.com", ""].join("\n");
 
   const { spawnSync } = await import("node:child_process");
@@ -178,6 +180,45 @@ async function verifyMigrateBin(installDir: string): Promise<void> {
 }
 
 /**
+ * T37 게시 전 점검(2026-09-04)에서 발견 — 설치 사용자가 핵심 기능(재고 파일 스캔 + 저재고 알림)을
+ * 실행할 명령이 tarball에 아예 없었다(`npm run agent:folder-scan`은 저장소 전용 스크립트). 두 에이전트를
+ * `retail-mcp-scan`/`retail-mcp-reorder` bin으로 노출하고, migrate bin과 같은 방식으로 "패키지에 있고
+ * 실행 가능하며 필수 설정이 없으면 원인+수정 방법이 담긴 에러로 종료하는가"를 확인한다. 실제 스캔·발송
+ * 경로는 tests/folderScan.test.ts·tests/reorderAgent.test.ts가 PGlite/목으로 검증한다.
+ */
+async function verifyAgentBin(
+  step: string,
+  binName: string,
+  envOverrides: { unset: string[]; set: Record<string, string> },
+  expectedMention: string,
+  installDir: string,
+): Promise<void> {
+  heading(`${step} ${binName} bin 실행 — 패키징·필수 설정 누락 시 안내 에러 확인`);
+  const binPath = path.join(installDir, "node_modules", ".bin", binName);
+  await assertExecutable(binPath);
+
+  const { spawnSync } = await import("node:child_process");
+  const env: Record<string, string | undefined> = { ...process.env, ...envOverrides.set };
+  for (const key of envOverrides.unset) delete env[key];
+  // 임베디드 PGlite가 cwd 아래 `.retail-mcp/data`를 만들 수 있도록 bin마다 별도 작업 폴더를 준다.
+  const runCwd = path.join(installDir, `${binName}-run`);
+  await mkdir(runCwd, { recursive: true });
+  const result = spawnSync(binPath, [], { cwd: runCwd, encoding: "utf8", env });
+
+  if (result.status === 0) {
+    throw new Error(
+      `${binName}가 필수 설정(${expectedMention}) 없이도 성공(exit 0)했습니다 — 누락 시 에러로 막는 가드가 깨졌을 수 있습니다.`,
+    );
+  }
+  if (!result.stderr.includes(expectedMention)) {
+    throw new Error(
+      `${binName}의 에러 메시지가 ${expectedMention}을 언급하지 않습니다:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+  }
+  console.log(`bin 실행 가능 확인 + ${expectedMention} 누락 시 안내 에러로 종료 확인됨`);
+}
+
+/**
  * SEC-006(005 검수, TASKS T32)의 "근거·만료일이 기록된 승인된 예외" — exceljs@4.4.0이 고정한
  * `uuid@^8.3.0`은 GHSA-w5hq-g745-h8pq(uuid v3/v5/v6에 buf를 넘길 때의 bounds check 결함,
  * 영향 범위 "<11.1.1")에 걸린다. exceljs는 `uuidv4()`를 인자 없이만 호출해(v4, buf 없음 —
@@ -199,7 +240,7 @@ async function verifyDependencyAudit(
   policy: AuditUnavailablePolicy,
 ): Promise<void> {
   heading(
-    `6) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인(불능 시: ${policy})`,
+    `8) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인(불능 시: ${policy})`,
   );
   // 유효한 리포트를 못 얻으면 제한 재시도한다(`src/adapters/npmAudit.ts` — 시도당 상한 90초).
   // 재시도를 다 써도 무효면 정책(`policy`)에 따라 갈린다 — 판정 자체는 순수 함수
@@ -276,6 +317,26 @@ async function main(): Promise<void> {
     await verifyMcpServerBin(installDir);
     await verifyOnboardBin(installDir);
     await verifyMigrateBin(installDir);
+    // retail-mcp-scan: 지점 모드에서 CSV_WATCH_DIR이 없으면 안내 에러. BUSINESS_TIMEZONE은 줘서
+    // 그 이전 단계에서 멈추지 않게 한다(어느 검사가 먼저 오든 "설정 안내 에러로 종료"가 핵심).
+    await verifyAgentBin(
+      "6)",
+      "retail-mcp-scan",
+      {
+        unset: ["CSV_MODE", "CSV_WATCH_DIR", "CSV_SNAPSHOT_DIR", "DATABASE_URL"],
+        set: { BUSINESS_TIMEZONE: "Asia/Manila", SEND_MODE: "dry_run" },
+      },
+      "CSV_WATCH_DIR",
+      installDir,
+    );
+    // retail-mcp-reorder(Loyverse 경로): BUSINESS_TIMEZONE이 없으면 첫 검사에서 안내 에러.
+    await verifyAgentBin(
+      "7)",
+      "retail-mcp-reorder",
+      { unset: ["BUSINESS_TIMEZONE", "DATABASE_URL"], set: { SEND_MODE: "dry_run" } },
+      "BUSINESS_TIMEZONE",
+      installDir,
+    );
     await verifyDependencyAudit(installDir, auditPolicy);
     heading("전부 통과");
     console.log(`tarball fresh-install 검증 완료 (임시 디렉터리: ${workDir})`);

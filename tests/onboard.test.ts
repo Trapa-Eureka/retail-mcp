@@ -38,6 +38,7 @@ describe("collectOnboardAnswers", () => {
       "/tmp/snapshot", // snapshotDir
       "10", // 임계치
       "owner@example.com", // recipient
+      "", // Resend API 키 비움 → 발송 설정 생략(발신 주소는 묻지 않음)
     ]);
     const answers = await collectOnboardAnswers(ask);
     expect(answers).toEqual({
@@ -47,6 +48,52 @@ describe("collectOnboardAnswers", () => {
       defaultLowStockThreshold: 10,
       recipient: "owner@example.com",
     });
+  });
+
+  it("이메일 발송 설정(선택) — Resend 키를 주면 발신 주소를 필수로 받고 둘 다 answers·.env 키에 들어간다(T37 게시 전 점검)", async () => {
+    const key = ["re_", "TestOnly0000000000000000000"].join(""); // 스캐너 오탐 방지용 런타임 조합
+    const ask = scriptedAsk([
+      "branch",
+      "",
+      "/tmp/watch",
+      "/tmp/snapshot",
+      "5",
+      "owner@example.com",
+      key, // Resend API 키
+      "not-an-email", // 발신 주소 형식 오류 → 재질문
+      "alerts@example.com", // 올바른 발신 주소
+    ]);
+    const answers = (await collectOnboardAnswers(ask)) as Extract<
+      OnboardAnswers,
+      { mode: "branch" }
+    >;
+    expect(answers.resendApiKey).toBe(key);
+    expect(answers.mailFrom).toBe("alerts@example.com");
+
+    const updates = envUpdatesFor(answers);
+    expect(updates["RESEND_API_KEY"]).toBe(key);
+    expect(updates["MAIL_FROM"]).toBe("alerts@example.com");
+    expect(updates["SEND_MODE"]).toBeUndefined(); // 온보딩은 발송 모드를 켜지 않는다 — 사람이 .env에서 직접 live로
+  });
+
+  it("Resend 키를 비우면 발신 주소를 묻지 않고 .env의 RESEND_API_KEY/MAIL_FROM 줄도 건드리지 않는다", async () => {
+    const ask = scriptedAsk([
+      "branch",
+      "",
+      "/tmp/watch",
+      "/tmp/snapshot",
+      "5",
+      "owner@example.com",
+      "",
+    ]);
+    const answers = await collectOnboardAnswers(ask);
+    const updates = envUpdatesFor(answers);
+    expect(updates["RESEND_API_KEY"]).toBeUndefined();
+    expect(updates["MAIL_FROM"]).toBeUndefined();
+    // 이미 .env에 채워둔 값이 있으면 그대로 보존된다(mergeEnvFile은 undefined를 무시).
+    const merged = mergeEnvFile("RESEND_API_KEY=keep-me\nMAIL_FROM=keep@example.com\n", updates);
+    expect(merged).toContain("RESEND_API_KEY=keep-me");
+    expect(merged).toContain("MAIL_FROM=keep@example.com");
   });
 
   it("본사 모드 — DATABASE_URL을 주면 answers에 포함된다", async () => {
@@ -67,6 +114,7 @@ describe("collectOnboardAnswers", () => {
       "/tmp/snapshot",
       "", // 임계치 비움 → 기본값
       "owner@example.com",
+      "", // 발송 설정 생략
     ]);
     const answers = (await collectOnboardAnswers(ask)) as Extract<
       OnboardAnswers,
@@ -89,6 +137,7 @@ describe("collectOnboardAnswers", () => {
       "/tmp/different", // 다시 답한 snapshotDir
       "5",
       "owner@example.com",
+      "", // 발송 설정 생략
     ]);
     const answers = (await collectOnboardAnswers(ask)) as Extract<
       OnboardAnswers,
@@ -107,6 +156,7 @@ describe("collectOnboardAnswers", () => {
       "5",
       "이메일아님", // 잘못된 형식 — 재질문 유발
       "owner@example.com", // 올바른 재답변
+      "", // 발송 설정 생략
     ]);
     const answers = (await collectOnboardAnswers(ask)) as Extract<
       OnboardAnswers,
@@ -224,6 +274,7 @@ describe("온보딩 결과로 T18(runFolderScan)이 그대로 기동한다", () 
       snapshotDir,
       "5",
       "owner@example.com",
+      "", // 발송 설정 생략
     ]);
     const answers = await collectOnboardAnswers(ask);
     const updates = envUpdatesFor(answers);

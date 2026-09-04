@@ -72,6 +72,13 @@ export interface BranchOnboardAnswers {
   defaultLowStockThreshold: number;
   recipient: string;
   databaseUrl?: string;
+  /**
+   * 이메일 발송 설정(선택, T37 게시 전 점검에서 추가) — 둘 다 있어야 실제 발송이 가능하다.
+   * 온보딩에서 비워두면 `retail-mcp-scan`은 미리보기(dry-run)만 하고, 나중에 `.env`에
+   * `RESEND_API_KEY`/`MAIL_FROM`을 채우면 된다. 값은 `.env`(0600)에만 쓰고 화면에 되풀이하지 않는다.
+   */
+  resendApiKey?: string;
+  mailFrom?: string;
 }
 
 export interface ConsolidatedOnboardAnswers {
@@ -129,6 +136,27 @@ export async function collectOnboardAnswers(ask: AskFn): Promise<OnboardAnswers>
     console.log(`"${recipient}"는 이메일 주소 형식이 아닙니다 — 다시 입력해주세요.`);
   }
 
+  // 이메일 발송 설정(선택). 실제 발송에는 Resend API 키와 발신 주소가 둘 다 필요하다 — 키를
+  // 비우면 미리보기(dry-run) 전용으로 안내하고 발신 주소는 묻지 않는다. 키를 줬는데 발신 주소가
+  // 없으면 발송이 실패하므로 그 경우엔 발신 주소를 필수로 받는다.
+  const resendApiKeyRaw = (
+    await ask(
+      "이메일 발송용 Resend API 키를 입력하세요(re_로 시작, resend.com > API Keys에서 발급). " +
+        "비워두면 지금은 미리보기(dry-run)만 하고 발송 설정은 나중에 .env에 채웁니다",
+    )
+  ).trim();
+  let mailFrom: string | undefined;
+  if (resendApiKeyRaw !== "") {
+    for (;;) {
+      mailFrom = await askRequired(
+        ask,
+        "발신 이메일 주소를 입력하세요(Resend에서 인증한 도메인의 주소, 예: alerts@내도메인.com)",
+      );
+      if (isLikelyEmail(mailFrom)) break;
+      console.log(`"${mailFrom}"는 이메일 주소 형식이 아닙니다 — 다시 입력해주세요.`);
+    }
+  }
+
   return {
     mode,
     watchDir,
@@ -136,6 +164,8 @@ export async function collectOnboardAnswers(ask: AskFn): Promise<OnboardAnswers>
     defaultLowStockThreshold,
     recipient,
     ...(databaseUrl !== undefined ? { databaseUrl } : {}),
+    ...(resendApiKeyRaw !== "" ? { resendApiKey: resendApiKeyRaw } : {}),
+    ...(mailFrom !== undefined ? { mailFrom } : {}),
   };
 }
 
@@ -192,6 +222,9 @@ export function envUpdatesFor(answers: OnboardAnswers): Record<string, string | 
     CSV_SNAPSHOT_DIR: answers.snapshotDir,
     CSV_DEFAULT_LOW_STOCK_THRESHOLD: String(answers.defaultLowStockThreshold),
     REPORT_RECIPIENT: answers.recipient,
+    // 비우면 undefined → mergeEnvFile이 기존 줄을 건드리지 않는다(이미 채워둔 값 보존).
+    RESEND_API_KEY: answers.resendApiKey,
+    MAIL_FROM: answers.mailFrom,
   };
 }
 
@@ -287,8 +320,17 @@ async function main(): Promise<void> {
       );
     }
 
+    // 설치 사용자(npm bin)와 저장소 개발자(npm run) 둘 다 보는 안내라 두 명령을 함께 적는다.
+    const hasSending = answers.mode === "branch" && answers.resendApiKey !== undefined;
     console.log(
-      "온보딩 완료 — 이제 `npm run agent:folder-scan`으로 1회 실행해 확인하세요(기본은 SEND_MODE=dry_run이라 실제 발송은 되지 않습니다).",
+      [
+        "온보딩 완료.",
+        "다음: 같은 폴더에서 `retail-mcp-scan`(저장소에서는 `npm run agent:folder-scan`)을 한 번 실행해 결과를 확인하세요.",
+        "  기본은 미리보기(SEND_MODE=dry_run)라 이메일은 나가지 않고 화면에만 표시됩니다.",
+        hasSending
+          ? "실제 발송을 켜려면 .env의 SEND_MODE를 live로 바꾸고, 처음 한 번은 직접 `retail-mcp-scan --confirm`을 실행해 수신을 확인한 뒤 자동 실행(cron)에 등록하세요."
+          : '실제 발송을 켜려면 .env에 RESEND_API_KEY와 MAIL_FROM을 채우고 SEND_MODE를 live로 바꾼 뒤, 처음 한 번은 직접 `retail-mcp-scan --confirm`을 실행해 수신을 확인하세요(README "5. 이메일 발송 켜기").',
+      ].join("\n"),
     );
   } finally {
     rl.close();
