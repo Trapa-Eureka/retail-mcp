@@ -5,7 +5,7 @@
 - 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
 - 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
 - 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 5/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003, SR2-SEC-004). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
+- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). P1 6/10 RESOLVED(SR2-CI-001 — 순서상 앞당겨 처리, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003, SR2-SEC-004, SR2-AUD-003). 나머지는 각 항목 아래 상태 참고 — 없으면 아직 OPEN. 다음 단계: 남은 P1 9건(MAIL-002/003, SEC-002~005, AUD-003, CI-002~004, LOCK-002) → 회귀 테스트 정리 → P2 3건(LOCK-003, SEC-005 중복 표기 확인, 나머지) → T37.
 - **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록. **후속(2026-09-04, SR2-MAIL-002 작업 중 관측)**: 같은 원인(PGlite 기동 지연)이 `vitest.config.ts`의 `hookTimeout`(기본 10초) 쪽에 그대로 남아 있었다 — `createTestWarehouse()`는 대부분 `beforeEach` hook 안에서 실행돼 `testTimeout`(이미 20초)이 아니라 `hookTimeout`이 적용된다. 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"로 실패(격리 재실행은 통과). `hookTimeout: 20_000`으로 맞췄다.
 
 ## 실행 검증
@@ -134,6 +134,7 @@ const productionKey = "sk-ant-실제키값"; // example
 - 근거: `2027-03-03` 재검토 기한은 주석에만 있고 allowlist 데이터에는 만료일이 없다.
 - 영향: 기한이 지나도 CI는 계속 같은 advisory를 자동 승인한다.
 - 수정 기준: allowlist를 `{url, expiresAt, rationale}` 구조로 만들고 기준 시계가 만료일 이상이면 실패시킨다.
+- **RESOLVED**: `src/core/auditAllowlist.ts`의 `ACCEPTED_ADVISORY_URLS`(URL 문자열 배열, 기한은 주석에만)를 `ACCEPTED_ADVISORIES: {url, expiresAt: "2027-03-03", rationale}[]`로 구조화했다(URL 배열은 파생값으로 유지). `checkAdvisoriesAgainstAllowlist(advisoryUrls, allowlist, now)`가 기준 시각을 **명시적으로 받아**(CLAUDE.md "날짜 계산은 Clock으로, 로컬 시계 암묵 의존 금지") 결과에 `expired: [{url, expiresAt}]`를 추가 — 만료된 승인은 허용으로 치지 않는다. 만료 경계는 "만료일 당일 UTC 00:00부터 실패"(`isAdvisoryExpired`, 형식이 잘못된 날짜는 오타가 영구 승인이 되지 않도록 만료로 취급). 두 호출자 모두 만료를 **fail-closed**로: `auditLockfile.ts`(매 PR 게이트)는 기한·조치를 담은 실패 문자열, `verifyPack.ts`(release gate)는 throw("기한이 지난 예외로는 게시하지 않습니다") — 무효 리포트에 대한 기존 fail-open/closed 정책은 그대로. `verifyPack.ts`의 하드코딩된 "재검토 기한 2027-03-03" 문구도 데이터에서 파생. 테스트: `tests/auditAllowlist.test.ts` — 기한 전날 23:59:59.999Z는 승인, 당일 00:00:00Z부터 `expired`(unexpected와 별개 카테고리), 리포트에 안 나오면 기한이 지나도 무관, 실제 `ACCEPTED_ADVISORIES` 데이터의 형식·미만료 검증, `isAdvisoryExpired` 형식 오류 케이스; `tests/auditLockfile.test.ts` — 기한 당일 같은 리포트가 실패 문자열(기한·URL·조치 포함), 하루 전은 통과. 전부 고정 시각 주입, 실제 시계 의존 0. `docs/005` SEC-006 문구를 "기한이 CI에서 기계적으로 집행됨"으로 갱신.
 
 ---
 

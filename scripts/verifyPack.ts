@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
-  ACCEPTED_ADVISORY_URLS,
+  ACCEPTED_ADVISORIES,
   checkAdvisoriesAgainstAllowlist,
   extractAdvisoryUrls,
   isValidAuditReport,
@@ -219,22 +219,38 @@ function verifyDependencyAudit(installDir: string): void {
     );
   }
   const advisoryUrls = extractAdvisoryUrls(parsed);
-  const { unexpected, noneFound } = checkAdvisoriesAgainstAllowlist(advisoryUrls);
+  // 만료 판정 기준 시각은 여기서 한 번 명시적으로 잡는다(SR2-AUD-003) — release gate는 사람이
+  // 실행하는 시점의 시스템 시계가 맞다.
+  const { unexpected, expired, noneFound } = checkAdvisoriesAgainstAllowlist(
+    advisoryUrls,
+    ACCEPTED_ADVISORIES,
+    new Date(),
+  );
   if (unexpected.length > 0) {
     throw new Error(
       `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${unexpected.join(", ")} — ` +
         "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
     );
   }
+  if (expired.length > 0) {
+    // SR2-AUD-003 — 승인 예외의 재검토 기한이 지났다. 예전엔 기한이 주석에만 있어 지나도
+    // release gate가 계속 통과시켰다. 게시 직전 판단이므로 fail-closed.
+    throw new Error(
+      "승인된 audit 예외의 재검토 기한이 지났습니다: " +
+        expired.map((e) => `${e.url}(기한 ${e.expiresAt})`).join(", ") +
+        " — 근본 해결(의존성 업그레이드/대체)하거나, 재검토 후 근거를 갱신하고 " +
+        "src/core/auditAllowlist.ts ACCEPTED_ADVISORIES의 expiresAt을 연장하세요(docs/005 SEC-006). " +
+        "기한이 지난 예외로는 게시하지 않습니다.",
+    );
+  }
   if (noneFound) {
     console.log(
       "취약점 0건 — exceljs/uuid 승인된 예외(SEC-006)가 더 이상 필요 없을 수 있습니다. " +
-        "docs/005와 src/core/auditAllowlist.ts의 ACCEPTED_ADVISORY_URLS를 갱신하세요.",
+        "docs/005와 src/core/auditAllowlist.ts의 ACCEPTED_ADVISORIES를 갱신하세요.",
     );
   } else {
-    console.log(
-      `승인된 예외만 확인됨(${ACCEPTED_ADVISORY_URLS.join(", ")}) — docs/005 SEC-006, 재검토 기한 2027-03-03.`,
-    );
+    const described = ACCEPTED_ADVISORIES.map((a) => `${a.url}(재검토 기한 ${a.expiresAt})`);
+    console.log(`승인된 예외만 확인됨(${described.join(", ")}) — docs/005 SEC-006.`);
   }
 }
 
