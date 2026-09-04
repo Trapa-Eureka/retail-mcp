@@ -28,7 +28,7 @@
 | REL-004 | 배포 allowlist 없이 97개 파일 게시 | 자동화됨 | `scripts/verifyPack.ts` 1단계(`npm pack --dry-run` 파일 목록) |
 | REL-005 | 라이선스/메타데이터 없음 | 수동/사람 | `package.json`/`LICENSE` — 값 자체는 사람이 확정, 자동 회귀 대상 아님 |
 | REL-006 | 설치/업그레이드/제거 문서 없음 + 외부 DATABASE_URL migration CLI 부재(SR2-REL-001) | 해소(T36 문서화 → 2026-09-04 `retail-mcp-migrate` bin으로 코드까지 완전 해결) | README 문서 작업 + `scripts/verifyPack.ts`(bin 실행·에러 경로) + `tests/component/postgres.component.test.ts`(real Postgres 적용·멱등성) + `tests/warehouseFactory.test.ts`/`tests/migrateRunner.test.ts`(PGlite 단위) |
-| REL-007 | publish 전 자동 게이트 없음 | 부분 자동화(T29) → CI 전용 예정(T37) | `prepack`이 `build` 자동 호출. `verify:pack`은 T35의 `test` job(OS/Node matrix)에서 매 PR 실행 — `prepublishOnly` 연결은 T37 |
+| REL-007 | publish 전 자동 게이트 없음 | 자동화됨(T29 → T37 완결, 2026-09-04) | `prepack`이 `build` 자동 호출. `verify:pack`은 T35의 `test` job(OS/Node matrix)에서 매 PR 실행. T37에서 `prepublishOnly: npm run check && npm run verify:pack` 연결 — `npm publish`가 어디서 실행돼도 게이트를 건너뛸 수 없다(회귀는 publish 시도 자체가 드러냄) |
 | REL-008 | 패키지명/소유권 미검증 | 수동/사람 | scope 채택(`@trapa-eureka/retail-mcp`)으로 위험 완화, `npm whoami` 확인은 T37에서 사람이 |
 
 ## SEC — 보안/의존성 (`docs/005`, 담당 T30/T32/T35)
