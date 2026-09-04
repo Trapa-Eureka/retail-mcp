@@ -11,18 +11,20 @@ name: Release (npm publish with provenance)
 # 일치해야 하고(아래 검증 step), 실제 게시 전 `prepublishOnly`(npm run check && npm run verify:pack —
 # 플래그 없음 = tarball audit fail-closed)가 자동으로 돈다. 즉 "태그 push → 전체 gate → 게시" 순서다.
 #
-# 인증 2단계(npm 문서 기준):
-#   1) 첫 게시(패키지가 아직 없음): repo secret `NPM_TOKEN`(npmjs.com granular access token,
-#      쓰기 권한을 이 패키지/scope로 한정, 2FA "automation" 허용)을 `NODE_AUTH_TOKEN`으로 쓴다.
-#      --provenance는 토큰 인증에서도 OIDC로 별도 생성된다(`id-token: write`).
-#   2) 첫 게시 뒤: npmjs.com 패키지 설정 → Trusted Publisher에 이 저장소(Trapa-Eureka/retail-mcp)와
-#      워크플로 파일명(release.yml), environment(npm-publish)를 등록하면 장기 토큰 없이 OIDC만으로
-#      게시된다(npm CLI 11.5.1+ 필요 — 그때 아래 "npm 버전 고정" step의 주석을 풀고 `NPM_TOKEN`
-#      secret과 `NODE_AUTH_TOKEN` 줄을 지운다). trusted publisher는 패키지 설정 화면에서 등록하므로
-#      패키지가 먼저 존재해야 한다 — 그래서 1)이 먼저다.
+# 인증(npm 문서 기준) — 2단계 중 2단계 상태:
+#   1) 첫 게시(v0.1.0, 2026-09-04): 패키지가 아직 없어 trusted publisher를 등록할 수 없었으므로
+#      repo secret `NPM_TOKEN`(npmjs.com granular access token)을 `NODE_AUTH_TOKEN`으로 썼다.
+#   2) 지금(첫 게시 뒤): npmjs.com 패키지 설정 → Trusted Publisher에 이 저장소(Trapa-Eureka/retail-mcp)·
+#      워크플로 파일명(release.yml)·environment(npm-publish)가 등록돼 있고, 게시는 장기 토큰 없이
+#      OIDC만으로 이뤄진다 — `npm publish`가 GitHub의 OIDC id-token을 npm 레지스트리의 단기 토큰으로
+#      교환한다(npm CLI 11.5.1+ 필요 → 아래 "npm 버전 고정" step). `NPM_TOKEN` secret과
+#      `NODE_AUTH_TOKEN` 줄은 제거됐다. 이 워크플로에는 이제 어떤 장기 자격증명도 없다.
+#      등록이 빠져 있으면 publish가 `ENEEDAUTH`/404(token exchange)로 실패하고 아무것도 게시되지
+#      않는다 — 그때는 npmjs.com 패키지 설정에서 trusted publisher 등록을 확인한다.
 #
 # 권한: 워크플로 전역은 `contents: read`(SR2-CI-001 원칙). `id-token: write`는 publish job에만 —
-# provenance 서명에 필요한 OIDC 토큰 발급 권한이고 저장소에 아무것도 쓰지 않는다.
+# provenance 서명과 trusted publishing 토큰 교환에 필요한 OIDC 토큰 발급 권한이고 저장소에
+# 아무것도 쓰지 않는다.
 
 on:
   push:
@@ -57,9 +59,17 @@ jobs:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
           # 릴리스 빌드는 캐시를 쓰지 않는다(npm 문서 권고) — 재현성.
+          # setup-node v7부터 `NODE_AUTH_TOKEN`을 더미 값으로 export하지 않는다(PR #1558). 그래서
+          # 위 registry-url이 쓰는 .npmrc의 `_authToken=${NODE_AUTH_TOKEN}`은 게시 외 step에서
+          # 미해결 문자열로 남는데, npm 10.9.9/11.6.2/11.19.1 모두 읽기(`npm ci`/`npm view`)에는
+          # 영향이 없음을 확인했다(2026-09-04, 로컬 재현). publish는 OIDC 교환 토큰이 이를 덮어쓴다.
 
-      # 2단계(trusted publishing)로 전환할 때 주석 해제: 러너의 npm 10.x는 OIDC 게시를 모른다.
-      # - run: npm install -g npm@11.6.2
+      - name: npm 버전 고정(trusted publishing은 npm CLI 11.5.1+에서만 동작)
+        # 러너의 Node 22가 번들하는 npm 10.x는 OIDC 토큰 교환을 모른다 — 이 step이 없으면 publish가
+        # 조용히 토큰 인증으로 떨어져 `ENEEDAUTH`로 실패한다. `@latest` 대신 고정 버전(SR2-CI-002 원칙).
+        run: |
+          npm install -g npm@11.19.1
+          npm -v
 
       - name: 태그가 package.json 버전과 일치하는지 확인
         # `v0.1.0` 태그 ↔ `"version": "0.1.0"`. 다르면 게시하지 않는다 — 버전을 올리지 않고 태그만
@@ -75,9 +85,7 @@ jobs:
       - run: npm ci
 
       - name: npm publish --provenance (prepublishOnly가 check + verify:pack을 먼저 실행)
-        env:
-          # 1단계 인증 — 첫 게시 뒤 trusted publisher를 등록하면 이 두 줄과 secret을 지운다.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # 인증은 trusted publishing(OIDC)뿐 — env에 토큰이 없다. 위 헤더 주석 "인증" 참고.
         run: npm publish --provenance --access public
 
       - name: 게시 확인(레지스트리에서 다시 읽기)
