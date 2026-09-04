@@ -13,6 +13,8 @@
 - CSV/Excel 폴더 감시 채널(v0.2, 다음 실제 출시 대상) — 지점 모드(저재고 알림 + 일일 다이제스트 보장)와 본사 모드(다지점 통합 조회), 대화형 온보딩 CLI(`npm run onboard`).
 - SCM 입고 실적 대사(재고 정합성 검증, CSV 폴백), 팩 단위(포장수량) 반올림.
 - 임베디드 PGlite를 웨어하우스 기본값으로 채택 — `DATABASE_URL` 없이도 동작(Neon 등 계정 생성 불필요).
+- npm 설치 사용자용 실행 명령 5종 — `retail-mcp`(MCP 서버), `retail-mcp-onboard`(설정), `retail-mcp-scan`(재고 파일 스캔 + 저재고 알림), `retail-mcp-reorder`(Loyverse 재주문 제안), `retail-mcp-migrate`(외부 DB 마이그레이션). `retail-mcp-scan`/`retail-mcp-reorder`는 게시 직전 점검에서 "설치하면 핵심 기능을 실행할 명령이 없다"는 간극이 발견돼 추가(2026-09-04).
+- `retail-mcp-onboard`가 이메일 발송 설정(Resend API 키·발신 주소)을 선택 단계로 함께 묻는다 — 비워두면 미리보기(dry-run) 전용으로 안내.
 - `explore_sql`(임의 read-only SQL 조회 도구) — 함수 블록리스트 + `BEGIN READ ONLY` 이중 방어, 운영 기본값 비활성.
 - CI(`.github/workflows/ci.yml`) — OS/Node 지원 matrix, coverage threshold, 실 Postgres 컴포넌트 테스트, dependency audit/secret scan/SBOM.
 

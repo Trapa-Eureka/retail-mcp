@@ -23,7 +23,7 @@
 | ID | 요약 | 상태 | 근거/테스트 |
 |---|---|---|---|
 | REL-001 | `private:true`가 publish를 막음 | 자동화됨 | `package.json`(private 제거, scope/access 확정) — 회귀는 `npm pack`이 즉시 드러냄 |
-| REL-002 | 설치자가 실행할 bin/main이 없음 | 자동화됨 | `scripts/verifyPack.ts`(bin 2종 실제 spawn 확인) |
+| REL-002 | 설치자가 실행할 bin/main이 없음 | 자동화됨 | `scripts/verifyPack.ts`(bin 5종 실제 spawn 확인 — T37 게시 전 점검(2026-09-04)에서 핵심 기능용 `retail-mcp-scan`/`retail-mcp-reorder`가 빠져 있던 간극을 발견해 추가, 6·7단계) |
 | REL-003 | 배포물이 TS인데 tsx가 devDependency | 자동화됨 | `scripts/verifyPack.ts`(`--omit=dev` 설치 후 bin 실행 성공이 곧 회귀 증거) |
 | REL-004 | 배포 allowlist 없이 97개 파일 게시 | 자동화됨 | `scripts/verifyPack.ts` 1단계(`npm pack --dry-run` 파일 목록) |
 | REL-005 | 라이선스/메타데이터 없음 | 수동/사람 | `package.json`/`LICENSE` — 값 자체는 사람이 확정, 자동 회귀 대상 아님 |

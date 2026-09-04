@@ -25,7 +25,9 @@
   "bin": {
     "retail-mcp": "dist/server.js",
     "retail-mcp-onboard": "dist/cli/onboard.js",
-    "retail-mcp-migrate": "dist/cli/migrate.js"
+    "retail-mcp-migrate": "dist/cli/migrate.js",
+    "retail-mcp-scan": "dist/agent/folderScan.js",
+    "retail-mcp-reorder": "dist/agent/reorder.js"
   },
   "main": "dist/server.js",
   "files": [
@@ -52,7 +54,7 @@
     "onboard": "tsx src/cli/onboard.ts",
     "smoke": "tsx scripts/smoke.ts",
     "clean": "rm -rf dist",
-    "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js dist/cli/migrate.js",
+    "build": "npm run clean && tsc -p tsconfig.build.json && chmod +x dist/server.js dist/cli/onboard.js dist/cli/migrate.js dist/agent/folderScan.js dist/agent/reorder.js",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check && npm run verify:pack",
     "verify:pack": "tsx scripts/verifyPack.ts",

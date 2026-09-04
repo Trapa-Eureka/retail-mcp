@@ -25,6 +25,8 @@
   - tarball을 임시 디렉터리에 설치해 `npx <bin> --help` 또는 MCP initialize까지 검증한다.
 - **해결(T29)**: `bin`에 `retail-mcp`(`dist/server.js`)·`retail-mcp-onboard`(`dist/cli/onboard.js`) 등록, `main: "dist/server.js"`. `exports`(라이브러리 계약)는 범위 밖으로 명시적으로 제외(DESIGN §12.1 — CLI/MCP 서버 제품으로만 배포). tarball fresh-install + MCP initialize + onboard 실행까지 `scripts/verifyPack.ts`(QA-001)로 검증 — 이 과정에서 두 가지 실제 결함을 추가로 발견·수정했다: (1) `isMainModule` 판정이 `process.argv[1] === fileURLToPath(import.meta.url)`로 심볼릭 링크(npm bin)를 통과하면 항상 false가 되어 `main()`이 전혀 실행되지 않던 결함(`src/adapters/mainModule.ts`로 분리, realpath 비교로 수정), (2) `readline/promises`의 `rl.question()`을 파이프 입력으로 반복 호출하면 첫 질문만 응답받고 이후는 영원히 멈추는 Node 자체의 알려진 동작(`createReadlineAsk()`로 비동기 이터레이터 소비 방식으로 교체).
 
+- **후속(T37 게시 전 점검, 2026-09-04)**: T29의 `bin` 2종(+SR2-REL-001의 migrate)은 MCP 서버·설정·마이그레이션만 다뤘고, **설치 사용자가 핵심 기능(재고 파일 스캔 + 저재고 알림, Loyverse 재주문 제안)을 실행할 명령이 tarball에 없었다** — README가 안내하던 `npm run agent:folder-scan`은 저장소 전용 스크립트다. `retail-mcp-scan`(`dist/agent/folderScan.js`)·`retail-mcp-reorder`(`dist/agent/reorder.js`)를 bin으로 추가하고(shebang, build chmod), `scripts/verifyPack.ts` 6·7단계가 두 bin의 실행 가능 여부와 필수 설정 누락 시 안내 에러를 확인한다. 이 finding의 검증 기준("tarball을 설치해 bin을 실제로 실행")을 통과하고도 제품이 쓸 수 없었던 이유는 검증 대상 bin 목록이 "존재하는 bin"이었지 "제품이 필요로 하는 진입점"이 아니었기 때문 — 앞으로 bin을 추가할 땐 README의 사용자 절차와 대조한다.
+
 ## REL-003 — 배포물이 TypeScript 소스인데 실행기 `tsx`는 devDependency임
 
 - 심각도: **치명적**

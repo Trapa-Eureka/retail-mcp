@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * CSV/Excel 폴더 스캔 에이전트 — 지점 모드 + 본사 통합 모드(SPEC §12 "실행 모델"·"연결 채널:
  * 폴더 감시만"·"다지점 헤드오피스 통합 조회", CSV_MODE=branch|consolidated로 선택, 기본 branch).
