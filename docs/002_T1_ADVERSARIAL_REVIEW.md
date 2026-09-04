@@ -1,89 +1,89 @@
-# 002 — T1 적대적 검수 기록
+# 002 — T1 Adversarial Review Record
 
-- 검수일: 2026-09-02
-- 대상 커밋: `585ca4d` (`T1: Migrations + domain types (#1)`)
-- 판정(검수 당시): **실패 — 기본 테스트는 통과하지만 무결성·원자성·멱등 보장에 구조적 결함 존재**
-- 현재 상태(2026-09-03 재확인, docs/009 DOC-005 대응): **RESOLVED** — 아래 "재검수 완료 기준" 전 항목 [x], `fix-t1` 브랜치(2026-09-02)로 병합. 두 항목(Warehouse 트랜잭션 실제 구현, 발송 예약 패턴 실사용)은 문서 각주대로 T4·T8에서 마저 검증돼 종결됐다(둘 다 DONE, TASKS.md).
-- 범위: `migrations/001_init.sql`, `scripts/migrate.ts`, `src/core/types.ts`, PGlite 테스트
+- Review date: 2026-09-02
+- Target commit: `585ca4d` (`T1: Migrations + domain types (#1)`)
+- Verdict (at time of review): **Failure — basic tests pass, but there are structural defects in the integrity, atomicity, and idempotency guarantees**
+- Current status (re-confirmed 2026-09-03, in response to docs/009 DOC-005): **RESOLVED** — every item under "Re-review completion criteria" below is [x]; merged via the `fix-t1` branch (2026-09-02). The two items (actual implementation of the Warehouse transaction, real use of the send reservation pattern) were verified to completion in T4 and T8 respectively, as the footnotes in this document state, and are closed (both DONE, TASKS.md).
+- Scope: `migrations/001_init.sql`, `scripts/migrate.ts`, `src/core/types.ts`, PGlite tests
 
-## 발견 002-01 — `inventory_snapshots`의 참조 무결성이 제거됨
+## Finding 002-01 — Referential integrity of `inventory_snapshots` was removed
 
-- 심각도: **높음**
-- 영역: DB 스키마
-- 증거:
-  - DESIGN §2의 원래 스키마는 snapshot의 `store_id`, `variant_id`가 각각 `stores`, `products`를 참조한다.
-  - 실제 `001_init.sql`의 `inventory_snapshots`에는 두 외래키가 없다.
-- 영향: 존재하지 않는 매장·상품의 스냅샷이 적재되어 시계열 집계가 현재고/상품 마스터와 불일치할 수 있다.
-- 요구 조치: 두 외래키를 복원하고 orphan insert가 실패하는 마이그레이션 테스트를 추가한다.
+- Severity: **High**
+- Area: DB schema
+- Evidence:
+  - In the original schema in DESIGN §2, the snapshot's `store_id` and `variant_id` reference `stores` and `products` respectively.
+  - The actual `inventory_snapshots` in `001_init.sql` has neither foreign key.
+- Impact: Snapshots for non-existent stores/products can be loaded, so time-series aggregates can diverge from current inventory / the product master.
+- Required action: Restore both foreign keys and add a migration test in which an orphan insert fails.
 
-## 발견 002-02 — Warehouse 계약으로는 DESIGN §11.1의 원자적 ETL을 표현할 수 없음
+## Finding 002-02 — The Warehouse contract cannot express the atomic ETL of DESIGN §11.1
 
-- 심각도: **치명적**
-- 영역: `src/core/types.ts`의 `Warehouse`
-- 증거:
-  - DESIGN은 한 리소스의 data upsert와 watermark 갱신을 같은 트랜잭션에서 커밋하도록 요구한다.
-  - 인터페이스는 `upsert*()`와 `setCursor()`를 독립 호출로만 제공한다.
-  - 트랜잭션 callback, unit-of-work 또는 리소스 단위 atomic 메서드가 없다.
-- 영향: T7이 현재 계약만 사용하면 “데이터 적재 성공 후 cursor 저장 실패” 또는 그 반대 상태를 막을 수 없다. 부분 실패 재개와 정확한 증분 동기화가 구조적으로 보장되지 않는다.
-- 요구 조치: 예를 들어 `warehouse.transaction(fn)` 또는 `commitResourceSync({ rows, watermark, ... })`처럼 원자성 경계를 계약에 포함하고 PGlite rollback 테스트를 추가한다.
+- Severity: **Critical**
+- Area: `Warehouse` in `src/core/types.ts`
+- Evidence:
+  - DESIGN requires that a resource's data upsert and watermark update be committed in the same transaction.
+  - The interface only offers `upsert*()` and `setCursor()` as independent calls.
+  - There is no transaction callback, unit-of-work, or per-resource atomic method.
+- Impact: If T7 uses only the current contract, it cannot prevent the state "data load succeeded, then cursor save failed" or the reverse. Partial-failure resumption and exact incremental sync are not structurally guaranteed.
+- Required action: Include the atomicity boundary in the contract — for example `warehouse.transaction(fn)` or `commitResourceSync({ rows, watermark, ... })` — and add a PGlite rollback test.
 
-## 발견 002-03 — `run_id` unique index는 이메일 중복 발송을 막지 못함
+## Finding 002-03 — The `run_id` unique index does not prevent duplicate email sends
 
-- 심각도: **높음**
-- 영역: `agent_send_log`, DESIGN §11.5 구현 해석
-- 증거:
-  - unique index는 `status = 'sent'`인 로그 행이 이미 DB에 있을 때만 중복 기록을 거부한다.
-  - provider가 이메일 발송에 성공하고 DB 로그 기록 전에 프로세스가 죽으면 성공 행은 존재하지 않는다.
-  - 재실행은 동일 이메일을 다시 보낸 후에야 로그를 기록하려 한다.
-- 영향: 문서와 SQL 주석이 주장하는 “provider 성공 후 로그 기록 실패 상황의 이중 발송 방지”가 성립하지 않는다.
-- 요구 조치: 발송 전에 원자적으로 예약 상태(`sending`)를 확보하고 상태 머신으로 전이하거나, provider가 지원하는 idempotency key를 사용한다. crash recovery 정책과 동시 실행 테스트가 필요하다.
+- Severity: **High**
+- Area: `agent_send_log`, implementation interpretation of DESIGN §11.5
+- Evidence:
+  - The unique index rejects a duplicate record only when a log row with `status = 'sent'` already exists in the DB.
+  - If the provider succeeds in sending the email and the process dies before the DB log is written, no success row exists.
+  - A re-run attempts to write the log only after it has sent the same email again.
+- Impact: The "prevention of double sends when log recording fails after provider success" claimed by the docs and the SQL comment does not hold.
+- Required action: Atomically claim a reservation state (`sending`) before sending and transition via a state machine, or use an idempotency key supported by the provider. A crash-recovery policy and concurrent-execution tests are needed.
 
-## 발견 002-04 — 마이그레이션 동시 실행 경쟁 조건
+## Finding 002-04 — Race condition in concurrent migration execution
 
-- 심각도: **높음**
-- 영역: `runMigrations`
-- 증거:
-  - 적용 목록을 트랜잭션 밖에서 한 번 조회한다.
-  - 두 프로세스가 동시에 시작하면 둘 다 같은 migration을 미적용으로 판단하고 DDL을 실행할 수 있다.
-  - advisory lock 또는 migration 전용 lock이 없다.
-- 영향: 배포 작업이 겹치면 relation already exists/PK 충돌로 한 실행이 실패하며, 더 복잡한 DDL에서는 예측하기 어려운 배포 상태가 된다.
-- 요구 조치: 세션 단위 advisory lock을 획득한 동일 client에서 전체 실행을 수행하고 동시 실행 테스트를 추가한다.
+- Severity: **High**
+- Area: `runMigrations`
+- Evidence:
+  - The applied list is queried once, outside the transaction.
+  - If two processes start simultaneously, both can judge the same migration as unapplied and execute the DDL.
+  - There is no advisory lock or migration-specific lock.
+- Impact: When deployment jobs overlap, one run fails with relation already exists / PK conflicts, and with more complex DDL the deployment state becomes hard to predict.
+- Required action: Perform the entire run on the same client that acquired a session-level advisory lock, and add a concurrent-execution test.
 
-## 발견 002-05 — 실패 시 명시적 rollback 및 동일 client 보장이 없음
+## Finding 002-05 — No explicit rollback on failure and no same-client guarantee
 
-- 심각도: **높음**
-- 영역: `createPgExecutor`, `runMigrations`
-- 증거:
-  - `begin; ... commit;`을 하나의 SQL 문자열로 `pool.query()`에 전달한다.
-  - 오류 경로에 명시적 `ROLLBACK`이 없다.
-  - executor가 transaction-bound `PoolClient`가 아니라 `Pool`을 감싼다.
-- 영향: PostgreSQL 오류가 COMMIT 전에 발생했을 때 세션이 aborted transaction 상태로 풀에 반환될 위험이 있고, 후속 쿼리가 다른 connection을 사용하면 rollback/상태 확인도 보장할 수 없다. PGlite 통과만으로 실제 `pg.Pool` 동작을 증명하지 못한다.
-- 요구 조치: `pool.connect()`로 client를 고정하고 `try { BEGIN ... COMMIT } catch { ROLLBACK } finally { release }` 패턴을 사용한다. 실제 Postgres 호환 component test 또는 주입 client의 호출 순서 테스트를 추가한다.
+- Severity: **High**
+- Area: `createPgExecutor`, `runMigrations`
+- Evidence:
+  - `begin; ... commit;` is passed to `pool.query()` as a single SQL string.
+  - There is no explicit `ROLLBACK` on the error path.
+  - The executor wraps a `Pool`, not a transaction-bound `PoolClient`.
+- Impact: When a PostgreSQL error occurs before COMMIT, there is a risk that the session is returned to the pool in an aborted-transaction state, and if subsequent queries use a different connection, neither rollback nor state verification can be guaranteed. Passing on PGlite alone does not prove actual `pg.Pool` behavior.
+- Required action: Pin a client with `pool.connect()` and use the `try { BEGIN ... COMMIT } catch { ROLLBACK } finally { release }` pattern. Add a real-Postgres-compatible component test or a call-order test with an injected client.
 
-## 발견 002-06 — 적용된 마이그레이션의 내용 변조를 감지하지 못함
+## Finding 002-06 — Tampering with the content of applied migrations is not detected
 
-- 심각도: **중간**
-- 영역: `schema_migrations`
-- 증거: 적용 이력은 파일명 `id`만 저장하고 checksum을 저장하지 않는다.
-- 영향: 이미 적용된 `001_init.sql`이 나중에 수정돼도 운영 DB에서는 조용히 skip되어 새 환경과 기존 환경의 스키마가 갈라진다.
-- 요구 조치: SQL checksum을 저장·검증하고, 적용된 migration의 checksum 불일치 시 수정 방법이 담긴 오류로 중단한다.
+- Severity: **Medium**
+- Area: `schema_migrations`
+- Evidence: The applied history stores only the filename `id`, not a checksum.
+- Impact: If an already-applied `001_init.sql` is modified later, it is silently skipped on the production DB, and the schema of new environments diverges from existing ones.
+- Required action: Store and verify a SQL checksum, and abort with an error containing the fix instructions when an applied migration's checksum does not match.
 
-## 발견 002-07 — `createTestWarehouse`가 실제 migration runner 경로를 우회
+## Finding 002-07 — `createTestWarehouse` bypasses the actual migration runner path
 
-- 심각도: **중간**
-- 영역: `src/mocks/pglite.ts`
-- 증거: helper가 SQL 파일을 직접 `db.exec()`하며 `loadMigrations/runMigrations`를 사용하지 않는다.
-- 영향: 대부분의 이후 테스트가 migration ordering, filename 검증, 이력 테이블 및 runner 결함을 통과하지 않고도 운영과 동일하다고 오인할 수 있다.
-- 요구 조치: helper가 공용 runner를 사용하도록 통합하고 `schema_migrations` 적용 이력까지 확인한다.
+- Severity: **Medium**
+- Area: `src/mocks/pglite.ts`
+- Evidence: The helper runs the SQL files directly with `db.exec()` and does not use `loadMigrations/runMigrations`.
+- Impact: Most subsequent tests can be mistaken for production-equivalent without ever passing through migration ordering, filename validation, the history table, or runner defects.
+- Required action: Consolidate so the helper uses the shared runner, and verify the `schema_migrations` applied history as well.
 
-## 재검수 완료 기준
+## Re-review completion criteria
 
-- [x] snapshot orphan insert 거부 — `inventory_snapshots.store_id`/`variant_id`에 FK 복원, 테스트 추가
-- [x] 리소스 data + watermark 원자 커밋/rollback 테스트 — `Warehouse.transaction(fn)` 계약을 `core/types.ts` + `DESIGN.md` §4/§11.1에 추가. **주의: 이 계약은 T1(인터페이스) 수준에서만 확정됐다. 실제 BEGIN/COMMIT/ROLLBACK 구현과 그 rollback 동작 검증은 T4(pgWarehouse)에서 완료된다 — T1에는 구현체가 없다.**
-- [x] 동시 migration 실행이 직렬화됨 — `withAdvisoryLock`으로 `pg_advisory_lock`/`unlock`을 감싸고 단일 `client`(pool이 아님)에서 전체 실행. 단, PGlite는 단일 세션이라 진짜 다른 두 프로세스 간 경합은 여기서 증명할 수 없다 — lock 획득→실행→해제 순서(에러 시에도 해제)만 fake client로 단위 검증했고, 실제 동시 프로세스 직렬화는 `npm run migrate`를 실제 Postgres에 대해 실행하는 T11 스모크에서 확인해야 한다.
-- [x] 실패 시 동일 client에서 rollback 후 정상 쿼리 가능 — PGlite로 재현: 마이그레이션 중간 실패 → 명시적 ROLLBACK → 같은 executor로 후속 쿼리 정상 동작 테스트
-- [x] migration checksum 불일치 감지 — `schema_migrations.checksum`(sha256) 추가, 불일치 시 원인+수정법이 담긴 에러로 중단
-- [x] 발송 전 crash 및 동시 재시도에서 중복 발송 0건을 만들 수 있는 계약 확정 — `agent_send_log`에 `sending` 상태 추가, `run_id`당 `sending`/`sent` 최대 1건 부분 unique 인덱스로 예약 패턴 구현. **주의: 스키마 수준 계약이며, T8이 실제로 `provider.send()` 전에 `sending` insert를 먼저 커밋해야 효력이 있다 — T8 완료 기준에 반영 필요.**
-- [x] `npm run check` 통과 (23 tests passed)
+- [x] Snapshot orphan insert rejected — FKs restored on `inventory_snapshots.store_id`/`variant_id`, test added
+- [x] Resource data + watermark atomic commit/rollback test — `Warehouse.transaction(fn)` contract added to `core/types.ts` + `DESIGN.md` §4/§11.1. **Note: this contract is only finalized at the T1 (interface) level. The actual BEGIN/COMMIT/ROLLBACK implementation and verification of its rollback behavior are completed in T4 (pgWarehouse) — T1 has no implementation.**
+- [x] Concurrent migration runs are serialized — `withAdvisoryLock` wraps `pg_advisory_lock`/`unlock` and the entire run executes on a single `client` (not the pool). However, PGlite is single-session, so real contention between two separate processes cannot be proven here — only the acquire → run → release order (release even on error) was unit-verified with a fake client; actual serialization of concurrent processes must be confirmed in the T11 smoke that runs `npm run migrate` against real Postgres.
+- [x] After failure, rollback on the same client and normal queries possible — reproduced with PGlite: mid-migration failure → explicit ROLLBACK → test that subsequent queries on the same executor work normally
+- [x] Migration checksum mismatch detected — added `schema_migrations.checksum` (sha256); on mismatch, aborts with an error containing the cause + fix
+- [x] Contract finalized that can achieve 0 duplicate sends under a pre-send crash and concurrent retries — added a `sending` status to `agent_send_log`, implemented the reservation pattern with a partial unique index of at most 1 `sending`/`sent` per `run_id`. **Note: this is a schema-level contract; it only takes effect if T8 actually commits the `sending` insert before `provider.send()` — must be reflected in T8's completion criteria.**
+- [x] `npm run check` passes (23 tests passed)
 
-해결 커밋: `fix-t1` 브랜치 (2026-09-02). 위 굵은 글씨로 표시한 두 항목(Warehouse 트랜잭션 실제 구현, 발송 예약 패턴 실사용)은 각각 T4·T8에서 마저 검증해야 완전히 종결된다.
+Resolution commit: `fix-t1` branch (2026-09-02). The two items marked in bold above (actual implementation of the Warehouse transaction, real use of the send reservation pattern) are fully closed only after being verified further in T4 and T8 respectively.

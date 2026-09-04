@@ -1,232 +1,232 @@
-# 010 — 2차 적대적 검수 (T29~T36)
+# 010 — Second Adversarial Review (T29~T36)
 
-- 검수일: 2026-09-03
-- 대상 커밋: `92ad7d0`(T29) ~ `0064f01`(T36)
-- 집중 범위: GitHub Actions CI, 자체 secret/audit 도구, `fileLock`, Resend 멱등성, npm 패키지의 migration CLI 간극
-- 제외: 변경되지 않은 T0~T27 전체 재검수, 실제 `npm publish`
-- 판정: **T37 진행 전 수정 필요 — P0 6건, P1 10건, P2 3건(총 19건)**
-- 처리 진행 상황: **P0 6/6 전부 RESOLVED**(SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). **P1 10/10 전부 RESOLVED**(SR2-CI-001, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003, SR2-SEC-004, SR2-AUD-003, SR2-CI-002, SR2-LOCK-002, SR2-MAIL-003, SR2-CI-004 — 마지막은 저장소 설정 변경으로 사용자 명시 승인 후 적용). **회귀 테스트 정리 완료(2026-09-04)**: 19건 전부를 `docs/010_FINDING_TEST_CROSSREF.md` "SR2" 절에 ID·상태·테스트·PR로 대조했다 — 코드로 해결한 13건은 finding ID가 `describe`/`it` 이름에 들어간 테스트가 기본 게이트에서 돈다(REL-001의 real Postgres 케이스만 CI 전용), CI-001/002/004는 구성·저장소 설정이라 테스트 대신 실행 로그·ruleset 통과가 검증. **P2 3/3 처리**(SR2-CI-003 RESOLVED, SR2-LOCK-003 ACCEPTED — 코드로 닫을 수 없는 잔여 위험을 복구 규약으로, SR2-SEC-005 RESOLVED). **2차 검수 19/19 종결(RESOLVED 18 · ACCEPTED 1).** 다음 단계: T37(사용자 확인 후 진행, `npm publish`는 별도 명시 승인).
-- **부수 조치(finding 아님, 사용자 지시로 처리)**: SR2-MAIL-001 PR의 CI에서 `tests/performance.test.ts`의 5초 예산이 `--coverage` 없는 plain `test` job에서도 반복 실패(5015/5165/5300/5392ms, 한 워크플로에서 job 2개 동시 실패)하는 걸 확인 — T36에서 coverage job은 이미 제외했지만 예산 값 자체가 CI 공유 러너 기준으로 너무 빡빡했다. 5초→10초(`BUDGET_MS`)로 올렸다. `docs/TESTING.md` §4에 근거 기록. **후속(2026-09-04, SR2-MAIL-002 작업 중 관측)**: 같은 원인(PGlite 기동 지연)이 `vitest.config.ts`의 `hookTimeout`(기본 10초) 쪽에 그대로 남아 있었다 — `createTestWarehouse()`는 대부분 `beforeEach` hook 안에서 실행돼 `testTimeout`(이미 20초)이 아니라 `hookTimeout`이 적용된다. 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"로 실패(격리 재실행은 통과). `hookTimeout: 20_000`으로 맞췄다. **후속 2(2026-09-04, SR2-AUD-003 PR #61의 CI에서 관측)**: `verify:pack`의 `npm audit` 단계가 Node 22 러너(npm 10.9.8)에서 3회 시도 중 3회 실패(ubuntu-22 ×1, macOS-22 ×2) — npm이 bulk advisory 실패 시 폐기 예정인 `/-/npm/v1/security/audits/quick`으로 fallback하고 레지스트리가 `400 + npm-notice: This endpoint is being retired`로 거절, SR2-AUD-001의 fail-closed가 설계대로 게이트를 막음. Node 20(npm 10.8.2) job은 0회 실패. 코드 결함이 아니라 외부 레지스트리 상태라 `src/adapters/npmAudit.ts`에 **유효한 리포트를 못 얻은 경우에만** 제한 재시도(3회, 2s 지수 백오프)를 넣고 `auditLockfile.ts`/`verifyPack.ts` 둘 다 이걸 쓰게 했다 — 유효한 리포트(취약점 유무 무관)는 즉시 반환·재시도 없음, 끝까지 무효면 마지막 결과를 그대로 넘겨 기존 fail-open(PR 게이트)/fail-closed(release gate) 정책은 그대로. `run`/`sleep` 주입으로 테스트는 네트워크·대기 0. **후속 3(2026-09-04, T37 중 관측 — 사용자 지시로 처리)**: 같은 날 macOS 러너에서 `verify:pack`의 tarball `npm audit`이 레지스트리 `read ECONNRESET`으로 3회 연속 실패하는 사례가 3번(PR #61 계열, main run 33841569631, PR #72) — 매번 재실행으로 통과했고 fail-closed는 설계대로였지만 **시도당 6~7분**이 걸려 job이 37분까지 늘어났다(test job 상한 50분). 원인은 npm 기본값(`fetch-timeout` 300초, `fetch-retries` 2, 재시도 간격 최대 60초, 실측 `npm config get`으로 확인) — 응답 없는 연결을 만날 때마다 5분을 기다린다. `src/adapters/npmAudit.ts`에 ① `NPM_AUDIT_FETCH_FLAGS`(fetch-timeout 30초·retries 1·간격 2~10초)를 CLI 플래그로 넘기고 ② `perAttemptTimeoutMs`(기본 90초, SIGKILL)로 프로세스 자체를 강제 종료하도록 바꿨다 — 최악 3회 × 90초 + 백오프 ≈ 5분이 새 상한(예전 19분+). 정책은 그대로(시간 초과 = 실행 실패 = 재시도 대상, 끝까지 무효면 호출자의 fail-open/closed). 대안 ⓑ(CI matrix에서 tarball audit을 ubuntu만 실행)는 채택하지 않았다 — 실패가 macOS에서만 났지만 원인은 레지스트리라 ubuntu도 언제든 같은 대기를 겪을 수 있고, 게이트 내용을 OS별로 다르게 만들면 "모든 지원 OS에서 같은 release gate"라는 verify:pack의 목적이 흐려진다. `tests/npmAudit.test.ts` +4(플래그·상한 값 범위, 멈추는 node 스크립트로 강제 종료 재현 — 네트워크 0, non-zero exit의 stdout 보존, 시간 초과 시도 뒤 재시도).
+- Review date: 2026-09-03
+- Target commits: `92ad7d0` (T29) ~ `0064f01` (T36)
+- Focus: GitHub Actions CI, in-house secret/audit tooling, `fileLock`, Resend idempotency, the migration CLI gap in the npm package
+- Excluded: full re-review of the unchanged T0~T27, the actual `npm publish`
+- Verdict: **Fixes required before proceeding to T37 — 6 P0, 10 P1, 3 P2 (19 total)**
+- Progress: **P0 6/6 all RESOLVED** (SR2-SEC-001, SR2-AUD-001, SR2-AUD-002, SR2-MAIL-001, SR2-LOCK-001, SR2-REL-001). **P1 10/10 all RESOLVED** (SR2-CI-001, SR2-MAIL-002, SR2-SEC-002, SR2-SEC-003, SR2-SEC-004, SR2-AUD-003, SR2-CI-002, SR2-LOCK-002, SR2-MAIL-003, SR2-CI-004 — the last one changes repository settings and was applied after explicit user approval). **Regression test cross-reference complete (2026-09-04)**: all 19 findings are cross-referenced by ID, status, test and PR in the "SR2" section of `docs/010_FINDING_TEST_CROSSREF.md` — for the 13 resolved in code, tests whose `describe`/`it` names carry the finding ID run in the default gate (only REL-001's real Postgres case is CI-only); CI-001/002/004 are configuration/repository settings, so verification is by execution logs and ruleset passing instead of tests. **P2 3/3 handled** (SR2-CI-003 RESOLVED, SR2-LOCK-003 ACCEPTED — residual risk that cannot be closed in code is covered by a recovery protocol, SR2-SEC-005 RESOLVED). **Second review 19/19 closed (RESOLVED 18 · ACCEPTED 1).** Next step: T37 (proceed after user confirmation; `npm publish` requires separate explicit approval).
+- **Side action (not a finding; handled at user instruction)**: In the CI of the SR2-MAIL-001 PR we confirmed that the 5-second budget in `tests/performance.test.ts` was failing repeatedly even in the plain `test` job without `--coverage` (5015/5165/5300/5392ms; two jobs failing simultaneously in one workflow) — T36 had already excluded the coverage job, but the budget value itself was too tight for CI shared runners. Raised it from 5s to 10s (`BUDGET_MS`). Rationale recorded in `docs/TESTING.md` §4. **Follow-up (2026-09-04, observed while working on SR2-MAIL-002)**: the same cause (PGlite startup delay) remained untouched on the `hookTimeout` side (default 10s) of `vitest.config.ts` — `createTestWarehouse()` mostly runs inside `beforeEach` hooks, so `hookTimeout` applies rather than `testTimeout` (already 20s). Under local parallel load, three unrelated suites failed with "Hook timed out in 10000ms" (they pass when re-run in isolation). Aligned it to `hookTimeout: 20_000`. **Follow-up 2 (2026-09-04, observed in the CI of SR2-AUD-003 PR #61)**: the `npm audit` step of `verify:pack` failed 3 out of 3 attempts on Node 22 runners (npm 10.9.8) (ubuntu-22 ×1, macOS-22 ×2) — when the bulk advisory request fails, npm falls back to the soon-to-be-retired `/-/npm/v1/security/audits/quick`, and the registry rejects it with `400 + npm-notice: This endpoint is being retired`; SR2-AUD-001's fail-closed blocked the gate as designed. The Node 20 (npm 10.8.2) jobs failed 0 times. Since this is external registry state rather than a code defect, we added bounded retries (3 attempts, 2s exponential backoff) to `src/adapters/npmAudit.ts` **only for the case where a valid report could not be obtained**, and made both `auditLockfile.ts` and `verifyPack.ts` use it — a valid report (regardless of whether vulnerabilities exist) is returned immediately with no retry; if it is still invalid at the end, the last result is passed through as-is, so the existing fail-open (PR gate)/fail-closed (release gate) policies are unchanged. With `run`/`sleep` injection the tests use 0 network and 0 waiting. **Follow-up 3 (2026-09-04, observed during T37 — handled at user instruction)**: on the same day there were 3 cases (the PR #61 series, main run 33841569631, PR #72) on macOS runners where the tarball `npm audit` of `verify:pack` failed 3 consecutive times with registry `read ECONNRESET` — each passed on re-run and fail-closed behaved as designed, but **each attempt took 6~7 minutes**, stretching the job to 37 minutes (test job cap is 50 minutes). The cause is npm's defaults (`fetch-timeout` 300s, `fetch-retries` 2, retry interval up to 60s, confirmed by actually running `npm config get`) — it waits 5 minutes every time it hits an unresponsive connection. Changed `src/adapters/npmAudit.ts` to ① pass `NPM_AUDIT_FETCH_FLAGS` (fetch-timeout 30s · retries 1 · interval 2~10s) as CLI flags and ② force-kill the process itself via `perAttemptTimeoutMs` (default 90s, SIGKILL) — the worst case of 3 × 90s + backoff ≈ 5 minutes is the new cap (previously 19+ minutes). Policy unchanged (timeout = execution failure = retry candidate; if still invalid at the end, the caller's fail-open/closed applies). Alternative ⓑ (run the tarball audit only on ubuntu in the CI matrix) was not adopted — the failures occurred only on macOS, but the cause is the registry, so ubuntu could hit the same wait at any time, and making the gate's content differ per OS would blur verify:pack's purpose of "the same release gate on every supported OS". `tests/npmAudit.test.ts` +4 (flag and cap value ranges, reproducing the force-kill with a hanging node script — 0 network, preserving stdout on non-zero exit, retry after a timed-out attempt).
 
-## 실행 검증
+## Execution Verification
 
-| 검증 | 결과 |
+| Check | Result |
 |---|---|
-| `npm run check` | 통과 |
-| Vitest | 42 files, 522 tests 통과 |
-| `npm run secret-scan` | 통과(추적 파일 136개, 발견 0건) |
-| `npm run audit:lockfile` | 통과(현재 lockfile 취약점 0건) |
+| `npm run check` | Passed |
+| Vitest | 42 files, 522 tests passed |
+| `npm run secret-scan` | Passed (136 tracked files, 0 findings) |
+| `npm run audit:lockfile` | Passed (0 vulnerabilities in the current lockfile) |
 
-`secret-scan`과 `audit:lockfile`은 기본 sandbox에서 `tsx` IPC 권한 오류가 발생해 승인된 외부 실행으로 재검증했다. 이는 애플리케이션 결함 판정에는 포함하지 않는다.
-
----
-
-## A. CI·공급망
-
-### SR2-CI-001 — workflow token 권한을 최소값으로 고정하지 않음
-
-- 우선순위: **P1**
-- 파일: `.github/workflows/ci.yml`
-- 근거: workflow 또는 job 수준 `permissions:` 선언이 없다. 실제 `GITHUB_TOKEN` 권한은 repository/organization 기본 설정에 의존한다.
-- 공격/실패 시나리오: fork PR의 코드는 `npm ci` lifecycle, 테스트, package script로 실행된다. 기본 권한이 나중에 넓어지면 PR 코드가 그 권한을 상속한다.
-- 수정 기준: workflow 최상단에 최소 `permissions: { contents: read }`를 명시하고 artifact job에 추가 권한이 필요한 경우 해당 job에만 부여한다. fork PR에서 secrets 미주입과 token 권한을 repository 설정/branch protection까지 확인한다.
-- **RESOLVED**: `ci.yml` 워크플로 최상단에 `permissions: { contents: read }`를 명시했다. 네 job 모두 checkout 후 로컬 커맨드(npm ci/test/lint/audit 등)만 실행하고 아무것도 쓰지 않는다는 걸 확인했다 — SBOM `actions/upload-artifact@v4`도 `GITHUB_TOKEN`이 아니라 Actions 런타임 토큰으로 인증해 별도 권한이 필요 없다. 그래서 job별 추가 권한 없이 워크플로 전역 `contents: read` 하나로 충분하다. `SECURITY.md`에 반영. (참고: 이 finding의 실제 우선순위는 doc 본문상 **P1**이다 — 사용자 지시로 P0 항목보다 먼저 이 순서로 처리했다.)
-
-### SR2-CI-002 — 외부 Action과 Postgres image가 immutable digest로 고정되지 않음
-
-- 우선순위: **P1**
-- 파일: `.github/workflows/ci.yml`
-- 근거: `actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4`, `postgres:16`처럼 이동 가능한 tag를 사용한다.
-- 공격/실패 시나리오: upstream tag 또는 image가 변하면 동일 commit의 CI가 다른 코드를 실행한다. 공급망 침해 시 repo token/소스에 접근하는 코드가 바뀔 수 있다.
-- 수정 기준: Actions는 검증한 full commit SHA에 고정하고 사람이 읽을 tag를 주석으로 남긴다. service image도 가능하면 digest를 고정하고 정기 갱신 절차를 둔다.
-- **RESOLVED (2026-09-04)**: `ci.yml`의 `uses:` 9줄을 전부 full commit SHA + `# vX.Y.Z` 주석으로 바꿨다 — `actions/checkout@11d5960a…` (v4.4.0), `actions/setup-node@49933ea5…` (v4.4.0), `actions/upload-artifact@ea165f8d…` (v4.6.2). 세 SHA는 `gh api repos/<action>/git/ref/tags/v4`가 반환한 값(type `commit`)이라 고정 시점의 `v4` 태그와 동일해 **동작 변화 없음**. Postgres 서비스는 `postgres:16@sha256:f1c3376c…`(Docker Hub `library/postgres` tag `16` manifest digest, last_updated 2026-08-26, 2026-09-04 재확인). 정기 갱신은 **Dependabot**(`.github/dependabot.yml` 신규, github-actions 에코시스템, 월 1회, 한 그룹, 자동 머지 없음 — 머지는 사람)이 SHA+태그 주석을 함께 갱신하는 PR을 열어 처리하고, Dependabot이 건드리지 않는 `services.image` digest는 `docs/TESTING.md` §8 "공급망 게이트"의 수동 절차(분기 1회 또는 Postgres 16 마이너 릴리스 시)로 남겼다. 검증은 이 PR 자체의 CI가 고정된 SHA/digest로 7개 job을 실제 실행하는 것. `SECURITY.md` 반영. 판단 근거(사용자 위임): SHA 고정은 갱신 수단이 없으면 "태그가 옮겨지는 위험"을 "영구히 낡은 코드를 도는 위험"으로 바꿀 뿐이라 문서화만으로는 부족 — Dependabot은 시크릿 접근 없음·PR도 우리 CI 게이트 전체를 통과해야 함·월 1건 수준의 부담이라 포함했다. npm 의존성 자동 갱신은 범위를 넓히지 않고 별도 결정으로 남겼다.
-
-### SR2-CI-003 — job timeout이 없어 악성/교착 PR이 runner를 장시간 점유 가능
-
-- 우선순위: **P2**
-- 파일: `.github/workflows/ci.yml`
-- 근거: 네 job 모두 `timeout-minutes`가 없다. 개별 Vitest timeout은 전체 process, `npm ci`, pack install, audit network hang을 제한하지 않는다.
-- 수정 기준: 관측된 정상 시간에 여유를 둔 job별 timeout을 설정한다.
-- **RESOLVED (2026-09-04)**: 네 job 전부에 `timeout-minutes`를 넣었다 — `test` **50**(matrix 관측 최대 24m28s, macOS node 20, PR #65), `audit` **30**(관측 최대 15m0s, PR #66 — npm audit 레지스트리 재시도 포함), `coverage` **25**(관측 최대 10m17s, PR #68), `postgres-component` **15**(관측 최대 4m24s, PR #65 — 컨테이너 pull·health check 편차 감안 3배). 기준은 PR #63~#68(2026-09-04) 7개 job × 5 run 실측치의 약 2배 — macOS 러너는 같은 job이 5m~24m로 편차가 크고 테스트 수가 계속 늘어(522→616) 여유를 넉넉히 뒀다. 각 값 옆에 관측 최대치·PR·날짜를 주석으로 남겨 나중에 값만 보고 근거를 잃지 않게 했다. 재조정 규칙은 `docs/TESTING.md` §8에 명시 — timeout 실패는 먼저 원인(hang vs 실제 증가)을 보고, 같은 job이 2회 연속 timeout이면서 로그상 진행 중이었을 때만 새 관측 최대치의 2배로 올린다(한 번 실패했다고 올리지 않음). 검증은 이 PR 자체의 CI 7 job이 새 상한 안에서 통과하는 것.
-
-### SR2-CI-004 — branch protection과 required checks가 코드로 검증되지 않음
-
-- 우선순위: **P1**
-- 근거: T35는 CI를 만들었지만 main 직접 push 차단, required job, approval, stale approval dismissal은 workflow 파일만으로 보장되지 않는다.
-- 영향: 모든 gate가 있어도 관리자가 실패/미실행 상태로 merge 또는 직접 push하면 우회된다.
-- 수정 기준: GitHub ruleset에서 네 job을 required로 지정하고 main 보호 설정을 T37 체크리스트의 사람 확인 항목으로 증거화한다.
-- **RESOLVED (2026-09-04, 사용자 명시 승인 후 적용)**: GitHub ruleset **id `22244613`** "main — PR + required CI checks (SR2-CI-004)"를 `gh api -X POST repos/Trapa-Eureka/retail-mcp/rulesets`로 생성했다(생성 시각 2026-09-04T11:21:46+08:00, `enforcement: active`, 대상 `~DEFAULT_BRANCH`=main). 규칙 4종: `deletion`(브랜치 삭제 차단), `non_fast_forward`(force push 차단), `pull_request`(직접 push 차단·PR 필수, 승인 필수 인원 **0** — 1인 유지보수라 자기 PR을 승인할 수 없어 1 이상이면 모든 머지가 막힘, stale review dismiss on), `required_status_checks`(**7개**: `test (ubuntu-latest, node 20)`, `test (ubuntu-latest, node 22)`, `test (macos-latest, node 20)`, `test (macos-latest, node 22)`, `coverage thresholds (QA-002/QA-003)`, `postgres component tests (QA-004)`, `dependency audit + secret scan (QA-006)` — finding은 "네 job"이라 했지만 test job이 OS×Node matrix라 check 이름은 7개, 전부 GitHub Actions(integration 15368)로 한정). `strict`(머지 전 main 최신화 강제)는 **끔** — 켜면 main이 바뀔 때마다 ~25분 CI 재실행이 필요해 1인 운영에 과함(사용자에게 판단 지점으로 고지, 기본안 승인). **bypass actor 0명** — 관리자 포함 아무도 우회 불가, 지금까지 쓰던 `gh pr merge --admin`은 이후 쓰지 않는다(finding이 지적한 "관리자가 실패/미실행 상태로 merge 또는 직접 push" 경로 자체를 닫음). 긴급 시 ruleset 비활성화만 가능하고 감사 로그에 남는다. 사전 이용성 점검(사용자 요청): npm 사용자에게 영향 없음 — 패키지는 install 훅이 없고(`prepack`=build만, 게시자 머신에서만 실행), 런타임 네트워크 대상은 Loyverse API·Resend API·`DATABASE_URL`만이며 GitHub에 접근하는 코드가 없다(`grep` 확인, 유일한 github.com 문자열은 `auditAllowlist.ts`의 advisory URL 문서 링크). `npm publish`는 레지스트리 작업이라 ruleset과 무관하다. 증거화: `docs/TASKS.md` T37 완료 기준에 "ruleset이 살아 있는지 사람 확인" 항목(확인 명령 포함) 추가, `SECURITY.md` CI 게이트 문단에 명시. 이 RESOLVED 기록을 담은 PR 자체가 ruleset 아래에서 `--admin` 없이 머지된 첫 PR이다(end-to-end 확인 — 아래 진행 상황 참고). Dependabot PR도 같은 게이트를 거친다.
+`secret-scan` and `audit:lockfile` hit a `tsx` IPC permission error in the default sandbox, so they were re-verified via an approved external run. This is not counted as an application defect in the verdict.
 
 ---
 
-## B. 자체 secret scanner
+## A. CI and Supply Chain
 
-### SR2-SEC-001 — placeholder 단어 하나로 실제 시크릿을 우회 가능
+### SR2-CI-001 — Workflow token permissions are not pinned to the minimum
 
-- 우선순위: **P0**
-- 파일: `src/core/secretScan.ts`
-- 근거: 매치된 같은 줄에 `fake|example|placeholder|dummy|...` 중 하나만 있으면 실제 매치값의 형태와 무관하게 무조건 제외한다.
-- 우회 예:
+- Priority: **P1**
+- File: `.github/workflows/ci.yml`
+- Basis: There is no workflow- or job-level `permissions:` declaration. The actual `GITHUB_TOKEN` permissions depend on the repository/organization default settings.
+- Attack/failure scenario: Code from a fork PR runs via the `npm ci` lifecycle, tests and package scripts. If the default permissions are widened later, PR code inherits those permissions.
+- Fix criteria: Declare at least `permissions: { contents: read }` at the top of the workflow, and grant additional permissions only to the specific job that needs them (e.g. the artifact job). For fork PRs, verify that secrets are not injected and check token permissions down to repository settings/branch protection.
+- **RESOLVED**: Declared `permissions: { contents: read }` at the top of the `ci.yml` workflow. Confirmed that all four jobs only run local commands after checkout (npm ci/test/lint/audit etc.) and write nothing — the SBOM `actions/upload-artifact@v4` also authenticates with the Actions runtime token rather than `GITHUB_TOKEN`, so it needs no separate permission. Therefore a single workflow-wide `contents: read` suffices with no per-job additional permissions. Reflected in `SECURITY.md`. (Note: this finding's actual priority in the document body is **P1** — at user instruction it was handled first, in this order, ahead of the P0 items.)
+
+### SR2-CI-002 — External Actions and the Postgres image are not pinned to immutable digests
+
+- Priority: **P1**
+- File: `.github/workflows/ci.yml`
+- Basis: Movable tags such as `actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4` and `postgres:16` are used.
+- Attack/failure scenario: If an upstream tag or image changes, CI for the same commit runs different code. In a supply chain compromise, the code that accesses the repo token/source can change.
+- Fix criteria: Pin Actions to verified full commit SHAs and leave the human-readable tag as a comment. Pin the service image digest too where possible, and establish a periodic refresh procedure.
+- **RESOLVED (2026-09-04)**: Replaced all 9 `uses:` lines in `ci.yml` with full commit SHA + `# vX.Y.Z` comment — `actions/checkout@11d5960a…` (v4.4.0), `actions/setup-node@49933ea5…` (v4.4.0), `actions/upload-artifact@ea165f8d…` (v4.6.2). The three SHAs are the values returned by `gh api repos/<action>/git/ref/tags/v4` (type `commit`), identical to the `v4` tag at pin time, so there is **no behavior change**. The Postgres service is `postgres:16@sha256:f1c3376c…` (Docker Hub `library/postgres` tag `16` manifest digest, last_updated 2026-08-26, re-confirmed 2026-09-04). Periodic refresh is handled by **Dependabot** (new `.github/dependabot.yml`, github-actions ecosystem, monthly, one group, no auto-merge — merging is done by a human), which opens PRs that update the SHA and tag comment together; the `services.image` digest, which Dependabot does not touch, is left to the manual procedure in `docs/TESTING.md` §8 "supply chain gate" (once per quarter or on a Postgres 16 minor release). Verification is this PR's own CI actually running the 7 jobs with the pinned SHAs/digest. Reflected in `SECURITY.md`. Decision basis (delegated by user): SHA pinning without a refresh mechanism merely trades "the risk of a tag being moved" for "the risk of running permanently stale code", so documentation alone is insufficient — Dependabot was included because it has no secret access, its PRs must also pass our entire CI gate, and the burden is about one PR per month. Automatic npm dependency updates were left as a separate decision rather than widening the scope.
+
+### SR2-CI-003 — No job timeout, so a malicious/deadlocked PR can occupy a runner for a long time
+
+- Priority: **P2**
+- File: `.github/workflows/ci.yml`
+- Basis: None of the four jobs has `timeout-minutes`. Individual Vitest timeouts do not bound the overall process, `npm ci`, pack install, or audit network hangs.
+- Fix criteria: Set per-job timeouts with headroom over the observed normal durations.
+- **RESOLVED (2026-09-04)**: Added `timeout-minutes` to all four jobs — `test` **50** (matrix observed max 24m28s, macOS node 20, PR #65), `audit` **30** (observed max 15m0s, PR #66 — including npm audit registry retries), `coverage` **25** (observed max 10m17s, PR #68), `postgres-component` **15** (observed max 4m24s, PR #65 — 3× to allow for container pull and health check variance). The baseline is roughly 2× the measured values from PRs #63~#68 (2026-09-04), 7 jobs × 5 runs — macOS runners vary widely (5m~24m for the same job) and the test count keeps growing (522→616), so generous headroom was left. Next to each value, the observed max, PR and date are left as a comment so the rationale is not lost later when only the number is visible. The readjustment rule is stated in `docs/TESTING.md` §8 — on a timeout failure, first look at the cause (hang vs. genuine growth), and raise to 2× the new observed max only when the same job times out twice in a row while the logs show it was still making progress (do not raise after a single failure). Verification is this PR's own 7 CI jobs passing within the new caps.
+
+### SR2-CI-004 — Branch protection and required checks are not verified in code
+
+- Priority: **P1**
+- Basis: T35 created CI, but blocking direct pushes to main, required jobs, approvals and stale approval dismissal are not guaranteed by the workflow file alone.
+- Impact: Even with all gates in place, an administrator can bypass them by merging or pushing directly while checks are failing/not run.
+- Fix criteria: Designate the four jobs as required in a GitHub ruleset, and make the main protection settings a human-verified item in the T37 checklist as evidence.
+- **RESOLVED (2026-09-04, applied after explicit user approval)**: Created GitHub ruleset **id `22244613`** "main — PR + required CI checks (SR2-CI-004)" via `gh api -X POST repos/Trapa-Eureka/retail-mcp/rulesets` (created at 2026-09-04T11:21:46+08:00, `enforcement: active`, target `~DEFAULT_BRANCH`=main). Four rules: `deletion` (blocks branch deletion), `non_fast_forward` (blocks force push), `pull_request` (blocks direct push · PR required, required approvals **0** — with a single maintainer who cannot approve their own PRs, a value of 1 or more would block every merge; stale review dismiss on), `required_status_checks` (**7**: `test (ubuntu-latest, node 20)`, `test (ubuntu-latest, node 22)`, `test (macos-latest, node 20)`, `test (macos-latest, node 22)`, `coverage thresholds (QA-002/QA-003)`, `postgres component tests (QA-004)`, `dependency audit + secret scan (QA-006)` — the finding said "four jobs", but since the test job is an OS×Node matrix there are 7 check names, all restricted to GitHub Actions (integration 15368)). `strict` (forcing main to be up to date before merge) is **off** — turning it on would require a ~25-minute CI re-run every time main changes, excessive for single-person operation (flagged to the user as a decision point; default proposal approved). **0 bypass actors** — nobody, administrators included, can bypass; the `gh pr merge --admin` used until now will no longer be used (this closes the very path the finding pointed out: "an administrator merges or pushes directly while checks are failing/not run"). In an emergency, only disabling the ruleset is possible, and that leaves an audit log entry. Pre-check of usability impact (user request): no impact on npm users — the package has no install hooks (`prepack` = build only, runs only on the publisher's machine), the runtime network targets are only the Loyverse API, Resend API and `DATABASE_URL`, and there is no code that accesses GitHub (confirmed by `grep`; the only github.com string is the advisory URL documentation link in `auditAllowlist.ts`). `npm publish` is a registry operation and is unrelated to the ruleset. Evidence: added a "human confirms the ruleset is alive" item (with the verification command) to the T37 completion criteria in `docs/TASKS.md`, and stated it in the CI gate paragraph of `SECURITY.md`. The PR carrying this RESOLVED record is itself the first PR merged under the ruleset without `--admin` (end-to-end confirmation — see progress above). Dependabot PRs go through the same gate.
+
+---
+
+## B. In-house Secret Scanner
+
+### SR2-SEC-001 — A single placeholder word can bypass detection of a real secret
+
+- Priority: **P0**
+- File: `src/core/secretScan.ts`
+- Basis: If the matched line contains any one of `fake|example|placeholder|dummy|...`, it is unconditionally excluded regardless of the form of the actual matched value.
+- Bypass example:
 
 ```ts
 const productionKey = "sk-ant-실제키값"; // example
 ```
 
-- 영향: 악의적 PR뿐 아니라 “example로 쓰려던 실제 키” 같은 사람 실수를 정확히 놓친다.
-- 수정 기준: line marker 기반 자동 제외를 제거한다. 필요한 fixture는 실제 provider 형식과 일치하지 않는 명백한 test token을 생성하거나 파일/라인 단위 allowlist에 사유·소유자·만료일을 명시한다.
-- **RESOLVED**: 흔한 영단어 목록(`fake|example|placeholder|...`)을 전부 제거하고, 우연히 나올 일이 없는 전용 마커 `secretscan-allow`(정확한 문자열 일치) 하나로 좁혔다 — `src/core/secretScan.ts`의 `EXPLICIT_ALLOW_MARKER`. 이 finding이 지적한 정확한 우회(`// example`)가 더 이상 안 통하는 걸 `tests/secretScan.test.ts`에 5가지 흔한 단어 케이스로 직접 회귀 테스트로 고정했다. 기존에 이 느슨한 마커에 의존하던 실제 픽스처 2곳(`tests/claudeSummarizer.test.ts`, `tests/secretScan.test.ts` 자체)을 새 마커로 갱신.
+- Impact: It misses not only malicious PRs but exactly the human mistake of "a real key that was meant to be used as an example".
+- Fix criteria: Remove line-marker-based automatic exclusion. For fixtures that are needed, generate obvious test tokens that do not match the real provider format, or specify a reason, owner and expiry date in a file/line-level allowlist.
+- **RESOLVED**: Removed the entire list of common English words (`fake|example|placeholder|...`) and narrowed it to a single dedicated marker `secretscan-allow` (exact string match) that would never occur by chance — `EXPLICIT_ALLOW_MARKER` in `src/core/secretScan.ts`. The exact bypass this finding pointed out (`// example`) no longer works, which is pinned directly as a regression test in `tests/secretScan.test.ts` with 5 common-word cases. The 2 real fixtures that previously relied on this loose marker (`tests/claudeSummarizer.test.ts` and `tests/secretScan.test.ts` itself) were updated to the new marker.
 
-### SR2-SEC-002 — `tests/secretScan.test.ts` 전체 제외가 영구 blind spot임
+### SR2-SEC-002 — Excluding all of `tests/secretScan.test.ts` is a permanent blind spot
 
-- 우선순위: **P1**
-- 파일: `scripts/secretScan.ts`
-- 근거: `SELF_EXCLUDE`가 해당 파일 전체를 검사하지 않는다.
-- 공격/실패 시나리오: 실제 credential이 이 파일에 들어가도 CI는 구조적으로 발견하지 못한다. 테스트용 가짜 값과 새로 추가된 다른 문자열을 구분하지 않는다.
-- 수정 기준: 파일 전체 제외를 없애고 fixture literal만 좁게 허용하거나 test가 런타임에 문자열을 조합하도록 바꾼다.
-- **RESOLVED**: 두 선택지 중 "런타임 조합"을 채택했다(blind spot이 0이 되는 쪽). `tests/secretScan.test.ts`의 모든 픽스처(AWS AKIA, PEM 헤더/푸터, sk-ant, re_, postgres 연결 문자열, SR2-SEC-001 회귀 블록의 5개 AKIA 줄)를 `assemble(...parts)`류 헬퍼로 런타임에 조합해 어느 한 줄에도 완성된 패턴이 남지 않게 했고, `scripts/secretScan.ts`의 `SELF_EXCLUDE`를 **완전 삭제**해 이 파일도 다른 파일과 똑같이 스캔된다. 유일한 완성 리터럴은 `secretscan-allow` 마커 테스트의 sk-ant 줄 — 마커가 같은 줄에 있어 스캐너가 규칙대로 건너뛰는, 승인된 좁은 허용 메커니즘 자체를 검증하는 줄이라 그대로 뒀다. 회귀 방지로 **자기 검증 테스트**를 추가했다 — 테스트 파일이 자기 소스를 읽어 `scanContentForSecrets`에 넣고 발견 0건을 assert하므로, 누가 완성 리터럴을 다시 넣으면 CI secret-scan 이전에 단위 테스트에서 먼저 실패한다(파일 제외로 되돌리는 것도 이 테스트 코멘트가 명시적으로 금지). `npm run secret-scan`이 제외 없이 전 추적 파일 대상 0건으로 통과하는 것을 확인.
+- Priority: **P1**
+- File: `scripts/secretScan.ts`
+- Basis: `SELF_EXCLUDE` skips scanning that file entirely.
+- Attack/failure scenario: Even if a real credential lands in this file, CI is structurally unable to find it. It does not distinguish fake test values from other newly added strings.
+- Fix criteria: Remove the whole-file exclusion and narrowly allow only fixture literals, or change the tests to assemble the strings at runtime.
+- **RESOLVED**: Of the two options, adopted "runtime assembly" (the one that reduces the blind spot to zero). All fixtures in `tests/secretScan.test.ts` (AWS AKIA, PEM header/footer, sk-ant, re_, postgres connection string, the 5 AKIA lines in the SR2-SEC-001 regression block) are now assembled at runtime via `assemble(...parts)`-style helpers so that no single line contains a complete pattern, and `SELF_EXCLUDE` in `scripts/secretScan.ts` was **deleted entirely**, so this file is scanned exactly like any other. The only remaining complete literal is the sk-ant line in the `secretscan-allow` marker test — it is left as-is because it is the line that verifies the approved narrow allow mechanism itself, which the scanner skips per its rules since the marker is on the same line. As regression prevention, a **self-verification test** was added — the test file reads its own source, feeds it to `scanContentForSecrets` and asserts 0 findings, so if anyone reintroduces a complete literal, the unit test fails before the CI secret-scan does (reverting to a file exclusion is also explicitly prohibited by this test's comment). Confirmed that `npm run secret-scan` passes with 0 findings across all tracked files with no exclusions.
 
-### SR2-SEC-003 — git history를 검사한다는 CI 설명과 실제 구현이 다름
+### SR2-SEC-003 — The CI description says git history is scanned, but the actual implementation differs
 
-- 우선순위: **P1**
-- 파일: `.github/workflows/ci.yml`, `scripts/secretScan.ts`
-- 근거: checkout은 `fetch-depth: 0`이지만 scanner는 `git ls-files`의 현재 tree만 읽는다. commit history/diff object는 검사하지 않는다.
-- 영향: PR의 이전 commit에 secret을 넣었다가 마지막 commit에서 지우면 scanner는 통과하지만 secret은 Git history에 남아 원격에서 열람 가능하다.
-- 수정 기준: PR base~head commit/diff와 새 blob을 검사하거나 검증된 history-aware scanner를 병행한다. 설명도 실제 범위와 일치시킨다.
-- **RESOLVED**: `src/adapters/secretScanGit.ts`(신규) `scanGitRange(repoRoot, base, head)` — `base..head` 범위의 **모든 커밋** 각각의 트리를 `git ls-tree -r`로 열어 base 트리에 없던 blob을 전부 `git cat-file -p`로 읽어 기존 순수 판정 함수(`scanContentForSecrets`)에 넣는다. endpoint diff가 아니라 커밋별 트리를 보므로 "중간 커밋에 넣고 마지막 커밋에서 지운" 케이스가 그 중간 커밋의 blob에서 잡힌다(blob oid로 중복 제거, 심볼릭 링크·서브모듈 제외, 트리 스캔과 같은 `SKIP_EXTENSIONS`). 발견 라벨은 `경로@커밋8자`로 "현재 트리엔 없지만 히스토리에 남아 있다"를 바로 알 수 있게 했다. `scripts/secretScan.ts`는 `--range=<base>..<head>`(`parseNamedArg` 재사용)를 받으면 트리 스캔에 **더해** 범위 스캔을 실행하고, base를 찾을 수 없으면(첫 push/force push의 all-zero SHA, 얕은 clone → `UnknownBaseError`) 조용히 0건 처리하지 않고 "건너뜀"을 명시 출력한 뒤 트리 스캔만으로 판정한다. `ci.yml`은 pull_request에 `base.sha..head.sha`(merge commit이 아닌 실제 head), push에 `event.before..sha`를 넘기고, "추적 파일 전체를 훑는다"고 범위를 과장하던 `fetch-depth` 주석을 실제 범위대로 고쳤다. `SECURITY.md` CI 게이트 문장에 히스토리 범위 명시. `tests/secretScanGit.test.ts` — 임시 git 저장소에 "넣은 커밋 → 지운 커밋"을 실제로 만들어 `git ls-files`는 시크릿 파일이 없고 범위 스캔은 정확히 그 커밋 라벨로 1건 잡는 것을 assert(네트워크 0, 로컬 git만), blob 중복 제거·base==head·all-zero base·없는 base·확장자 스킵까지 6개.
+- Priority: **P1**
+- Files: `.github/workflows/ci.yml`, `scripts/secretScan.ts`
+- Basis: Checkout uses `fetch-depth: 0`, but the scanner only reads the current tree from `git ls-files`. Commit history/diff objects are not scanned.
+- Impact: If a secret is added in an earlier commit of a PR and removed in the last commit, the scanner passes but the secret remains in Git history and is viewable on the remote.
+- Fix criteria: Scan the PR base~head commits/diff and new blobs, or run a proven history-aware scanner alongside. Also make the description match the actual scope.
+- **RESOLVED**: `src/adapters/secretScanGit.ts` (new) `scanGitRange(repoRoot, base, head)` — opens the tree of **every commit** in the `base..head` range with `git ls-tree -r`, reads every blob not present in the base tree with `git cat-file -p`, and feeds it to the existing pure decision function (`scanContentForSecrets`). Because it looks at per-commit trees rather than the endpoint diff, the "added in an intermediate commit and removed in the last commit" case is caught in that intermediate commit's blob (deduplicated by blob oid, symbolic links and submodules excluded, same `SKIP_EXTENSIONS` as the tree scan). The finding label is `<path>@<commit 8 chars>` so it is immediately clear that "it is not in the current tree but remains in history". When `scripts/secretScan.ts` receives `--range=<base>..<head>` (reusing `parseNamedArg`), it runs the range scan **in addition to** the tree scan; if base cannot be found (all-zero SHA on a first push/force push, shallow clone → `UnknownBaseError`), it does not silently treat it as 0 findings but explicitly prints "skipped" and then decides based on the tree scan alone. `ci.yml` passes `base.sha..head.sha` (the actual head, not the merge commit) for pull_request and `event.before..sha` for push, and the `fetch-depth` comment that overstated the scope as "sweeps all tracked files" was corrected to the actual scope. The history range is stated in the CI gate sentence of `SECURITY.md`. `tests/secretScanGit.test.ts` — actually creates an "add commit → remove commit" sequence in a temporary git repository and asserts that `git ls-files` has no secret file while the range scan catches exactly 1 finding with that commit label (0 network, local git only), plus blob deduplication, base==head, all-zero base, nonexistent base and extension skipping — 6 tests.
 
-### SR2-SEC-004 — 파일 읽기 실패를 조용히 무시하는 fail-open
+### SR2-SEC-004 — Fail-open that silently ignores file read failures
 
-- 우선순위: **P1**
-- 파일: `scripts/secretScan.ts`
-- 근거: `readFile(...).catch(() => null)` 후 아무 오류 없이 continue한다.
-- 영향: 권한·인코딩·race·비정상 파일 때문에 검사하지 못한 tracked file이 있어도 “발견 0건”으로 성공한다.
-- 수정 기준: 검사 대상 tracked file을 읽지 못하면 non-zero로 실패하고 파일명을 보고한다. 의도적으로 제외하는 binary는 allowlist에서만 제외한다.
-- **RESOLVED**: 트리 스캔 로직을 `scripts/secretScan.ts`에서 `src/adapters/secretScanGit.ts`의 `scanTrackedFiles(repoRoot)`로 옮겨 단위 테스트 대상으로 만들고, 읽지 못한 추적 파일을 `unreadable: {filePath, reason(errno)}[]`로 전부 모아 반환한다 — 예전의 `readFile(...).catch(() => null); continue`(조용히 건너뛰고 "발견 0건" 성공)를 제거. `scripts/secretScan.ts`는 `unreadable`이 하나라도 있으면 시크릿 발견과 **별개 카테고리("검사 불가")**로 파일명·errno를 출력하고 non-zero로 실패한다(fail-closed) — 읽을 수 있는 파일의 스캔은 계속 진행해 한 번에 전부 보고한다. 의도적 제외는 두 가지만이고 둘 다 명시적 규칙이다: binary 확장자 allowlist(`SKIP_EXTENSIONS`, 유일하게 허용된 제외 방법으로 에러 메시지에 안내)와 심볼릭 링크(`lstat`로 판별·follow 안 함 — 내용이 링크 대상 경로일 뿐이고, range 스캔이 mode 120000을 제외하는 것과 일관; 깨진 링크도 여기서 "링크"로 판별돼 ENOENT 오탐이 되지 않는다). `tests/secretScanGit.test.ts`에 임시 git 저장소로 5개 추가: 정상 트리, 권한 000 파일 → `{locked.txt, EACCES}`(root면 재현 불가로 건너뜀 — 잘못 통과가 아니라 명시 skip), 추적 중이지만 워킹 트리에서 사라진 파일 → `ENOENT`(race/로컬 삭제 케이스), 정상+깨진 심볼릭 링크 → 둘 다 skipped·unreadable 아님, png → allowlist로만 제외.
+- Priority: **P1**
+- File: `scripts/secretScan.ts`
+- Basis: After `readFile(...).catch(() => null)` it continues without any error.
+- Impact: Even if there are tracked files that could not be scanned due to permission, encoding, race or abnormal file issues, it succeeds with "0 findings".
+- Fix criteria: If a tracked file that should be scanned cannot be read, fail with non-zero and report the file name. Binaries that are deliberately excluded are excluded only via the allowlist.
+- **RESOLVED**: Moved the tree scan logic from `scripts/secretScan.ts` to `scanTrackedFiles(repoRoot)` in `src/adapters/secretScanGit.ts` to make it unit-testable, and it now collects and returns every unreadable tracked file as `unreadable: {filePath, reason(errno)}[]` — the old `readFile(...).catch(() => null); continue` (silently skip and succeed with "0 findings") was removed. If there is even one `unreadable`, `scripts/secretScan.ts` prints the file name and errno as a **separate category ("unscannable") distinct from secret findings** and fails with non-zero (fail-closed) — scanning of readable files continues so that everything is reported at once. There are only two deliberate exclusions, both explicit rules: the binary extension allowlist (`SKIP_EXTENSIONS`, the only permitted exclusion method, pointed to in the error message) and symbolic links (determined via `lstat`, not followed — the content is just the link target path, consistent with the range scan excluding mode 120000; broken links are also classified as "links" here, so they do not become ENOENT false positives). Added 5 tests to `tests/secretScanGit.test.ts` using a temporary git repository: a normal tree; a file with permission 000 → `{locked.txt, EACCES}` (skipped as non-reproducible when running as root — an explicit skip, not a false pass); a tracked file that has disappeared from the working tree → `ENOENT` (race/local deletion case); normal + broken symbolic link → both skipped, not unreadable; png → excluded only via the allowlist.
 
-### SR2-SEC-005 — 프로젝트가 실제 사용하는 credential 종류를 충분히 다루지 않음
+### SR2-SEC-005 — Does not sufficiently cover the credential types the project actually uses
 
-- 우선순위: **P2**
-- 근거: AWS/PEM/Anthropic/Resend/Postgres만 검사한다. npm token, GitHub token, Google credential JSON, 일반 bearer token과 `LOYVERSE_API_TOKEN`의 값은 탐지 계약에 없다.
-- 수정 기준: 이 프로젝트의 `.env.example`, CI/publish 흐름에서 실제 취급하는 credential 목록을 기준으로 pattern/entropy scanner 범위를 정한다. 경량 자체 scanner의 한계를 SECURITY에 명확히 표시한다.
-- **RESOLVED (2026-09-04)**: 커버 기준을 finding이 말한 대로 "이 프로젝트가 실제 취급하는 목록"으로 잡았다 — `.env.example` 시크릿 4종(가드레일 6) + CI/publish 흐름(npm·GitHub 토큰, Bearer 헤더) + SCM 시트 연동에서 만날 수 있는 Google 자격증명. `src/core/secretScan.ts`에 7개 패턴 추가: **`LOYVERSE_API_TOKEN` 대입식**(값 형식이 비공개라 `LOYVERSE_API_TOKEN\s*[=:]\s*['"]?<16자 이상>`으로 — `.env.example`의 빈 값·`process.env[...]` 읽기 코드·에러 메시지 문구는 매치 안 됨), GitHub 토큰(`ghp|gho|ghu|ghs|ghr` + 36자, `github_pat_` + 22자 이상), npm 토큰(`npm_` + 36자), Google API 키(`AIza` + 35자), Google 서비스 계정 JSON(`"private_key_id": "<hex 20+>"`), 하드코딩 Bearer 토큰(20자 이상 — 코드의 `Bearer ${token}` 템플릿은 `$`가 문자 클래스에 없어 매치 안 됨). 이 저장소가 쓰지 않는 서비스(Slack 등)는 넣지 않았다 — "실제 다루는 것에 한정" 원칙. **엔트로피 분석은 채택하지 않음**: 오탐 관리 비용이 경량 스캐너의 목적과 맞지 않고, 그 한계를 `SECURITY.md`에 새 항목으로 명시했다(패턴 기반, 형식 없는 임의 문자열은 못 잡음, 저장소 CI 전용·npm 패키지 미포함, 외부 스캐너 배제 이유와 재검토 시점). 사전 점검: 새 패턴 전부를 현재 트리에 돌려 오탐 0건 확인 후 적용. **착수 중 발견**: 적용 후 `npm run secret-scan`이 `docs/DESIGN.md`의 `.env` 예시(`LOYVERSE_API_TOKEN=` 빈 값)에서 1건 오탐 — 패턴의 `\s*`가 줄바꿈까지 먹어 다음 줄 텍스트를 값으로 봤다(사전 점검의 `grep`은 줄 단위라 드러나지 않았던 차이). 공백을 `[ \t]`로 한정(LOYVERSE·Bearer·서비스 계정 JSON 세 패턴 공통)하고 여러 줄 회귀 케이스 2개를 추가한 뒤 `npm run secret-scan` 0건 재확인. 사용자 요청으로 재확인한 사항: 스캐너는 `scripts/secretScan.ts`(저장소 전용, `package.json.files` 미포함)에서만 쓰이고 bin 진입점 어디에도 없어 **npm 사용자 설정과 무관**하며, Loyverse 채널 상태(v0.1 구현 완료·파일럿 보류)를 바꾸지 않는다 — 개발자가 실수로 커밋한 Loyverse 토큰을 CI가 잡는다는 뜻일 뿐이다. 테스트: `tests/secretScan.test.ts` 신규 describe 7 tests(종류별 탐지, LOYVERSE 오탐 방어 4케이스, `npm_` 식별자·짧은 값 오탐 방어, Bearer 템플릿·`<token>`·짧은 값 오탐 방어, 마커·preview 규칙 준수) — 전부 런타임 조합(SR2-SEC-002 규칙), 자기 검증 테스트 유지.
-
----
-
-## C. dependency audit gate
-
-### SR2-AUD-001 — 네트워크/실행/JSON 오류가 CI 성공으로 처리되는 fail-open
-
-- 우선순위: **P0**
-- 파일: `src/adapters/auditLockfile.ts`
-- 근거: stdout 없음과 JSON parse 실패가 모두 `null` 성공으로 반환된다. 보안 job의 목적이 release gate인데 외부 audit 서비스 장애 시 green이 된다.
-- 영향: 공격자가 장애를 직접 만들지 않더라도 registry 장애 시 취약점 검증 없이 merge/release가 가능하다. T37이 이 job의 green만 신뢰하면 출시 보장이 무너진다.
-- 수정 기준: PR 편의 gate와 release gate를 분리한다. release/T37에서는 audit 불능을 실패로 처리하고, 사람이 승인한 재시도 외에는 우회하지 않는다.
-- **RESOLVED**: 실은 `scripts/verifyPack.ts`(release gate)는 이미 진짜 실행 실패(stdout 자체가 없음)에는 fail-closed였다(catch에서 `stdout`이 없으면 원본 에러를 그대로 rethrow) — 이번에 새로 발견한 건 SR2-AUD-002와 같은 뿌리(무효 리포트 형식 검증 없음)였다. `isValidAuditReport()`(아래 AUD-002)를 `verifyPack.ts`에도 연결해 **무효 리포트(레지스트리 오류 등)도 이제 fail-closed로 막는다** — `auditLockfile.ts`(PR 편의 gate)는 여전히 fail-open이지만 메시지가 "0건"이라고 절대 말하지 않는다(AUD-002 참고). 정책 자체(PR gate=fail-open, release gate=fail-closed)를 명시적으로 분리해 문서화했다. **후속(2026-09-04, T37 직후, 사용자 위임 결정)**: 그 분리가 lockfile audit(`auditLockfile.ts`)에만 있고 tarball audit(`verifyPack.ts`)은 PR CI에서도 fail-closed라, 같은 날 npm advisory 엔드포인트 장애로 PR #72·#73·#74가 차례로 머지 불가가 됐다. `verify:pack --audit-unavailable=warn`(CI `test` matrix 전용)을 도입해 "유효한 리포트를 못 얻은 경우"만 경고 통과시키고, 승인되지 않은 취약점·기한 지난 예외는 정책과 무관하게 항상 실패한다. 실제 게시 경로(`prepublishOnly` → 플래그 없음 = `fail`)는 그대로 fail-closed — 이 경로로 새 취약점이 게시에 도달하려면 레지스트리가 죽은 동안 머지된 뒤 `prepublishOnly`의 audit까지 통과해야 하는데 후자는 유효한 리포트 없이는 절대 통과하지 않으므로 수정 기준("release/T37에서는 audit 불능을 실패로")은 유지된다. 판정을 순수 함수 `src/core/tarballAuditPolicy.ts`(`evaluateTarballAudit`/`shouldBlock`/`parseAuditUnavailablePolicy`)로 빼 `tests/tarballAuditPolicy.test.ts` 10 tests로 고정.
-
-### SR2-AUD-002 — 오류 JSON을 “취약점 0건”으로 오인함
-
-- 우선순위: **P0**
-- 파일: `auditLockfile.ts`, `auditAllowlist.ts`
-- 근거: `npm audit`가 non-zero와 함께 `{"error": ...}` 형태 stdout을 내면 JSON parse는 성공한다. `vulnerabilities`가 없으므로 빈 객체로 처리되어 `noneFound=true`로 통과한다.
-- 수정 기준: report schema에서 `auditReportVersion`, `metadata.vulnerabilities`, `vulnerabilities`를 검증하고 `error` 필드 또는 필수 필드 누락은 실행 실패로 판정한다. 실제 registry error JSON fixture를 추가한다.
-- **RESOLVED**: `src/core/auditAllowlist.ts`에 `isValidAuditReport()` 신설 — `error` 필드가 있거나 `vulnerabilities`가 객체가 아니면 무효로 판정한다(npm 11.6.2 실제 성공 응답을 실측해 `vulnerabilities`가 항상 객체로 존재함을 확인). `auditLockfile.ts`(fail-open이지만 "0건"이라 말하지 않음)와 `verifyPack.ts`(fail-closed, throw) 둘 다 이 검증을 거친다. `evaluateLockfileAudit(JSON.stringify({error:{...}}))`가 더 이상 "0건" 로그를 남기지 않는 걸 회귀 테스트로 고정(`tests/auditLockfile.test.ts`).
-
-### SR2-AUD-003 — 승인 예외 만료일이 주석일 뿐 기계적으로 집행되지 않음
-
-- 우선순위: **P1**
-- 파일: `src/core/auditAllowlist.ts`
-- 근거: `2027-03-03` 재검토 기한은 주석에만 있고 allowlist 데이터에는 만료일이 없다.
-- 영향: 기한이 지나도 CI는 계속 같은 advisory를 자동 승인한다.
-- 수정 기준: allowlist를 `{url, expiresAt, rationale}` 구조로 만들고 기준 시계가 만료일 이상이면 실패시킨다.
-- **RESOLVED**: `src/core/auditAllowlist.ts`의 `ACCEPTED_ADVISORY_URLS`(URL 문자열 배열, 기한은 주석에만)를 `ACCEPTED_ADVISORIES: {url, expiresAt: "2027-03-03", rationale}[]`로 구조화했다(URL 배열은 파생값으로 유지). `checkAdvisoriesAgainstAllowlist(advisoryUrls, allowlist, now)`가 기준 시각을 **명시적으로 받아**(CLAUDE.md "날짜 계산은 Clock으로, 로컬 시계 암묵 의존 금지") 결과에 `expired: [{url, expiresAt}]`를 추가 — 만료된 승인은 허용으로 치지 않는다. 만료 경계는 "만료일 당일 UTC 00:00부터 실패"(`isAdvisoryExpired`, 형식이 잘못된 날짜는 오타가 영구 승인이 되지 않도록 만료로 취급). 두 호출자 모두 만료를 **fail-closed**로: `auditLockfile.ts`(매 PR 게이트)는 기한·조치를 담은 실패 문자열, `verifyPack.ts`(release gate)는 throw("기한이 지난 예외로는 게시하지 않습니다") — 무효 리포트에 대한 기존 fail-open/closed 정책은 그대로. `verifyPack.ts`의 하드코딩된 "재검토 기한 2027-03-03" 문구도 데이터에서 파생. 테스트: `tests/auditAllowlist.test.ts` — 기한 전날 23:59:59.999Z는 승인, 당일 00:00:00Z부터 `expired`(unexpected와 별개 카테고리), 리포트에 안 나오면 기한이 지나도 무관, 실제 `ACCEPTED_ADVISORIES` 데이터의 형식·미만료 검증, `isAdvisoryExpired` 형식 오류 케이스; `tests/auditLockfile.test.ts` — 기한 당일 같은 리포트가 실패 문자열(기한·URL·조치 포함), 하루 전은 통과. 전부 고정 시각 주입, 실제 시계 의존 0. `docs/005` SEC-006 문구를 "기한이 CI에서 기계적으로 집행됨"으로 갱신.
+- Priority: **P2**
+- Basis: Only AWS/PEM/Anthropic/Resend/Postgres are scanned. npm tokens, GitHub tokens, Google credential JSON, generic bearer tokens and the value of `LOYVERSE_API_TOKEN` are not in the detection contract.
+- Fix criteria: Define the pattern/entropy scanner scope based on the list of credentials this project actually handles in `.env.example` and the CI/publish flow. Clearly state the limitations of the lightweight in-house scanner in SECURITY.
+- **RESOLVED (2026-09-04)**: Set the coverage criterion, as the finding stated, to "the list this project actually handles" — the 4 secrets in `.env.example` (guardrail 6) + the CI/publish flow (npm and GitHub tokens, Bearer headers) + Google credentials that may be encountered in the SCM sheet integration. Added 7 patterns to `src/core/secretScan.ts`: **`LOYVERSE_API_TOKEN` assignments** (since the value format is not public, `LOYVERSE_API_TOKEN\s*[=:]\s*['"]?<16 or more chars>` — the empty value in `.env.example`, `process.env[...]` read code and error message text do not match), GitHub tokens (`ghp|gho|ghu|ghs|ghr` + 36 chars, `github_pat_` + 22 or more chars), npm tokens (`npm_` + 36 chars), Google API keys (`AIza` + 35 chars), Google service account JSON (`"private_key_id": "<hex 20+>"`), hardcoded Bearer tokens (20 or more chars — the `Bearer ${token}` template in code does not match because `$` is not in the character class). Services this repository does not use (Slack etc.) were not added — the "limit to what is actually handled" principle. **Entropy analysis was not adopted**: the false-positive management cost does not fit the purpose of a lightweight scanner, and that limitation is stated as a new item in `SECURITY.md` (pattern-based; cannot catch arbitrary strings without a format; repository CI only, not included in the npm package; reasons for excluding external scanners and when to revisit). Pre-check: ran all new patterns against the current tree and confirmed 0 false positives before applying. **Found during implementation**: after applying, `npm run secret-scan` produced 1 false positive on the `.env` example in `docs/DESIGN.md` (`LOYVERSE_API_TOKEN=` with an empty value) — the pattern's `\s*` consumed the newline and treated the next line's text as the value (a difference the line-based `grep` in the pre-check could not reveal). Restricted whitespace to `[ \t]` (common to the three patterns LOYVERSE, Bearer and service account JSON), added 2 multi-line regression cases, and re-confirmed `npm run secret-scan` at 0 findings. Re-confirmed at user request: the scanner is used only by `scripts/secretScan.ts` (repository-only, not in `package.json.files`) and is in none of the bin entry points, so it is **unrelated to npm user configuration**, and it does not change the status of the Loyverse channel (v0.1 implemented, pilot on hold) — it only means CI catches a Loyverse token a developer accidentally commits. Tests: new describe in `tests/secretScan.test.ts` with 7 tests (detection per type, 4 LOYVERSE false-positive defense cases, `npm_` identifier and short-value false-positive defense, Bearer template, `<token>` and short-value false-positive defense, marker and preview rule compliance) — all assembled at runtime (SR2-SEC-002 rule), self-verification test retained.
 
 ---
 
-## D. file lock PID/cross-host 판정
+## C. Dependency Audit Gate
 
-### SR2-LOCK-001 — hostname 충돌 시 다른 호스트의 active lock을 stale로 삭제 가능
+### SR2-AUD-001 — Fail-open where network/execution/JSON errors are treated as CI success
 
-- 우선순위: **P0**
-- 파일: `src/adapters/fileLock.ts`
-- 근거: host identity가 `os.hostname()` 문자열 하나다. 서로 다른 머신/container가 같은 hostname을 쓰면 same-host로 판정한다. 그 PID가 로컬에서 죽어 있거나 시작 시각이 다르면 다른 호스트가 실제 사용 중인 lock을 삭제한다.
-- 영향: 공유/network filesystem에서 두 PGlite 프로세스가 같은 data directory를 동시에 열어 데이터가 유실될 수 있다. 이 lock의 존재 목적을 직접 무너뜨린다.
-- 수정 기준: PGlite data directory를 network/shared filesystem에서 지원하지 않는다고 강제하거나, 설치 시 영속적으로 만든 machine UUID까지 host identity에 포함한다. cross-host 안전성을 보장할 수 없다면 자동 stale 회수를 금지한다.
-- **RESOLVED**: `FileLockOptions.machineId`(기본값 `defaultGetMachineId()` — loopback이 아닌 첫 네트워크 인터페이스의 MAC 주소, 못 구하면 undefined)를 락 파일에 함께 기록하고, cross-host 판정에서 양쪽 다 machineId를 구할 수 있으면 hostname 문자열 비교보다 이 값을 우선하도록 바꿨다(hostname이 같아도 machineId가 다르면 다른 호스트로 판정, hostname이 달라도 machineId가 같으면 같은 호스트로 판정). 설치 시 UUID를 파일로 영속화하는 방식은 채택하지 않았다 — lock 대상 디렉터리 자체가 공유/network filesystem이면 그 파일도 같이 공유돼 목적을 못 이루고, home directory에 쓰면 테스트마다 실제 디스크 IO 부수효과가 생긴다. MAC 주소는 OS가 이미 들고 있는 값이라 디스크에 아무것도 안 쓰고, 동기 호출이라 테스트 부수효과가 없다. machineId를 한쪽이라도 못 구하면(구버전 락, 네트워크 인터페이스 없는 샌드박스 등) 기존 hostname 판정으로 안전하게 폴백한다(hostname까지 없는 락은 LOCK-002에서 "소유 호스트 불명 → busy"로 별도 처리 — 아래 RESOLVED 참고). `tests/fileLock.test.ts`에 5개 회귀 테스트 추가, 기존 "다른 호스트가 쓴 락은..." 테스트는 두 acquireFileLock 호출 모두 hostname과 함께 서로 다른 machineId를 명시하도록 갱신했다(실제 테스트 실행 머신의 진짜 MAC에 좌우되지 않고 "다른 호스트" 시나리오를 결정적으로 재현하기 위해).
+- Priority: **P0**
+- File: `src/adapters/auditLockfile.ts`
+- Basis: Both missing stdout and JSON parse failure are returned as `null` success. The purpose of the security job is a release gate, yet it goes green when the external audit service is down.
+- Impact: Even without an attacker deliberately causing an outage, a registry outage allows merge/release without vulnerability verification. If T37 trusts only this job's green, the release guarantee collapses.
+- Fix criteria: Separate the PR convenience gate from the release gate. In release/T37, treat audit unavailability as failure, and do not bypass except via human-approved retry.
+- **RESOLVED**: In fact `scripts/verifyPack.ts` (release gate) was already fail-closed on genuine execution failures (no stdout at all) (the catch rethrows the original error as-is when there is no `stdout`) — what was newly discovered this time had the same root as SR2-AUD-002 (no validation of invalid report formats). Wired `isValidAuditReport()` (AUD-002 below) into `verifyPack.ts` as well, so **invalid reports (registry errors etc.) are now also blocked fail-closed** — `auditLockfile.ts` (PR convenience gate) remains fail-open but its message never says "0 findings" (see AUD-002). The policy itself (PR gate = fail-open, release gate = fail-closed) was explicitly separated and documented. **Follow-up (2026-09-04, right after T37, decision delegated by user)**: that separation existed only for the lockfile audit (`auditLockfile.ts`), while the tarball audit (`verifyPack.ts`) was fail-closed even in PR CI, so on the same day an npm advisory endpoint outage made PRs #72, #73 and #74 unmergeable one after another. Introduced `verify:pack --audit-unavailable=warn` (CI `test` matrix only), which lets only the "could not obtain a valid report" case pass with a warning; unapproved vulnerabilities and expired exceptions always fail regardless of the policy. The actual publish path (`prepublishOnly` → no flag = `fail`) remains fail-closed — for a new vulnerability to reach publication via this path, it would have to be merged while the registry was down and then also pass the `prepublishOnly` audit, and the latter never passes without a valid report, so the fix criterion ("treat audit unavailability as failure in release/T37") is preserved. The decision was extracted into the pure function module `src/core/tarballAuditPolicy.ts` (`evaluateTarballAudit`/`shouldBlock`/`parseAuditUnavailablePolicy`) and pinned with 10 tests in `tests/tarballAuditPolicy.test.ts`.
 
-### SR2-LOCK-002 — 구버전 lock은 공유 filesystem에서 안전하지 않음
+### SR2-AUD-002 — Error JSON is mistaken for "0 vulnerabilities"
 
-- 우선순위: **P1**
-- 근거: hostname이 없는 이전 lock을 항상 same-host로 취급한다. 업그레이드 직후 공유 디렉터리에서 다른 호스트의 구버전 active lock을 로컬 PID 검사만으로 회수할 수 있다.
-- 수정 기준: hostname 없는 lock은 보수적으로 busy 처리하거나, 명시적 migration/사람 확인을 거쳐서만 회수한다.
-- **RESOLVED (2026-09-04)**: `fileLock.ts`의 cross-host 판정 앞에 "hostname 필드가 없는 락은 소유 호스트 불명 → 항상 busy" 분기를 추가했다. 로컬 `isAlive(pid)` 결과와 무관하게(죽어 있어도, 살아 있어도) 자동 회수하지 않고 `FileLockBusyError`(신규 `unknownHost: true` 속성)로 즉시 실패한다 — 메시지는 원인("락 파일에 소유 호스트 정보가 없습니다 — 어느 호스트의 것인지 알 수 없어 이 머신의 PID 검사로는 판정 불가")과 수정 방법("다른 호스트를 포함해 이 디렉터리를 쓰는 프로세스가 없음을 확인한 뒤 `<lockPath>`를 직접 삭제")을 함께 담는다. 명시적 migration 옵션은 채택하지 않았다 — 이 패키지는 아직 npm 게시 전이라 사용자 측에 hostname 없는 락이 존재하지 않고, 현재 코드는 항상 hostname을 기록하므로 이 분기는 사실상 "정체 불명의 락 파일"에만 걸린다(옵션을 만들면 그 자체가 새 공격면·유지 부담). machineId만 없고 hostname은 있는 락(SR2-LOCK-001 이전 형식)은 구버전 취급이 아니며 기존 hostname 판정으로 폴백한다(변경 없음). `tests/fileLock.test.ts`: 기존 "구버전 락은 같은 호스트로 간주해 회수" 테스트를 제거하고, 새 describe에 5개(죽은 pid → busy+unknownHost+락 파일 보존, 살아있는 pid → busy, machineId-only 누락은 정상 폴백, 현재 형식 stale 회수 회귀, 현재 형식 alive busy는 `unknownHost=false`). `docs/DESIGN.md` §12.8 판정 순서에 ⓞ 단계 추가, README "PGlite 락 복구" 절에 사람 개입 두 번째 경우 명시.
+- Priority: **P0**
+- Files: `auditLockfile.ts`, `auditAllowlist.ts`
+- Basis: When `npm audit` emits `{"error": ...}`-shaped stdout along with a non-zero exit, the JSON parse succeeds. Since `vulnerabilities` is absent, it is treated as an empty object and passes with `noneFound=true`.
+- Fix criteria: Validate `auditReportVersion`, `metadata.vulnerabilities` and `vulnerabilities` in the report schema, and treat an `error` field or missing required fields as execution failure. Add a real registry error JSON fixture.
+- **RESOLVED**: Added `isValidAuditReport()` to `src/core/auditAllowlist.ts` — a report is judged invalid if it has an `error` field or if `vulnerabilities` is not an object (measured a real successful response from npm 11.6.2 and confirmed that `vulnerabilities` is always present as an object). Both `auditLockfile.ts` (fail-open, but never says "0 findings") and `verifyPack.ts` (fail-closed, throw) go through this validation. Pinned with a regression test that `evaluateLockfileAudit(JSON.stringify({error:{...}}))` no longer logs "0 findings" (`tests/auditLockfile.test.ts`).
 
-### SR2-LOCK-003 — release의 확인 후 삭제가 하나의 원자 연산이 아님
+### SR2-AUD-003 — Approved exception expiry is only a comment and is not mechanically enforced
 
-- 우선순위: **P2**
-- 근거: release가 파일을 읽어 nonce를 확인한 뒤 별도 `rm`을 한다. 그 사이 운영자/복구 도구가 파일을 교체하면 새 소유자의 lock을 지울 수 있다.
-- 영향: 일반 정상 경로에서는 낮은 확률이지만 수동 stale 복구와 겹치면 보호가 깨질 수 있다.
-- 수정 기준: 수동 복구 규약에서 실행 중 release와 경합하지 않게 하거나 OS 수준 lock/원자 rename 기반 소유권 검증을 검토한다.
-- **ACCEPTED (2026-09-04, 코드 변경 없음 — 사용자 위임으로 "문서만 vs 코드 포함"을 비교 후 결정)**: 수정 기준의 두 갈래를 모두 검토했고 **수동 복구 규약** 쪽을 채택했다. OS 수준 lock: Node 표준 라이브러리에 `flock`이 없고 네이티브 모듈 배제는 기존 결정. 원자 rename 기반 검증: 확인 중 락 슬롯이 비어 제3자가 획득할 수 있고 되돌릴 수 없어(`link`→EEXIST) 창이 더 넓어진다 — 기각. 추가로 검토한 "삭제 직전 `stat().ino` 재확인"도 기각 — 창을 "읽기→삭제"에서 "stat→삭제"로 줄일 뿐 같은 자릿수(시스템콜 하나 간격)라 실질 이득이 없고, 테스트용 훅이 운영 코드에 들어가며, 네트워크 FS·Windows에서 inode가 불안정하면 정상 release를 건너뛰어 락이 프로세스 종료까지 새는 **새 실패 모드**가 생긴다(위험은 못 줄이고 코드만 늘어남). 경합 성립 조건이 "운영자가 살아 있는 프로세스의 락을 삭제 + 마이크로초 창 안에 다른 프로세스 획득"이라 규약으로 막는 것이 맞다: README "PGlite 락 복구"에 **락 파일은 삭제만(편집·교체 금지), 어느 호스트에든 실행 중인 retail-mcp가 있으면 건드리지 않는다**를 명문화하고(에러 메시지도 이미 "삭제"만 안내), `docs/DESIGN.md` §12.8에 기각한 대안 3종과 근거를 기록했다. 잔여 위험: 규약을 어긴 수동 개입 + 마이크로초 경합의 동시 발생 — 발생 시 결과는 새 소유자의 락 파일 삭제 → 그 다음 acquire가 `wx`로 성공해 두 프로세스가 같은 디렉터리를 열 수 있음(SPEC §12의 원래 위험). 자동 테스트 없음(경합 자체가 결정적으로 재현 불가, 대조표에 `수동/사람`).
-
----
-
-## E. Resend idempotency·상태 판정
-
-### SR2-MAIL-001 — 새 실행마다 random runId라 재실행 시 idempotency key가 달라짐
-
-- 우선순위: **P0**
-- 파일: `agent/reorder.ts`, `agent/folderScan.ts`, `resendProvider.ts`
-- 근거: provider에는 runId를 idempotency key로 넘기지만 CLI 실행마다 random UUID를 만든다. timeout/unknown 후 다음 cron 또는 일반 CLI 재실행은 같은 보고서에도 새 key를 사용한다. 사용자가 CLI에서 이전 runId를 지정하는 인터페이스도 없다.
-- 영향: Resend의 동일-key dedupe가 적용되지 않아 “발송됐지만 응답을 못 받은” 실행 뒤 동일 이메일이 다시 전송될 수 있다.
-- 수정 기준: 보고서 identity(수신자+보고기간+내용 hash 등)에서 안정적인 delivery key를 만들거나 unknown 상태를 다음 실행이 조회해 사람 확인 전 같은 digest 발송을 막는다. 실제 CLI 재실행 경로로 검증한다.
-- **RESOLVED**: `--run-id=<값>` CLI 플래그를 `agent/reorder.ts`/`agent/folderScan.ts`(지점 모드) 둘 다에 추가했다(`src/core/cliArgs.ts`의 `parseNamedArg`, 순수 함수라 단위 테스트 가능 — `runReorderAgent`/`runFolderScan` 자체의 `opts.runId` 전달은 이미 T34에서 테스트돼 있었다, 빠진 건 CLI 진입점의 argv 파싱뿐이었다). 지정 안 하면 기존처럼 `randomUUID()`로 폴백한다. 실제 `npx tsx src/agent/folderScan.ts --run-id=smoke-test-run-42`로 완료 로그의 `run_id`가 정확히 그 값으로 나오는 걸 직접 재현·확인, 플래그 생략 시 랜덤 UUID로 폴백하는 것도 재확인. README "이메일 발송 재시도" 절에 실제 명령 예시를 반영.
-
-### SR2-MAIL-002 — timeout 이외 네트워크 오류도 결과가 불확실할 수 있음
-
-- 우선순위: **P1**
-- 근거: `AmbiguousSendError`는 Error name이 `TimeoutError`일 때만 설정된다. 연결 reset/socket close는 요청 본문이 서버에 도달한 뒤 응답만 유실된 상황일 수 있는데 `failed`로 기록된다.
-- 영향: 다음 실행이 확실한 미발송으로 오인하고 재시도할 수 있다.
-- 수정 기준: HTTP response를 받기 전 발생한 네트워크 오류는 원칙적으로 ambiguous로 분류하고 provider idempotency로 안전하게 재시도한다. 명백한 DNS/connection-refused를 별도로 구분할지는 보수적으로 결정한다.
-- **RESOLVED**: `resendProvider.ts`의 분류 기준을 뒤집었다 — 예전엔 `TimeoutError`만 `AmbiguousSendError`(→ `unknown`)였고 나머지 응답-이전 오류는 전부 `failed`였는데, 이제 **연결이 성립조차 안 된 게 확실한 코드**(`ENOTFOUND`/`EAI_AGAIN`/`ECONNREFUSED`, `DEFINITELY_NOT_SENT_CODES`)만 `failed`이고 그 외 모든 응답-이전 오류(타임아웃, `ECONNRESET`, undici `UND_ERR_SOCKET`, 코드 없는 알 수 없는 오류)는 `AmbiguousSendError`다. 오분류 비용이 비대칭이라(실제 나간 메일을 failed로 기록 → 다음 실행이 새 run_id로 중복 발송 / 실제 안 나간 메일을 unknown으로 기록 → 사람이 대시보드 한 번 확인) 기본값을 ambiguous 쪽으로 뒀다. 실제 undici 오류 형태(`TypeError("fetch failed")` + `cause.code`)는 Node 24에서 닫힌 포트(`ECONNREFUSED`)·없는 호스트(`ENOTFOUND`)·연결 후 응답 없이 끊는 서버(`UND_ERR_SOCKET`)로 직접 재현해 확인했고, cause 체인을 따라가 code를 찾는다(최대 5단계). `tests/resendProvider.test.ts`에 6개 회귀 테스트(재현한 실제 형태를 픽스처로), `core/types.ts` `unknown` 주석과 README "이메일 발송 재시도" 절 갱신. MAIL-003(dedupe 보존시간 이후 정책)은 별도 트래킹.
-
-### SR2-MAIL-003 — provider의 dedupe 보존시간 이후 재시도 정책이 없음
-
-- 우선순위: **P1**
-- 근거: 코드 주석은 Resend 동일-key dedupe가 24시간이라고 명시하지만 unknown/sending 상태의 만료·사람 확인·24시간 이후 처리 규칙이 연결되어 있지 않다.
-- 수정 기준: provider dedupe TTL 안에서만 자동 재시도를 허용하고, TTL 이후에는 새 발송 승인 또는 원격 message 조회가 필요하도록 상태 머신을 정의한다.
-- **RESOLVED (2026-09-04)**: 상태 머신을 `docs/DESIGN.md` §11.5에 정의하고 코드로 집행한다. `NotificationProvider.dedupeTtlMs`(신규, Resend 어댑터는 `RESEND_IDEMPOTENCY_TTL_MS`=24h 선언, Mock은 기본 24h·`null`이면 미지원)를 근거로, 두 에이전트가 `sending` 예약 직전에 공통 게이트 `agent/sendRetryGate.ts` → 순수 판정 `core/sendRetryPolicy.ts`(`decideSameRunRetry`)를 호출한다. 판정: `unknown`/`sending` 이전 시도가 없으면 fresh(`failed`/`dry_run` 뒤 재시도 포함 — 확실히 안 나간 시도는 시간 제한 없음). 있으면 **가장 오래된** 시도 시각 기준으로 `dedupeTtlMs − DEDUPE_SAFETY_MARGIN_MS(1h)` 안이면 허용(경계 같으면 거부), 밖이면 `SendRetryRefusedError`(이전 시각·상태, 거부 이유, "대시보드 확인 → 안 나갔으면 새 run_id" 절차, 자동 조회 불가 이유 포함), provider가 `dedupeTtlMs`를 선언하지 않으면 항상 거부. 원격 message 조회 옵션은 채택하지 않았다 — `unknown`은 message_id가 없고 Resend API가 Idempotency-Key로 메일을 조회하는 엔드포인트를 제공하지 않아 사람 확인이 유일한 경로(문서에 명시). **`sending`에 멈춘 행 처리(사용자 위임으로 포함 판단)**: finding 문구("unknown/sending 상태의 만료")에 들어 있고, `sending` 잔여 행은 의미상 `unknown`과 같으며(Resend 도달 여부 불명), 처리하지 않으면 README가 안내하는 "같은 run_id 재시도"가 부분 unique 인덱스에 영원히 막혀 문서와 코드가 어긋난다. 범위는 좁혔다 — 백그라운드/cron 회수는 계속 없고(§11.5 원칙 유지), **사람이 `--run-id`로 명시 재시도한 경로에서만** 보존 기간 안이면 `Warehouse.markStaleSendingUnknown(runId)`(신규)로 `unknown(error_code=stale_sending)` 마감 후 예약 — `sent_at`은 유지해 기준 시각을 보존한다. `Warehouse.listAgentSendAttempts(runId)`(신규 읽기 메서드)가 판정 재료를 제공한다(감사 로그 테이블 — 가드레일 4 범위 안). 마이그레이션 불필요(status 값 변화 없음, `stale_sending`은 free-text error_code). 테스트: `tests/sendRetryPolicy.test.ts` 11, `tests/reorderAgent.test.ts` 6(TTL 안 허용·25h 뒤 거부·stale sending 마감·stale TTL 밖 거부·dedupe 미지원 거부·failed 뒤 무제한 회귀), `tests/folderScan.test.ts` 2, `tests/pgWarehouse.test.ts` 2. README "이메일 발송 재시도"에 23시간 규칙·이후 절차, `DESIGN.md` §11.5(구 문구 "운영자가 failed로 전이" 폐기 — 결과 불명 행에 failed는 잘못된 상태)·§12.8, TESTING.md §8 게이트 항목 추가.
+- Priority: **P1**
+- File: `src/core/auditAllowlist.ts`
+- Basis: The `2027-03-03` review deadline exists only in a comment; the allowlist data has no expiry date.
+- Impact: Even after the deadline passes, CI keeps auto-approving the same advisory.
+- Fix criteria: Structure the allowlist as `{url, expiresAt, rationale}` and fail when the reference clock is at or past the expiry date.
+- **RESOLVED**: Restructured `ACCEPTED_ADVISORY_URLS` in `src/core/auditAllowlist.ts` (an array of URL strings, deadline only in a comment) into `ACCEPTED_ADVISORIES: {url, expiresAt: "2027-03-03", rationale}[]` (the URL array is kept as a derived value). `checkAdvisoriesAgainstAllowlist(advisoryUrls, allowlist, now)` now **explicitly takes** the reference time (CLAUDE.md: "date calculations use Clock; no implicit dependence on the local clock") and adds `expired: [{url, expiresAt}]` to the result — expired approvals are not counted as allowed. The expiry boundary is "fails from UTC 00:00 on the expiry date" (`isAdvisoryExpired`; a malformed date is treated as expired so that a typo cannot become a permanent approval). Both callers treat expiry as **fail-closed**: `auditLockfile.ts` (per-PR gate) returns a failure string containing the deadline and the action to take, `verifyPack.ts` (release gate) throws ("will not publish with an expired exception") — the existing fail-open/closed policy for invalid reports is unchanged. The hardcoded "review deadline 2027-03-03" text in `verifyPack.ts` is now also derived from the data. Tests: `tests/auditAllowlist.test.ts` — 23:59:59.999Z the day before the deadline is approved, from 00:00:00Z on the day it is `expired` (a category separate from unexpected), an advisory not appearing in the report is irrelevant even after the deadline, format and non-expiry validation of the real `ACCEPTED_ADVISORIES` data, `isAdvisoryExpired` malformed-format cases; `tests/auditLockfile.test.ts` — the same report on the deadline day yields a failure string (containing deadline, URL and action), the day before passes. All with injected fixed time, 0 dependence on the real clock. Updated the `docs/005` SEC-006 wording to "the deadline is mechanically enforced in CI".
 
 ---
 
-## F. npm 설치 후 migration CLI 간극
+## D. File Lock PID/Cross-host Determination
 
-### SR2-REL-001 — network Postgres 사용자는 게시 패키지만으로 migration을 실행할 수 없음
+### SR2-LOCK-001 — On hostname collision, another host's active lock can be deleted as stale
 
-- 우선순위: **P0**
-- 파일: `package.json`, `scripts/migrate.ts`, `warehouseFactory.ts`
-- 근거:
-  - tarball `files`에는 `migrations`는 포함하지만 `scripts/migrate.ts`와 컴파일된 migration CLI는 포함하지 않는다.
-  - 등록된 bin은 server/onboard뿐이다.
-  - `DATABASE_URL`이 있으면 `createNetworkWarehouse()`는 자동 migration을 실행하지 않는다.
-- 영향: npm 소비자가 Neon/Supabase를 선택하면 빈 DB에 필요한 schema를 만들 공식 명령이 없다. README의 repository용 `npm run migrate`는 설치된 dependency에서 사용할 수 없다.
-- 판정: 사용자 제안대로 제품 결정을 먼저 해야 하지만, 결정 전에는 publish를 차단해야 한다.
-- 선택지:
-  1. `retail-mcp-migrate` bin을 제공하고 사람 확인 가드·dry-run/target 표시를 둔다.
-  2. server/agent startup 자동 migration을 채택하되 기존 “프로덕션 migration은 사람만” 가드레일을 공식 변경한다.
-  3. npm 배포판은 embedded PGlite만 지원하고 network Postgres 기능을 비공개/고급 설치 범위로 분리한다.
-- **제품 결정(사용자, 2026-09-04)**: 선택지 1 채택. 근거 — DATABASE_URL을 설정하는 사용자는 이미 Neon/Supabase 계정 생성·연결 문자열 발급을 거친, 어느 정도 기술적인 선택을 한 사람들이다(embedded PGlite가 진짜 비개발자 기본 경로이고 이미 자동 마이그레이션이라 이 문제와 무관). 그 단계까지 거친 사람에게 명시적 CLI 명령 한 번 더 요구하는 건 Prisma/Django/Rails 등 업계 표준 마이그레이션 도구와 같은 패턴이라 부담이 작다. 선택지 2(자동 migration)는 여러 라운드의 적대적 검수로 확정한 가드레일 5("프로덕션 마이그레이션은 사람만")를 직접 뒤집고 다중 인스턴스 동시 기동 시 새 위험을 만든다. 선택지 3(embedded 전용 제한)은 이미 구현·테스트된 기능을 통째로 제거하는 과한 대응이다.
-- **RESOLVED**: `retail-mcp-migrate` bin(`src/cli/migrate.ts`) 추가 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션 목록만 표시, 자격증명은 절대 출력하지 않음), 실제 적용은 `--confirm`(가드레일 1의 dry_run+--confirm 이중 게이트와 같은 패턴). 실제 적용/점검 로직(advisory lock 포함)은 `scripts/migrate.ts`(저장소 전용)와 `src/adapters/migratePg.ts`를 공유해 lock key 등이 두 파일에 따로 하드코딩되는 걸 막았다. 선택지 1에 더해, 사용자가 지적한 "실제로 마찰의 원인은 명령어 한 번이 아니라 confusing raw 에러"라는 관찰을 반영해 읽기 전용 사전 점검(`checkPendingMigrations`, `migrationRunner.ts`)도 추가했다 — `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`가 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`(`warehouseFactory.ts`)를 호출해 스키마 누락을 raw Postgres 에러("relation ... does not exist") 대신 `retail-mcp-migrate`를 안내하는 에러로 즉시 알린다. 이 사전 점검은 `createWarehouseFromEnv()` 자체에는 넣지 않았다 — 그 함수가 DATABASE_URL이 있어도 실제 네트워크 연결을 시도하지 않는다는 기존 테스트 계약(warehouseFactory.test.ts)을 지키기 위해서다. `scripts/verifyPack.ts`(release gate)에 bin 실행·에러 경로 확인을 추가하고, `tests/component/postgres.component.test.ts`(real Postgres)·`tests/warehouseFactory.test.ts`·`tests/migrateRunner.test.ts`·`tests/cliMigrate.test.ts`에 회귀 테스트를 추가했다. `retail-mcp-migrate` 전체 흐름(dry-run/--confirm/멱등성/DATABASE_URL 누락 에러)을 로컬 Postgres 16(Homebrew)에 대해 직접 재현·확인했다. `docs/004` REL-006도 완전 해소로 갱신.
+- Priority: **P0**
+- File: `src/adapters/fileLock.ts`
+- Basis: Host identity is a single `os.hostname()` string. If different machines/containers use the same hostname, they are judged to be the same host. If that PID is dead locally or has a different start time, a lock actually in use by another host is deleted.
+- Impact: On a shared/network filesystem, two PGlite processes can open the same data directory simultaneously and data can be lost. This directly defeats the purpose of the lock's existence.
+- Fix criteria: Either enforce that PGlite data directories are not supported on network/shared filesystems, or include a machine UUID persisted at install time in the host identity. If cross-host safety cannot be guaranteed, prohibit automatic stale reclamation.
+- **RESOLVED**: `FileLockOptions.machineId` (default `defaultGetMachineId()` — the MAC address of the first non-loopback network interface, undefined if unavailable) is now recorded in the lock file, and cross-host determination prefers this value over hostname string comparison whenever both sides have a machineId (different machineIds mean different hosts even with the same hostname; the same machineId means the same host even with different hostnames). Persisting a UUID to a file at install time was not adopted — if the locked directory itself is on a shared/network filesystem, that file would be shared too and defeat the purpose, and writing to the home directory creates real disk IO side effects in every test. The MAC address is a value the OS already holds, writes nothing to disk, and is a synchronous call with no test side effects. If either side lacks a machineId (an older lock, a sandbox without network interfaces, etc.), it falls back safely to the existing hostname determination (a lock lacking even a hostname is handled separately in LOCK-002 as "owning host unknown → busy" — see RESOLVED below). Added 5 regression tests to `tests/fileLock.test.ts`; the existing "a lock written by another host..." test was updated so that both `acquireFileLock` calls explicitly specify a hostname together with distinct machineIds (to deterministically reproduce the "different host" scenario without depending on the real MAC of the machine actually running the tests).
+
+### SR2-LOCK-002 — Legacy locks are not safe on a shared filesystem
+
+- Priority: **P1**
+- Basis: An older lock without a hostname is always treated as same-host. Right after an upgrade, on a shared directory, another host's legacy active lock can be reclaimed based on a local PID check alone.
+- Fix criteria: Conservatively treat locks without a hostname as busy, or reclaim them only through explicit migration/human confirmation.
+- **RESOLVED (2026-09-04)**: Added a branch ahead of the cross-host determination in `fileLock.ts`: "a lock without a hostname field has an unknown owning host → always busy". Regardless of the local `isAlive(pid)` result (dead or alive), it does not auto-reclaim and fails immediately with `FileLockBusyError` (new `unknownHost: true` property) — the message contains both the cause ("the lock file has no owning-host information — since it is unknown which host it belongs to, it cannot be determined by this machine's PID check") and the fix ("after confirming that no process, on any host, is using this directory, delete `<lockPath>` manually"). An explicit migration option was not adopted — this package has not yet been published to npm, so no hostname-less locks exist on the user side, and since the current code always records a hostname, this branch effectively only triggers on "lock files of unknown origin" (adding an option would itself be a new attack surface and maintenance burden). A lock that has a hostname but no machineId (the pre-SR2-LOCK-001 format) is not treated as legacy and falls back to the existing hostname determination (unchanged). `tests/fileLock.test.ts`: removed the old "legacy lock is treated as same host and reclaimed" test and added 5 in a new describe (dead pid → busy + unknownHost + lock file preserved, live pid → busy, machineId-only missing is normal fallback, current-format stale reclamation regression, current-format alive busy has `unknownHost=false`). Added step ⓞ to the determination order in `docs/DESIGN.md` §12.8, and stated the second human-intervention case in the README "PGlite lock recovery" section.
+
+### SR2-LOCK-003 — Release's check-then-delete is not a single atomic operation
+
+- Priority: **P2**
+- Basis: Release reads the file to check the nonce and then does a separate `rm`. If an operator/recovery tool replaces the file in between, the new owner's lock can be deleted.
+- Impact: Low probability on the normal path, but protection can break when it overlaps with manual stale recovery.
+- Fix criteria: Either ensure the manual recovery protocol does not race with a running release, or consider OS-level lock/atomic-rename-based ownership verification.
+- **ACCEPTED (2026-09-04, no code change — decided after comparing "docs only vs. including code", delegated by user)**: Both branches of the fix criteria were examined and the **manual recovery protocol** side was adopted. OS-level lock: the Node standard library has no `flock`, and excluding native modules is an existing decision. Atomic-rename-based verification: while checking, the lock slot is empty so a third party could acquire it, and it cannot be reverted (`link`→EEXIST), so the window becomes wider — rejected. The additionally examined "re-check `stat().ino` right before deletion" was also rejected — it only narrows the window from "read→delete" to "stat→delete", the same order of magnitude (one syscall apart), so there is no real gain; a test hook would enter production code; and on network FS/Windows where inodes are unstable, it would skip a normal release and create a **new failure mode** where the lock leaks until process exit (risk not reduced, only code added). Since the race requires "an operator deletes the lock of a live process + another process acquires within a microsecond window", it is right to prevent it via protocol: the README "PGlite lock recovery" section now codifies **lock files may only be deleted (no editing or replacing), and must not be touched if a retail-mcp is running on any host** (the error message already advises only "delete"), and the 3 rejected alternatives and their rationale are recorded in `docs/DESIGN.md` §12.8. Residual risk: the simultaneous occurrence of manual intervention that violates the protocol + a microsecond race — if it happens, the outcome is deletion of the new owner's lock file → the next acquire succeeds with `wx` and two processes can open the same directory (the original risk in SPEC §12). No automated test (the race itself cannot be reproduced deterministically; `manual/human` in the cross-reference table).
 
 ---
 
-## T37 전 권장 처리 순서
+## E. Resend Idempotency and Status Determination
 
-1. **P0 결정/수정**: SR2-SEC-001, AUD-001/002, LOCK-001, MAIL-001, REL-001
-2. **P1 보강**: CI 권한·pin/ruleset, history secret scan, audit expiry, legacy lock, ambiguous network/TTL
-3. 실패 회귀 테스트와 실 Postgres/pack 재검증
-4. 이 문서 각 항목에 `OPEN/RESOLVED/ACCEPTED` 및 해결 commit 기록
-5. 그 다음 T37의 8단계 기계적 release gate 실행
+### SR2-MAIL-001 — A random runId on every run means the idempotency key changes on re-run
 
-## 최종 판정
+- Priority: **P0**
+- Files: `agent/reorder.ts`, `agent/folderScan.ts`, `resendProvider.ts`
+- Basis: The runId is passed to the provider as the idempotency key, but a random UUID is generated on every CLI run. After a timeout/unknown, the next cron or ordinary CLI re-run uses a new key for the same report. There is also no interface for the user to specify the previous runId from the CLI.
+- Impact: Resend's same-key dedupe does not apply, so after a run that "sent but never received the response", the same email can be sent again.
+- Fix criteria: Derive a stable delivery key from the report identity (recipient + reporting period + content hash etc.), or have the next run look up the unknown state and block sending the same digest before human confirmation. Verify via the actual CLI re-run path.
+- **RESOLVED**: Added a `--run-id=<value>` CLI flag to both `agent/reorder.ts` and `agent/folderScan.ts` (branch mode) (`parseNamedArg` in `src/core/cliArgs.ts`, a pure function so it is unit-testable — passing `opts.runId` through `runReorderAgent`/`runFolderScan` themselves was already tested in T34; what was missing was only argv parsing at the CLI entry point). When not specified, it falls back to `randomUUID()` as before. Directly reproduced and confirmed with an actual `npx tsx src/agent/folderScan.ts --run-id=smoke-test-run-42` that the `run_id` in the completion log is exactly that value, and re-confirmed that it falls back to a random UUID when the flag is omitted. Reflected the actual command example in the README "Email send retry" section.
 
-T29~T36은 1차 검수의 많은 결함을 실질적으로 개선했고 기존 522개 테스트도 모두 통과한다. 그러나 새로 만든 보안 게이트와 멱등성/락 보강 자체에 독립적인 우회 경로가 남아 있다. 특히 audit의 오류 JSON 통과, stable하지 않은 email idempotency key, hostname 충돌 lock 회수, network Postgres migration 부재는 npm 공개 전 반드시 닫아야 한다.
+### SR2-MAIL-002 — Network errors other than timeout can also have uncertain outcomes
+
+- Priority: **P1**
+- Basis: `AmbiguousSendError` is set only when the Error name is `TimeoutError`. A connection reset/socket close may be a situation where the request body reached the server and only the response was lost, yet it is recorded as `failed`.
+- Impact: The next run may mistake it for a definite non-send and retry.
+- Fix criteria: Network errors that occur before an HTTP response is received should in principle be classified as ambiguous and retried safely via provider idempotency. Decide conservatively whether to separately distinguish obvious DNS/connection-refused cases.
+- **RESOLVED**: Inverted the classification criterion in `resendProvider.ts` — previously only `TimeoutError` was `AmbiguousSendError` (→ `unknown`) and every other pre-response error was `failed`; now only **codes that make it certain the connection was never even established** (`ENOTFOUND`/`EAI_AGAIN`/`ECONNREFUSED`, `DEFINITELY_NOT_SENT_CODES`) are `failed`, and every other pre-response error (timeout, `ECONNRESET`, undici `UND_ERR_SOCKET`, unknown errors without a code) is `AmbiguousSendError`. Because the cost of misclassification is asymmetric (recording a mail that actually went out as failed → the next run sends a duplicate with a new run_id / recording a mail that actually did not go out as unknown → a human checks the dashboard once), the default was placed on the ambiguous side. The actual undici error shape (`TypeError("fetch failed")` + `cause.code`) was directly reproduced and confirmed on Node 24 with a closed port (`ECONNREFUSED`), a nonexistent host (`ENOTFOUND`) and a server that accepts the connection then closes without responding (`UND_ERR_SOCKET`); the code is found by walking the cause chain (up to 5 levels). 6 regression tests in `tests/resendProvider.test.ts` (using the reproduced real shapes as fixtures); updated the `unknown` comment in `core/types.ts` and the README "Email send retry" section. MAIL-003 (policy after the dedupe retention window) is tracked separately.
+
+### SR2-MAIL-003 — No retry policy after the provider's dedupe retention window
+
+- Priority: **P1**
+- Basis: Code comments state that Resend's same-key dedupe lasts 24 hours, but there are no connected rules for expiry of the unknown/sending state, human confirmation, or handling after 24 hours.
+- Fix criteria: Define a state machine that allows automatic retry only within the provider dedupe TTL, and after the TTL requires either new send approval or a remote message lookup.
+- **RESOLVED (2026-09-04)**: The state machine is defined in `docs/DESIGN.md` §11.5 and enforced in code. Based on `NotificationProvider.dedupeTtlMs` (new; the Resend adapter declares `RESEND_IDEMPOTENCY_TTL_MS`=24h, the Mock defaults to 24h and `null` means unsupported), both agents call the common gate `agent/sendRetryGate.ts` → pure decision `core/sendRetryPolicy.ts` (`decideSameRunRetry`) right before reserving `sending`. Decision: if there is no previous `unknown`/`sending` attempt, it is fresh (including retries after `failed`/`dry_run` — attempts that definitely did not go out have no time limit). If there is one, based on the **oldest** attempt time, allow if within `dedupeTtlMs − DEDUPE_SAFETY_MARGIN_MS(1h)` (refuse if exactly at the boundary), otherwise `SendRetryRefusedError` (including the previous time and status, the refusal reason, the "check the dashboard → if it did not go out, use a new run_id" procedure, and why automatic lookup is impossible); if the provider does not declare `dedupeTtlMs`, always refuse. The remote message lookup option was not adopted — `unknown` has no message_id, and the Resend API provides no endpoint to look up a mail by Idempotency-Key, so human confirmation is the only path (stated in the docs). **Handling rows stuck in `sending` (included by decision delegated by user)**: it is part of the finding's wording ("expiry of the unknown/sending state"), a leftover `sending` row is semantically the same as `unknown` (whether it reached Resend is unknown), and if not handled, the "retry with the same run_id" that the README advises would be blocked forever by the partial unique index, making docs and code diverge. The scope was narrowed — there is still no background/cron reclamation (§11.5 principle retained), and **only on the path where a human explicitly retries with `--run-id`**, if within the retention window, `Warehouse.markStaleSendingUnknown(runId)` (new) closes it as `unknown(error_code=stale_sending)` before reserving — `sent_at` is kept to preserve the reference time. `Warehouse.listAgentSendAttempts(runId)` (new read method) supplies the material for the decision (audit log table — within guardrail 4's scope). No migration needed (no change to status values; `stale_sending` is a free-text error_code). Tests: `tests/sendRetryPolicy.test.ts` 11, `tests/reorderAgent.test.ts` 6 (allowed within TTL · refused after 25h · stale sending closed · stale outside TTL refused · refused when dedupe unsupported · unlimited after failed regression), `tests/folderScan.test.ts` 2, `tests/pgWarehouse.test.ts` 2. Added the 23-hour rule and the subsequent procedure to the README "Email send retry" section, `DESIGN.md` §11.5 (the old wording "the operator transitions it to failed" was dropped — failed is the wrong status for a row whose outcome is unknown) and §12.8, and a gate item in TESTING.md §8.
+
+---
+
+## F. Migration CLI Gap After npm Install
+
+### SR2-REL-001 — Network Postgres users cannot run migrations with the published package alone
+
+- Priority: **P0**
+- Files: `package.json`, `scripts/migrate.ts`, `warehouseFactory.ts`
+- Basis:
+  - The tarball `files` includes `migrations` but not `scripts/migrate.ts` or a compiled migration CLI.
+  - The only registered bins are server/onboard.
+  - When `DATABASE_URL` is set, `createNetworkWarehouse()` does not run automatic migration.
+- Impact: If an npm consumer chooses Neon/Supabase, there is no official command to create the required schema in an empty DB. The repository-oriented `npm run migrate` in the README is not available from an installed dependency.
+- Verdict: As the user proposed, a product decision must be made first, but publish must be blocked until it is decided.
+- Options:
+  1. Provide a `retail-mcp-migrate` bin with a human-confirmation guard and dry-run/target display.
+  2. Adopt automatic migration at server/agent startup, but officially change the existing "production migrations are done by humans only" guardrail.
+  3. Have the npm distribution support only embedded PGlite and separate the network Postgres feature into a private/advanced install scope.
+- **Product decision (user, 2026-09-04)**: Option 1 adopted. Rationale — users who set DATABASE_URL have already gone through creating a Neon/Supabase account and issuing a connection string, i.e. they have made a somewhat technical choice (embedded PGlite is the real non-developer default path and already auto-migrates, so it is unaffected by this issue). Requiring one more explicit CLI command from someone who has come that far is the same pattern as industry-standard migration tools such as Prisma/Django/Rails, so the burden is small. Option 2 (automatic migration) directly reverses guardrail 5 ("production migrations are done by humans only"), which was confirmed through multiple rounds of adversarial review, and creates a new risk when multiple instances start simultaneously. Option 3 (embedded-only restriction) is an excessive response that removes an already implemented and tested feature wholesale.
+- **RESOLVED**: Added the `retail-mcp-migrate` bin (`src/cli/migrate.ts`) — default dry-run (shows only the target host/db name and the list of pending migrations; never prints credentials), actual application with `--confirm` (the same pattern as guardrail 1's dry_run + --confirm double gate). The actual apply/check logic (including the advisory lock) is shared between `scripts/migrate.ts` (repository-only) and `src/adapters/migratePg.ts`, preventing the lock key etc. from being hardcoded separately in two files. On top of option 1, reflecting the user's observation that "the real source of friction is not one extra command but a confusing raw error", a read-only pre-check (`checkPendingMigrations`, `migrationRunner.ts`) was also added — `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts` call `ensureNetworkMigrationsApplied()` (`warehouseFactory.ts`) when starting on the `DATABASE_URL` path, so a missing schema is reported immediately as an error pointing to `retail-mcp-migrate` instead of a raw Postgres error ("relation ... does not exist"). This pre-check was not put into `createWarehouseFromEnv()` itself — to keep the existing test contract (warehouseFactory.test.ts) that the function does not attempt an actual network connection even when DATABASE_URL is present. Added bin execution and error path checks to `scripts/verifyPack.ts` (release gate), and regression tests to `tests/component/postgres.component.test.ts` (real Postgres), `tests/warehouseFactory.test.ts`, `tests/migrateRunner.test.ts` and `tests/cliMigrate.test.ts`. The full `retail-mcp-migrate` flow (dry-run/--confirm/idempotency/missing DATABASE_URL error) was directly reproduced and confirmed against a local Postgres 16 (Homebrew). `docs/004` REL-006 was also updated to fully resolved.
+
+---
+
+## Recommended Processing Order Before T37
+
+1. **P0 decisions/fixes**: SR2-SEC-001, AUD-001/002, LOCK-001, MAIL-001, REL-001
+2. **P1 hardening**: CI permissions/pin/ruleset, history secret scan, audit expiry, legacy lock, ambiguous network/TTL
+3. Failing regression tests and real Postgres/pack re-verification
+4. Record `OPEN/RESOLVED/ACCEPTED` and the resolving commit on each item in this document
+5. Then run T37's 8-step mechanical release gate
+
+## Final Verdict
+
+T29~T36 substantially improved many defects from the first review, and all existing 522 tests pass. However, the newly built security gates and the idempotency/lock hardening themselves still have independent bypass paths. In particular, error JSON passing the audit, the non-stable email idempotency key, lock reclamation on hostname collision, and the absence of network Postgres migration must be closed before the npm release.

@@ -1,147 +1,147 @@
 # TESTING — retail-mcp
 
-목적: 에이전트가 라이브 클라우드(POS·DB·이메일·LLM) 없이 로컬에서 결정론적으로 검증하게 한다. 특히 **지표 수식이 이 제품의 심장**이므로, 손계산 골든 케이스로 수식을 못박는다.
+Purpose: let the agent verify deterministically and locally, without live cloud services (POS, DB, email, LLM). In particular, since **the metric formulas are the heart of this product**, we pin the formulas down with hand-calculated golden cases.
 
-## 1. 원칙
+## 1. Principles
 
-- 테스트 네트워크 호출 0건. DB는 **PGlite**(인프로세스 Postgres — 운영과 같은 SQL 방언, 파일/메모리 모드), POS는 픽스처, 발송·LLM은 목.
-- 결정론: `FixedClock`, 랜덤 없음. 모든 날짜 계산은 주입된 시계 기준.
-- `npm run check` = typecheck + lint + test. 전체 수 초 내.
+- Zero network calls in tests. DB is **PGlite** (in-process Postgres — same SQL dialect as production, file/memory mode), POS is fixtures, send and LLM are mocks.
+- Determinism: `FixedClock`, no randomness. All date calculations are based on the injected clock.
+- `npm run check` = typecheck + lint + test. The whole thing within a few seconds.
 
-## 2. 목·픽스처 구성
+## 2. Mock and fixture setup
 
-| 구성요소 | 내용 |
+| Component | Description |
 |---|---|
-| `FixtureLoyverseClient` | `fixtures/loyverse/*.json` (stores/items/receipts/inventory — 실제 API 응답 형태) 재생. 페이지네이션·커서 재현 |
-| PGlite 헬퍼 | 테스트마다 새 인스턴스에 `migrations/*.sql` 적용 → 운영과 동일 스키마 보장 |
-| `MockNotificationProvider` | 발송 기록 + `failFor` 실패 주입 (sheet_mcp와 동일 패턴) |
-| `MockSummarizer` | 고정 문자열 반환 / `fail: true`로 LLM 장애 재현 |
-| `FixedClock` | 기준일 고정 (예: 2026-09-01T00:00Z) |
+| `FixtureLoyverseClient` | Replays `fixtures/loyverse/*.json` (stores/items/receipts/inventory — the shape of real API responses). Reproduces pagination and cursors |
+| PGlite helper | Applies `migrations/*.sql` to a fresh instance per test → guarantees the same schema as production |
+| `MockNotificationProvider` | Records sends + injects failures via `failFor` (same pattern as sheet_mcp) |
+| `MockSummarizer` | Returns a fixed string / reproduces LLM failure with `fail: true` |
+| `FixedClock` | Fixed reference date (e.g. 2026-09-01T00:00Z) |
 
-픽스처 시나리오: 매장 2곳 × 품목 8종 × 최근 35일 판매 — 잘 팔리는 것, 안 팔리는 것, 환불 포함, 신규 품목(이력 5일), 재고 0, 유니코드 품목명(타갈로그·한글) 포함.
+Fixture scenario: 2 stores × 8 items × last 35 days of sales — including fast sellers, non-sellers, refunds, a new item (5 days of history), zero stock, and Unicode item names (Tagalog, Korean).
 
-## 3. 골든 케이스 (unit — core/metrics)
+## 3. Golden cases (unit — core/metrics)
 
-수기 계산값을 테스트에 하드코딩한다. 예:
+Hand-calculated values are hard-coded in the tests. Examples:
 
-- 30일 판매 60개, 기말재고 40 → 셀스루 = 60/(60+40) = **0.60**
-- 28일 판매 56개 → 일평균 2.0 / 재고 15 → 커버 **7.5일** → 리드7+안전3=10 기준 **위험**
-- 목표커버 21일 → 제안량 = ceil(21×2.0 − 15) = **27**
-- 판매 0 + 재고 20 → 일평균 0 → 커버 ∞ 표기, 위험 아님, 제안 0
-- 판매 0 + 재고 0 → 셀스루 null (신규/무재고 구분 표기)
-- 환불 포함(판매 10, 환불 −2) → soldQty 8로 집계
+- 60 sold over 30 days, ending stock 40 → sell-through = 60/(60+40) = **0.60**
+- 56 sold over 28 days → daily average 2.0 / stock 15 → cover **7.5 days** → **at risk** against lead 7 + safety 3 = 10
+- Target cover 21 days → suggested qty = ceil(21×2.0 − 15) = **27**
+- 0 sold + stock 20 → daily average 0 → cover shown as ∞, not at risk, suggestion 0
+- 0 sold + stock 0 → sell-through null (shown to distinguish new/no-stock)
+- Including refunds (sold 10, refunded −2) → aggregated as soldQty 8
 
-## 4. 필수 엣지 케이스 체크리스트 (component)
+## 4. Mandatory edge-case checklist (component)
 
 **ETL**
-- [ ] 동일 픽스처 2회 동기화 → 행 수 불변 (멱등 upsert)
-- [ ] receipts 커서 저장·재개: 2페이지 중 1페이지 후 실패 → 커서 미갱신 → 재실행 시 이어받기
-- [ ] 환불 영수증 → 음수 qty 적재
-- [ ] 스냅샷: 동기화 2회 → `inventory_snapshots` 2개 시점 존재
+- [ ] Syncing the same fixture twice → row count unchanged (idempotent upsert)
+- [ ] receipts cursor save/resume: failure after 1 of 2 pages → cursor not advanced → re-run resumes from there
+- [ ] Refund receipt → loaded as negative qty
+- [ ] Snapshots: 2 syncs → 2 points in time exist in `inventory_snapshots`
 
-**MCP 도구**
-- [ ] `sell_through` 기본 호출 = 골든 케이스 값과 일치, 근사식 각주 포함
-- [ ] `reorder_suggestions` 결과 = 에이전트 리포트 표와 **완전 동일** (같은 core 경유 회귀 가드)
-- [ ] store_id·category 필터 정확성 / 존재하지 않는 store_id → 수정 방법 담긴 에러
-- [ ] `sync_status` — 커서·시각 반환
+**MCP tools**
+- [ ] Default `sell_through` call = matches the golden case values, includes the approximation footnote
+- [ ] `reorder_suggestions` result = **exactly identical** to the agent report table (regression guard via the same core)
+- [ ] store_id and category filter correctness / nonexistent store_id → error containing how to fix
+- [ ] `sync_status` — returns cursor and timestamp
 
-**에이전트**
-- [ ] 제안 0건 → 발송 0건, 로그만
-- [ ] `SEND_MODE=dry_run` → provider 호출 0건, dry-run 출력에 표 포함
-- [ ] `SEND_MODE=live` + `--confirm` 둘 다일 때만 목 provider 호출됨 (한쪽만으로는 불가)
-- [ ] `MockSummarizer` 실패 → 요약 없이 표만으로 발송 진행
-- [ ] 발송 후 `agent_send_log`에 기록 (dry_run 여부 포함)
+**Agent**
+- [ ] 0 suggestions → 0 sends, log only
+- [ ] `SEND_MODE=dry_run` → 0 provider calls, dry-run output includes the table
+- [ ] The mock provider is called only when both `SEND_MODE=live` + `--confirm` are present (neither alone suffices)
+- [ ] `MockSummarizer` failure → send proceeds with the table only, without a summary
+- [ ] After sending, recorded in `agent_send_log` (including whether dry_run)
 
-**성능 가드**
-- [x] 판매 라인 50,000행 픽스처: ETL 적재 + `reorder_suggestions` 계산 합계 < 10초(BUDGET_MS, PGlite 기준) — `tests/performance.test.ts`. **`npm run coverage`(v8 계측)에서는 이 테스트를 제외한다**(`vitest.config.ts`, TASKS T36) — CI에서 6567ms/5463ms/5042ms 등으로 반복 실패하는 걸 실측했다. wall-clock 예산을 계측된 실행에서 재는 것 자체가 잘못된 측정이라 가드를 없앤 게 아니라 계측 없는 도구로 옮긴 것 — 이 가드는 계측 없는 `test` job(plain `vitest run`, 매 PR/OS/Node 조합)이 여전히 강제한다. **예산 자체도 5초→10초로 올렸다**(2차 적대적 검수 대응) — coverage를 뺀 뒤에도 plain `test` job에서 5015~5392ms로 반복 실패해, CI 공유 러너 노이즈 기준 5초가 너무 빡빡했다는 게 최종 확인됐다(로컬 정상 실행은 ~2초라 10초도 실제 회귀는 충분히 잡는다).
+**Performance guard**
+- [x] 50,000-row sales-line fixture: ETL load + `reorder_suggestions` computation total < 10 seconds (BUDGET_MS, on PGlite) — `tests/performance.test.ts`. **This test is excluded under `npm run coverage` (v8 instrumentation)** (`vitest.config.ts`, TASKS T36) — we measured it failing repeatedly in CI at 6567ms/5463ms/5042ms etc. Measuring a wall-clock budget under an instrumented run is itself a wrong measurement, so the guard was not removed but moved to an uninstrumented tool — this guard is still enforced by the uninstrumented `test` job (plain `vitest run`, every PR/OS/Node combination). **The budget itself was also raised from 5 to 10 seconds** (second adversarial review response) — even after excluding coverage it kept failing in the plain `test` job at 5015~5392ms, which finally confirmed that 5 seconds was too tight given shared CI runner noise (a normal local run is ~2 seconds, so 10 seconds still catches real regressions).
 
-## 5. 수동 스모크 (사람 전용 — scripts/smoke.ts)
+## 5. Manual smoke (human-only — scripts/smoke.ts)
 
-`npm run smoke`: 실 Loyverse 토큰 + 실 DB로 ① sync ② 도구 3종 호출 출력 ③ 에이전트 dry-run. **live 발송은 스모크에 포함하지 않는다** — 최초 실발송은 사람이 `--confirm`으로 직접 1회.
+`npm run smoke`: with a real Loyverse token + real DB, ① sync ② call the 3 tools and print output ③ agent dry-run. **Live send is not part of the smoke** — the first live send is done once by a human directly with `--confirm`.
 
-## 6. 커버리지
+## 6. Coverage
 
-- `src/core/` 90% 이상 (vitest --coverage, T9에서 리포트). 어댑터는 스모크로 보완.
+- `src/core/` 90% or above (vitest --coverage, reported in T9). Adapters are supplemented by the smoke.
 
-## 7. 추가 회귀 가드
+## 7. Additional regression guards
 
-**동기화·동시성**
+**Sync and concurrency**
 
-- [ ] 페이지 중간 실패 시 해당 리소스 데이터와 watermark가 모두 이전 상태로 롤백되고, 재실행은 이전 watermark부터 안전하게 중복 처리
-- [ ] 동일 `updated_at`의 영수증 여러 건이 페이지 경계에 있어도 누락 0건
-- [ ] 동일 시각을 반환하는 `FixedClock`으로 2회 동기화해도 스냅샷 PK 충돌이 없고 실행별 스냅샷 구분 가능
-- [ ] 동시 `sync_now` 2건 중 하나만 실행되고 다른 호출은 실행 중 오류/상태를 반환
+- [ ] On a mid-page failure, both that resource's data and the watermark roll back to the previous state, and the re-run safely reprocesses duplicates from the previous watermark
+- [ ] Zero omissions even when multiple receipts with the same `updated_at` straddle a page boundary
+- [ ] Syncing twice with a `FixedClock` that returns the same time causes no snapshot PK conflict and snapshots remain distinguishable per run
+- [ ] Of 2 concurrent `sync_now` calls, only one runs and the other returns an in-progress error/status
 
-**수치·날짜·품질**
+**Numbers, dates and quality**
 
-- [ ] 환불이 판매보다 많은 기간과 음수 현재고에서 계산 결과가 음수가 되지 않고 품질 경고 포함
-- [ ] 사업장 자정·월말·DST 경계에서도 최근 N일 창이 명세와 일치하고 머신 로컬 타임존에 독립적
-- [ ] 소수 수량 및 큰 `numeric` 값에서 중간 반올림 없이 재주문 `ceil` 정책 일치
-- [ ] stale 동기화 결과와 근사 셀스루에 필수 경고·마지막 성공 시각 포함
+- [ ] With refunds exceeding sales in a period and negative on-hand stock, computed results do not go negative and include a quality warning
+- [ ] At business midnight, month-end and DST boundaries, the last-N-days window matches the spec and is independent of the machine's local timezone
+- [ ] With fractional quantities and large `numeric` values, the reorder `ceil` policy matches with no intermediate rounding
+- [ ] Stale sync results and approximate sell-through include the required warning and the last successful time
 
-**보안·장애**
+**Security and failures**
 
-- [ ] 조회 전용 DB 역할로 5개 조회 도구는 성공하고 쓰기 및 `sync_now`는 실패/미등록
-- [ ] API 타임아웃·429 `Retry-After`·재시도 상한 검증, 오류/로그 스냅샷에 시크릿 미포함
-- [ ] 동일 `run_id`의 live 재시도에서 이메일 중복 발송 0건
-- [ ] Summarizer 입력에 토큰·이메일 주소·불필요한 원시 영수증 데이터가 없음
+- [ ] With a read-only DB role, the 5 query tools succeed and writes and `sync_now` fail/are not registered
+- [ ] Verify API timeout, 429 `Retry-After` and the retry cap; no secrets in error/log snapshots
+- [ ] Zero duplicate emails on a live retry with the same `run_id`
+- [ ] Summarizer input contains no tokens, email addresses or unnecessary raw receipt data
 
-커버리지 리포트와 50k행 성능 가드는 `TASKS.md`의 **T10**에서 완료한다(T9는 MCP 기능 회귀 테스트까지 담당).
+The coverage report and the 50k-row performance guard are completed in **T10** of `TASKS.md` (T9 also covers MCP feature regression tests).
 
-## 8. 출시 게이트 및 공격 회귀 테스트 (2026-09-03, docs/004~008 적대적 검수 대응 — TASKS T28)
+## 8. Release gate and attack regression tests (2026-09-03, response to the docs/004~008 adversarial review — TASKS T28)
 
-npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`)가 지적한 대로, 지금까지의 게이트(`npm run check` + 위 §1~§7)는 저장소 소스 트리와 devDependency가 설치된 환경만 검증하고 실제 npm 설치·운영 경계·공격 시나리오는 검증하지 않는다(008 QA-001~006). 아래를 **release gate**(npm publish 전 필수, 매 로컬 `npm run check`와는 별도)로 추가한다 — 각 항목의 실제 구현은 담당 TASKS 번호에서 진행한다.
+As the pre-npm-publish adversarial review (`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`) pointed out, the gates so far (`npm run check` + §1~§7 above) only verify the repository source tree and an environment with devDependencies installed, and do not verify actual npm installation, operational boundaries or attack scenarios (008 QA-001~006). The following are added as the **release gate** (mandatory before npm publish, separate from each local `npm run check`) — the actual implementation of each item is done under its assigned TASKS number.
 
-**패키징 게이트 (TASKS T29 — 구현 완료, `npm run verify:pack`)**
+**Packaging gate (TASKS T29 — implemented, `npm run verify:pack`)**
 
-- [x] `npm pack --dry-run`의 파일 목록이 `files` allowlist와 일치(`dist`/`migrations`/`README`/`LICENSE`/`.env.example`만) — 97개→63개로 확인
-- [x] tarball을 임시 디렉터리에 `npm install --omit=dev`로 설치 후 `bin` 실행 또는 MCP initialize까지 성공(QA-001) — `scripts/verifyPack.ts`가 `retail-mcp`(MCP `tools/list`)와 `retail-mcp-onboard`(`.env`+템플릿 생성)를 둘 다 실제 spawn으로 검증. 아직 `npm run check`/CI에는 자동 연결하지 않음(빌드+pack+install까지 하는 무거운 절차라 release gate 전용 별도 스크립트로 둠, TESTING §1 원칙과 별개) — CI 연결은 T37.
+- [x] The file list of `npm pack --dry-run` matches the `files` allowlist (only `dist`/`migrations`/`README`/`LICENSE`/`.env.example`) — confirmed 97 → 63 files
+- [x] After installing the tarball into a temporary directory with `npm install --omit=dev`, running `bin` or reaching MCP initialize succeeds (QA-001) — `scripts/verifyPack.ts` verifies both `retail-mcp` (MCP `tools/list`) and `retail-mcp-onboard` (`.env` + template generation) with real spawns. Not yet automatically wired into `npm run check`/CI (it is a heavy procedure that goes through build + pack + install, so it is kept as a separate release-gate-only script, apart from the TESTING §1 principle) — CI wiring is T37.
 
-**보안 게이트 (TASKS T30/T32 — 완료)**
+**Security gate (TASKS T30/T32 — complete)**
 
-- [x] `pg_advisory_lock`류 volatile 함수, `set_config` 재정의를 이용한 explore_sql 우회 시도가 회귀 테스트로 고정됨(SEC-001/002) — `tests/sqlValidator.test.ts`(함수 블록리스트), `tests/exploreSqlExecutor.test.ts`(실행 전 거부 + "검증기를 우회했다면 READ ONLY 혼자로는 못 막았을 것"을 실증하는 문서화 테스트), `tests/server.test.ts`(`EXPLORE_SQL_ALLOW_PGLITE` 게이팅)
-- [x] snapshot CSV formula injection(`=`/`+`/`-`/`@` 시작 값) escape 및 round-trip 테스트(SEC-004) — `tests/csvSafety.test.ts`, `tests/snapshotExport.test.ts`
-- [x] 대형/압축폭탄 XLSX·대량 CSV에 대한 파일 크기·행·셀 길이 상한 테스트(SEC-003) — `tests/fileLimits.test.ts`, `tests/csvExcelParser.test.ts`(잔여 위험은 `src/adapters/fileLimits.ts`/`csvExcelParser.ts` 문서 참고 — XLSX는 buffered 판정)
-- [x] `.env` 0600 + 원자 쓰기 테스트(SEC-005) — `tests/onboard.test.ts`
-- [x] `npm audit --omit=dev` 0건 또는 근거·만료일이 기록된 승인된 예외(SEC-006) — 0건은 아님, uuid(exceljs 경유) 승인된 예외 1건(재검토 2027-03-03, `docs/005` 상세) + `scripts/verifyPack.ts`가 **실제 게시 tarball 설치 기준**으로 이 예외 하나뿐인지 매번 확인(release gate 5단계, dev 체크아웃의 `overrides`는 published 소비자에게 적용 안 됨을 착수 중 발견)
+- [x] explore_sql bypass attempts using volatile functions such as `pg_advisory_lock` and `set_config` redefinition are pinned by regression tests (SEC-001/002) — `tests/sqlValidator.test.ts` (function blocklist), `tests/exploreSqlExecutor.test.ts` (rejection before execution + a documentation test demonstrating "had the validator been bypassed, READ ONLY alone would not have stopped it"), `tests/server.test.ts` (`EXPLORE_SQL_ALLOW_PGLITE` gating)
+- [x] Escape and round-trip tests for snapshot CSV formula injection (values starting with `=`/`+`/`-`/`@`) (SEC-004) — `tests/csvSafety.test.ts`, `tests/snapshotExport.test.ts`
+- [x] File size, row and cell-length limit tests against large/zip-bomb XLSX and bulk CSV (SEC-003) — `tests/fileLimits.test.ts`, `tests/csvExcelParser.test.ts` (for residual risk see the `src/adapters/fileLimits.ts`/`csvExcelParser.ts` docs — XLSX is judged buffered)
+- [x] `.env` 0600 + atomic write test (SEC-005) — `tests/onboard.test.ts`
+- [x] `npm audit --omit=dev` reports 0 findings, or an approved exception with recorded rationale and expiry date (SEC-006) — not 0: one approved exception, uuid (via exceljs) (re-review 2027-03-03, details in `docs/005`) + `scripts/verifyPack.ts` checks every time, **against an install of the actual published tarball**, that this is the only exception (release gate step 5; discovered during the work that the dev checkout's `overrides` do not apply to published consumers)
 
-**데이터 정확성 게이트 (TASKS T31/T33 — 완료)**
+**Data accuracy gate (TASKS T31/T33 — complete)**
 
-- [x] snapshot export → import 왕복 시 `포장수량` 보존(DATA-001) — `tests/snapshotExport.test.ts`
-- [x] authoritative 스캔에서 사라진 SKU/매장이 tombstone 처리되고 재주문·저재고 계산에서 제외됨(DATA-002) — `tests/pgWarehouse.test.ts`(`deactivateMissingCsvRows`), `tests/folderScan.test.ts`(tombstone e2e)
-- [x] 동일 파일로 cron을 반복 실행해도 재발송이 없고, 마지막 발송으로부터 하루가 지나면 변경 없이도 다이제스트 1회가 발송됨(DATA-003) — `tests/folderScan.test.ts`(일일 다이제스트 5 tests, 적용 범위는 실제 발송 시도로 한정 — DESIGN §12.3)
-- [x] snapshot 파일 쓰기 도중 프로세스가 죽어도 이전 정상 snapshot이 손상되지 않음(atomic write, DATA-004) — `tests/atomicFile.test.ts`
-- [x] 컬럼 없음(undefined)/명시적 clear(null)/값 세 상태가 nullable 필드에서 정확히 구분되고 반영됨(DATA-005) — `tests/csvExcelParser.test.ts`(CSV/XLSX 파싱 단계), `tests/pgWarehouse.test.ts`(upsert 단계)
-- [x] SCM 기초재고·기간 불일치 시 `insufficientData`로 표시되고 거짓 discrepancy(확정 원인 단정 경고)가 발생하지 않음(DATA-006) — `tests/metrics.test.ts`
-- [x] SCM 처리 실패가 결과/이메일에 `scmStatus`로 노출됨(DATA-007) — `tests/folderScan.test.ts`
-- [x] 같은 날짜 복수 입고가 축소 없이 합산됨(DATA-008) — `tests/scmSchema.test.ts`
+- [x] `포장수량` (pack quantity) is preserved on the snapshot export → import round trip (DATA-001) — `tests/snapshotExport.test.ts`
+- [x] SKUs/stores that disappear from an authoritative scan are tombstoned and excluded from reorder and low-stock calculations (DATA-002) — `tests/pgWarehouse.test.ts` (`deactivateMissingCsvRows`), `tests/folderScan.test.ts` (tombstone e2e)
+- [x] Repeated cron runs on the same file cause no re-send, and once a day has passed since the last send one digest is sent even with no changes (DATA-003) — `tests/folderScan.test.ts` (daily digest, 5 tests; scope limited to actual send attempts — DESIGN §12.3)
+- [x] If the process dies while writing the snapshot file, the previous good snapshot is not corrupted (atomic write, DATA-004) — `tests/atomicFile.test.ts`
+- [x] The three states — column absent (undefined) / explicit clear (null) / value — are correctly distinguished and applied on nullable fields (DATA-005) — `tests/csvExcelParser.test.ts` (CSV/XLSX parsing stage), `tests/pgWarehouse.test.ts` (upsert stage)
+- [x] On an SCM opening-stock or period mismatch, it is marked `insufficientData` and no false discrepancy (a warning asserting a definite cause) is raised (DATA-006) — `tests/metrics.test.ts`
+- [x] SCM processing failure is exposed as `scmStatus` in results/emails (DATA-007) — `tests/folderScan.test.ts`
+- [x] Multiple receipts on the same date are summed without collapsing (DATA-008) — `tests/scmSchema.test.ts`
 
-**운영 신뢰성 게이트 (TASKS T34 — 완료)**
+**Operational reliability gate (TASKS T34 — complete)**
 
-- [x] `db.close()` 실패 시에도 파일 락이 해제됨(OPS-001) — `tests/warehouseFactory.test.ts`(db.close() 실패 시 release 확인, 둘 다 실패 시 AggregateError)
-- [x] PID 재사용이 stale lock으로 정확히 판별되고, 다른 호스트가 쓴 락은 자동 회수되지 않음(OPS-002) — `tests/fileLock.test.ts`(신규 describe 6 tests)
-- [x] latest file 동률(mtime 동일) 시 결정론적으로 처리됨(OPS-003) — `tests/folderScan.test.ts`(`utimes`로 mtime을 강제로 맞춘 뒤 반복 스캔해도 항상 같은 파일 선택 확인)
-- [x] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음, Idempotency-Key 전달(OPS-004) — `tests/resendProvider.test.ts`, `tests/pgWarehouse.test.ts`, `tests/folderScan.test.ts`
-- [x] 같은 run_id 재시도가 provider dedupe 보존 기간(Resend 24h − 안전 여유 1h) 안에서만 허용되고, 밖이면 `SendRetryRefusedError`로 거부돼 provider가 호출되지 않음; `sending`에 멈춘 행은 보존 기간 안 재시도에서 `unknown(stale_sending)`으로 마감(`sent_at` 유지); dedupe 미지원 provider는 항상 거부; `failed` 뒤 재시도는 무제한(2차 적대적 검수 SR2-MAIL-003) — `tests/sendRetryPolicy.test.ts`(순수 판정 11 tests: 경계 같으면 거부/1ms 안이면 허용, anchor=가장 오래된 unknown/sending), `tests/reorderAgent.test.ts`(신규 describe 6 tests), `tests/folderScan.test.ts`(신규 describe 2 tests), `tests/pgWarehouse.test.ts`(`listAgentSendAttempts`/`markStaleSendingUnknown` 2 tests)
-- [x] 구조화 로그가 JSON으로 파싱 가능하고, 보존 기간 지난 `agent_send_log`/`inventory_snapshots` 행이 `npm run cleanup`으로 정리됨(OPS-005) — `tests/structuredLog.test.ts`, `tests/pgWarehouse.test.ts`(신규 describe 4 tests)
+- [x] The file lock is released even when `db.close()` fails (OPS-001) — `tests/warehouseFactory.test.ts` (confirms release on db.close() failure, AggregateError when both fail)
+- [x] PID reuse is correctly identified as a stale lock, and a lock written by another host is not automatically reclaimed (OPS-002) — `tests/fileLock.test.ts` (new describe, 6 tests)
+- [x] Latest-file ties (identical mtime) are handled deterministically (OPS-003) — `tests/folderScan.test.ts` (forces identical mtimes with `utimes`, then confirms repeated scans always select the same file)
+- [x] An email send timeout remains in `unknown` status and is not automatically retried without human confirmation; Idempotency-Key is passed (OPS-004) — `tests/resendProvider.test.ts`, `tests/pgWarehouse.test.ts`, `tests/folderScan.test.ts`
+- [x] A retry with the same run_id is allowed only within the provider dedupe retention window (Resend 24h − 1h safety margin); outside it, it is refused with `SendRetryRefusedError` and the provider is not called; rows stuck in `sending` are closed as `unknown(stale_sending)` on a retry within the retention window (`sent_at` preserved); providers without dedupe support are always refused; retries after `failed` are unlimited (second adversarial review SR2-MAIL-003) — `tests/sendRetryPolicy.test.ts` (pure decision, 11 tests: refuse at exactly the boundary / allow 1ms inside, anchor = oldest unknown/sending), `tests/reorderAgent.test.ts` (new describe, 6 tests), `tests/folderScan.test.ts` (new describe, 2 tests), `tests/pgWarehouse.test.ts` (`listAgentSendAttempts`/`markStaleSendingUnknown`, 2 tests)
+- [x] Structured logs are parseable as JSON, and `agent_send_log`/`inventory_snapshots` rows past the retention period are cleaned up by `npm run cleanup` (OPS-005) — `tests/structuredLog.test.ts`, `tests/pgWarehouse.test.ts` (new describe, 4 tests)
 
-**Postgres 계약 게이트 (TASKS T35 — 완료, CI 전용)**
+**Postgres contract gate (TASKS T35 — complete, CI-only)**
 
-- [x] CI service Postgres에서 migration, transaction rollback, READ ONLY role, advisory lock cleanup, explore_sql timeout을 component test(QA-004) — `tests/component/postgres.component.test.ts`(`vitest.component.config.ts`, `npm run test:pg-component`), CI `postgres-component` job(`postgres:16` 서비스 컨테이너). PGlite와 실 Postgres의 이미 알려진 차이(§17 statement_timeout 미집행)가 실 Postgres에서는 재현되지 않음을 직접 확인했다(로컬 `postgresql@16`으로 8/8 통과 실측, TASKS T35).
-- [x] CI matrix에 최소 지원 OS/Node LTS로 `npm run verify:pack`(clean tarball install) 포함(007 OPS-006, T34에서 이관) — `.github/workflows/ci.yml`의 `test` job, `os: [ubuntu-latest, macos-latest] × node: [20, 22]`.
+- [x] Component-test migration, transaction rollback, READ ONLY role, advisory lock cleanup and explore_sql timeout on the CI service Postgres (QA-004) — `tests/component/postgres.component.test.ts` (`vitest.component.config.ts`, `npm run test:pg-component`), CI `postgres-component` job (`postgres:16` service container). Directly confirmed that the already-known difference between PGlite and real Postgres (§17, statement_timeout not enforced) does not reproduce on real Postgres (measured 8/8 passing with local `postgresql@16`, TASKS T35).
+- [x] The CI matrix includes `npm run verify:pack` (clean tarball install) on the minimum supported OS/Node LTS (007 OPS-006, moved over from T34) — the `test` job in `.github/workflows/ci.yml`, `os: [ubuntu-latest, macos-latest] × node: [20, 22]`.
 
-**테스트 게이트/공급망 게이트 (TASKS T35 — 완료)**
+**Test gate / supply-chain gate (TASKS T35 — complete)**
 
-- [x] coverage threshold를 CI 필수 게이트로 승격(QA-002) — CI `coverage` job(`npm run coverage`). 로컬 `npm run check`엔 의도적으로 미포함(무거움).
-- [x] coverage 범위를 core 밖(explore_sql/warehouseFactory/agent/mcp/cli)까지 확장 + 위험 모듈별 threshold(QA-003) — `vitest.config.ts`의 `coverage.include`/`thresholds`.
-- [x] 005~007의 공격/정확성 회귀 케이스가 전부 자동 테스트로 연결됨(QA-005) — `docs/010_FINDING_TEST_CROSSREF.md`가 finding별 대조표. 이번에 새로 채운 유일한 빈 칸은 "partial snapshot 동시 read"(`tests/atomicFile.test.ts`).
-- [x] dependency audit(lockfile 기준) + tarball allowlist assertion + secret scan + SBOM을 release 워크플로에 연결(QA-006) — CI `audit` job(`npm run audit:lockfile`, `npm run secret-scan`, `npm sbom` → 아티팩트). fail-open/fail-closed 정책은 `src/adapters/auditLockfile.ts` 문서 주석 참고.
-- [x] CI가 실행하는 외부 코드(Action, 서비스 컨테이너 이미지)가 immutable하게 고정됨(2차 적대적 검수 SR2-CI-002, 2026-09-04) — `.github/workflows/ci.yml`의 `actions/checkout`·`actions/setup-node`·`actions/upload-artifact`는 이동 가능한 `@v4` 태그가 아니라 **full commit SHA + `# vX.Y.Z` 주석**, Postgres 서비스는 `postgres:16@sha256:…` manifest digest. 검증은 이 워크플로 자체가 고정된 SHA/digest로 매 PR에서 실제 실행되는 것. **갱신 절차**:
-  - Action SHA — `.github/dependabot.yml`(github-actions 에코시스템, 월 1회, 한 그룹)이 SHA와 태그 주석을 함께 올리는 PR을 연다. 머지는 사람이 CI 통과를 확인한 뒤 한다(자동 머지 없음). 수동 확인/신규 Action 추가 시: `gh api repos/<owner>/<action>/git/ref/tags/<tag> --jq '.object.sha + " " + .object.type'` — `type`이 `tag`(annotated)면 `gh api repos/<owner>/<action>/git/tags/<sha> --jq .object.sha`로 한 번 더 풀어 **commit** SHA를 적는다.
-  - Postgres digest — Dependabot은 워크플로 `services.image`를 갱신하지 않으므로 사람이 한다. 분기 1회 또는 Postgres 16 마이너 릴리스 공지 시 `curl -s https://hub.docker.com/v2/repositories/library/postgres/tags/16 | jq -r '.digest, .last_updated'`로 현재 digest를 읽어 `ci.yml`의 `image:`와 주석의 확인일을 함께 바꾼다. 태그(`16`)는 그대로 두고 digest만 바꾼다 — 메이저 변경은 별도 결정.
-- [x] 위 CI 게이트가 저장소 설정으로 강제되어 관리자도 우회할 수 없음(2차 적대적 검수 SR2-CI-004, 2026-09-04, 사용자 승인 후 적용) — `main` ruleset(id `22244613`): 직접 push·force push·삭제 차단, PR 필수(승인 0명 — 1인 유지보수), required checks **7개**(test ×4 matrix, coverage, postgres component, dependency audit + secret scan, `strict` 끔), bypass actor 0명. 코드로 검증할 수 없는 항목이라(워크플로 파일 밖의 저장소 설정) `docs/TASKS.md` T37 완료 기준에 **사람 확인 항목**으로 올렸다 — 확인 명령 `gh api repos/Trapa-Eureka/retail-mcp/rules/branches/main --jq '[.[].type]'`. 매 PR 머지가 이 ruleset을 실제로 통과하는 것이 상시 검증이다(`gh pr merge --admin`은 더 이상 쓰지 않는다).
-- [x] 게시가 CI에서 provenance와 함께만 일어남(T37, 2026-09-04) — `.github/workflows/release.yml`: `v*` 태그 push → 태그↔`package.json` 버전 일치 검증 → `npm ci` → `npm publish --provenance --access public`(`prepublishOnly` = `npm run check && npm run verify:pack`, tarball audit fail-closed) → 레지스트리 재조회. 권한은 publish job에만 `id-token: write`. 자동 테스트 대상이 아닌 워크플로 파일이라 검증은 첫 실제 게시(사용자 승인 후)와 그 뒤 `npm audit signatures`로 provenance 확인
-- [x] tarball audit "불능"의 정책이 PR gate와 release gate에서 분리됨(2026-09-04, 사용자 위임 결정 — 같은 날 npm advisory 엔드포인트 장애로 PR #72~#74가 차례로 머지 불가) — `verify:pack --audit-unavailable=warn`은 CI `test` matrix에서만 켜고(유효한 리포트를 못 얻은 경우만 경고 통과, 승인되지 않은 취약점·기한 지난 예외는 여전히 실패), 실제 게시 경로 `prepublishOnly`는 플래그 없음 = `fail`(fail-closed)이라 유효한 audit 없이는 게시되지 않는다. 판정은 순수 함수 `src/core/tarballAuditPolicy.ts` — `tests/tarballAuditPolicy.test.ts`(판정 5 + 정책 3 + 플래그 2 tests)
-- [x] 모든 CI job에 `timeout-minutes` 상한이 있어 교착·악성 PR이 러너를 장시간(GitHub 기본 6시간) 점유할 수 없음(2차 적대적 검수 SR2-CI-003, 2026-09-04) — `test` 50분 / `audit` 30분 / `coverage` 25분 / `postgres-component` 15분. 값은 PR #63~#68 실측 최대치(24m28s / 15m0s / 10m17s / 4m24s)의 약 2~3배, 근거는 각 job의 `ci.yml` 주석. **재조정 기준**: timeout으로 실패한 job은 먼저 원인을 본다(hang인지, 테스트가 정말 늘었는지) — 같은 job이 2회 연속 timeout이고 로그상 진행 중이었으면(hang 아님) 새 관측 최대치의 2배로 올린다. 한 번 실패했다고 값을 올리지 않고, 값을 올릴 때는 주석의 관측치·날짜도 함께 갱신한다.
+- [x] Coverage threshold promoted to a mandatory CI gate (QA-002) — CI `coverage` job (`npm run coverage`). Intentionally not included in local `npm run check` (heavy).
+- [x] Coverage scope extended beyond core (explore_sql/warehouseFactory/agent/mcp/cli) + per-risky-module thresholds (QA-003) — `coverage.include`/`thresholds` in `vitest.config.ts`.
+- [x] All attack/accuracy regression cases from 005~007 are wired to automated tests (QA-005) — `docs/010_FINDING_TEST_CROSSREF.md` is the per-finding cross-reference table. The only blank newly filled this time is "partial snapshot concurrent read" (`tests/atomicFile.test.ts`).
+- [x] Dependency audit (lockfile-based) + tarball allowlist assertion + secret scan + SBOM wired into the release workflow (QA-006) — CI `audit` job (`npm run audit:lockfile`, `npm run secret-scan`, `npm sbom` → artifact). For the fail-open/fail-closed policy see the doc comment in `src/adapters/auditLockfile.ts`.
+- [x] External code that CI executes (Actions, service container images) is immutably pinned (second adversarial review SR2-CI-002, 2026-09-04) — `actions/checkout`, `actions/setup-node` and `actions/upload-artifact` in `.github/workflows/ci.yml` use a **full commit SHA + `# vX.Y.Z` comment** rather than the movable `@v4` tag, and the Postgres service uses the `postgres:16@sha256:…` manifest digest. Verification is that this workflow itself actually runs on every PR with the pinned SHA/digest. **Update procedure**:
+  - Action SHAs — `.github/dependabot.yml` (github-actions ecosystem, monthly, one group) opens a PR that bumps the SHA and the tag comment together. A human merges after confirming CI passes (no auto-merge). For manual checks or when adding a new Action: `gh api repos/<owner>/<action>/git/ref/tags/<tag> --jq '.object.sha + " " + .object.type'` — if `type` is `tag` (annotated), resolve once more with `gh api repos/<owner>/<action>/git/tags/<sha> --jq .object.sha` and record the **commit** SHA.
+  - Postgres digest — Dependabot does not update the workflow's `services.image`, so a human does it. Once a quarter or when a Postgres 16 minor release is announced, read the current digest with `curl -s https://hub.docker.com/v2/repositories/library/postgres/tags/16 | jq -r '.digest, .last_updated'` and change both the `image:` in `ci.yml` and the check date in the comment. Keep the tag (`16`) as is and change only the digest — a major-version change is a separate decision.
+- [x] The CI gates above are enforced by repository settings so that even admins cannot bypass them (second adversarial review SR2-CI-004, 2026-09-04, applied after user approval) — `main` ruleset (id `22244613`): direct push, force push and deletion blocked, PR required (0 approvals — single maintainer), **7** required checks (test ×4 matrix, coverage, postgres component, dependency audit + secret scan; `strict` off), 0 bypass actors. Because this item cannot be verified in code (a repository setting outside the workflow file), it was added to the `docs/TASKS.md` T37 completion criteria as a **human-confirmation item** — check command `gh api repos/Trapa-Eureka/retail-mcp/rules/branches/main --jq '[.[].type]'`. The ongoing verification is that every PR merge actually passes this ruleset (`gh pr merge --admin` is no longer used).
+- [x] Publishing happens only in CI, with provenance (T37, 2026-09-04) — `.github/workflows/release.yml`: `v*` tag push → verify tag ↔ `package.json` version match → `npm ci` → `npm publish --provenance --access public` (`prepublishOnly` = `npm run check && npm run verify:pack`, tarball audit fail-closed) → re-query the registry. Permissions: `id-token: write` on the publish job only. Since this is a workflow file that is not covered by automated tests, verification is the first actual publish (after user approval) followed by provenance confirmation with `npm audit signatures`
+- [x] The policy for a tarball audit being "unavailable" is separated between the PR gate and the release gate (2026-09-04, decision delegated by the user — the same day, an npm advisory endpoint outage made PR #72~#74 unmergeable one after another) — `verify:pack --audit-unavailable=warn` is enabled only in the CI `test` matrix (passes with a warning only when a valid report could not be obtained; unapproved vulnerabilities and expired exceptions still fail), while the actual publish path `prepublishOnly` has no flag = `fail` (fail-closed), so nothing is published without a valid audit. The decision is the pure function `src/core/tarballAuditPolicy.ts` — `tests/tarballAuditPolicy.test.ts` (5 decision + 3 policy + 2 flag tests)
+- [x] Every CI job has a `timeout-minutes` cap so that a deadlock or malicious PR cannot occupy a runner for a long time (GitHub default 6 hours) (second adversarial review SR2-CI-003, 2026-09-04) — `test` 50 min / `audit` 30 min / `coverage` 25 min / `postgres-component` 15 min. The values are roughly 2~3× the measured maxima from PR #63~#68 (24m28s / 15m0s / 10m17s / 4m24s); the rationale is in each job's comment in `ci.yml`. **Readjustment criteria**: for a job that failed on timeout, look at the cause first (a hang, or did the tests really grow?) — if the same job times out twice in a row and the logs show it was progressing (not a hang), raise it to 2× the newly observed maximum. Do not raise the value after a single failure, and when raising it, update the observed values and date in the comment as well.
 
-이 절의 각 항목은 007/008이 지적한 "376개 테스트가 통과해도 게시된 패키지가 실행 불가능하거나 공격에 취약할 수 있다"는 간극을 메우기 위한 것이다 — §1~§7의 기존 게이트를 대체하지 않고 추가한다. finding별 상세 대조는 `docs/010_FINDING_TEST_CROSSREF.md` 참고.
+Each item in this section exists to close the gap 007/008 pointed out — "even if 376 tests pass, the published package may be unrunnable or vulnerable to attack" — they are added on top of, not in place of, the existing gates in §1~§7. For the detailed per-finding cross-reference see `docs/010_FINDING_TEST_CROSSREF.md`.
