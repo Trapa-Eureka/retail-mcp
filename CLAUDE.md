@@ -1,101 +1,101 @@
-# CLAUDE.md — retail-mcp 스티어링
+# CLAUDE.md — retail-mcp steering
 
-리테일 다지점용 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트. v0.1 데이터 소스는 Loyverse 단일(구현 완료, 실배포는 파일럿 확정 전까지 보류) — 다음 실제 출시 대상은 **v0.2 CSV/Excel 업로드 채널**(폴더 감시, 임베디드 PGlite 기본값)이다. 배경·지표 정의는 `docs/SPEC.md`, 구현 설계는 `docs/DESIGN.md`. npm 공개 배포 대상은 `@shiz_son/retail-mcp`(MIT) — 출시 전 검수·정책은 `docs/SPEC.md` §18, `docs/004~009`.
+Sell-through and inventory BI MCP server for multi-branch retail + reorder suggestion agent. The v0.1 data source is Loyverse only (implementation complete; live deployment on hold until a pilot is confirmed) — the next actual release target is the **v0.2 CSV/Excel upload channel** (folder watch, embedded PGlite by default). Background and metric definitions are in `docs/SPEC.md`; the implementation design is in `docs/DESIGN.md`. The public npm distribution target is `@shiz_son/retail-mcp` (MIT) — pre-release review and policy are in `docs/SPEC.md` §18, `docs/004~009`.
 
-## 스택
+## Stack
 
-- Node.js 20+, TypeScript **strict** (`noUncheckedIndexedAccess` 포함)
+- Node.js 20+, TypeScript **strict** (including `noUncheckedIndexedAccess`)
 - MCP: `@modelcontextprotocol/sdk` — stdio transport
-- 웨어하우스: **임베디드 PGlite가 기본값**(`.retail-mcp/data/`, 자체 파일 락으로 다중 프로세스 보호) — `DATABASE_URL` 지정 시 Neon/Supabase 등 `pg` 드라이버 경로. 테스트는 항상 **PGlite**(인프로세스, 네트워크 0)
-- 데이터 소스: CSV/Excel 폴더 감시(v0.2, 다음 실제 출시 대상, `csv-parse`/`exceljs`) — Loyverse REST API(`LOYVERSE_API_TOKEN`, v0.1, 구현 완료·파일럿 대기)는 어댑터 뒤에 격리돼 병존
-- 알림: sheet_mcp에서 이식한 `NotificationProvider` + `ResendEmailProvider`
-- LLM(에이전트 요약 전용): Claude API
-- 검증: Vitest + ESLint + Prettier, 스키마 `zod`, 마이그레이션 = 순수 SQL 파일 + 자체 러너
+- Warehouse: **embedded PGlite is the default** (`.retail-mcp/data/`, protected against multiple processes by its own file lock) — when `DATABASE_URL` is set, the `pg` driver path for Neon/Supabase etc. Tests always use **PGlite** (in-process, zero network)
+- Data sources: CSV/Excel folder watch (v0.2, next actual release target, `csv-parse`/`exceljs`) — the Loyverse REST API (`LOYVERSE_API_TOKEN`, v0.1, implementation complete, awaiting pilot) coexists, isolated behind an adapter
+- Notifications: `NotificationProvider` + `ResendEmailProvider` ported from sheet_mcp
+- LLM (agent summaries only): Claude API
+- Verification: Vitest + ESLint + Prettier, schemas with `zod`, migrations = plain SQL files + our own runner
 
-## 명령어
+## Commands
 
 ```bash
-npm run check           # typecheck + lint + format:check + test 일괄 — 태스크 완료의 필수 게이트
+npm run check           # typecheck + lint + format:check + test in one go — the mandatory gate for task completion
 npm run test            # vitest run
-npm run coverage        # 위험 모듈 포함 coverage threshold (CI 전용 게이트, check엔 미포함 — TESTING.md §8)
+npm run coverage        # coverage threshold including risky modules (CI-only gate, not part of check — TESTING.md §8)
 npm run typecheck       # tsc --noEmit
 npm run lint            # eslint .
-npm run dev             # MCP 서버 stdio 실행
-npm run onboard         # 대화형 설정 CLI — CSV/Excel 채널 .env + 예시 템플릿 생성
-npm run agent:folder-scan  # CSV/Excel 채널 스캔 1회 (v0.2, 다음 실제 출시 대상, 기본 dry_run)
-npm run agent:reorder   # 재주문 에이전트 1회 실행 (Loyverse 경로, 기본 dry_run)
-npm run migrate         # DATABASE_URL 대상 마이그레이션 (프로덕션 실행은 사람만)
-npm run cleanup         # 보존 기간 지난 로그/스냅샷 정리 (기본 dry-run, 사람 전용)
-npm run smoke           # 실 Loyverse + 실 DB 수동 스모크 (사람 전용)
-npm run verify:pack     # 실제 게시 tarball fresh-install + bin 실행 + audit 검증 (release gate, CI에도 연결됨)
+npm run dev             # run the MCP server over stdio
+npm run onboard         # interactive setup CLI — generates the CSV/Excel channel .env + example templates
+npm run agent:folder-scan  # one CSV/Excel channel scan (v0.2, next actual release target, dry_run by default)
+npm run agent:reorder   # one reorder agent run (Loyverse path, dry_run by default)
+npm run migrate         # migrations against DATABASE_URL (production runs are human-only)
+npm run cleanup         # clean up logs/snapshots past the retention period (dry-run by default, human-only)
+npm run smoke           # manual smoke against real Loyverse + real DB (human-only)
+npm run verify:pack     # fresh-install the actual published tarball + run bins + audit (release gate, also wired into CI)
 ```
 
-CI(`.github/workflows/ci.yml`, TASKS T35)가 매 push/PR에서 위 게이트 대부분(coverage 포함) + 실 Postgres 컴포넌트 테스트(`npm run test:pg-component`) + 지원 OS/Node matrix에서의 `verify:pack` + dependency audit/시크릿 스캔/SBOM(`npm run audit:lockfile`/`secret-scan`/`sbom`)을 실행한다. 이 스크립트들은 로컬 `npm run check`엔 의도적으로 없다(무겁거나 실 네트워크가 필요 — TESTING.md §8).
+CI (`.github/workflows/ci.yml`, TASKS T35) runs most of the gates above (including coverage) on every push/PR, plus the real Postgres component tests (`npm run test:pg-component`), `verify:pack` across the supported OS/Node matrix, and dependency audit/secret scan/SBOM (`npm run audit:lockfile`/`secret-scan`/`sbom`). These scripts are intentionally absent from the local `npm run check` (they are heavy or need real network access — TESTING.md §8).
 
-## 소스 레이아웃
+## Source layout
 
 ```
 src/
-  core/        # 순수 로직: metrics(셀스루·커버일수·재주문량), csvSchema, scmSchema, sqlValidator, 타입 — 외부 IO 없음
-  etl/         # Loyverse 동기화 오케스트레이션 (LoyverseClient + Warehouse 조립, 커서 관리)
+  core/        # pure logic: metrics (sell-through, days of cover, reorder quantity), csvSchema, scmSchema, sqlValidator, types — no external IO
+  etl/         # Loyverse sync orchestration (assembles LoyverseClient + Warehouse, manages cursors)
   adapters/    # loyverseClient, pgWarehouse, csvExcelParser, resendProvider, exploreSqlExecutor, fileLock, warehouseFactory, migratePg
-  mocks/       # FixtureLoyverseClient, PGlite 웨어하우스 헬퍼, MockNotificationProvider, FixedClock
-  agent/       # reorder.ts(Loyverse 경로) / folderScan.ts(CSV/Excel 경로, 지점·본사 모드) — 스케줄 실행 진입점, 얇은 오케스트레이션만. npm 배포 bin `retail-mcp-reorder`/`retail-mcp-scan`(T37 게시 전 점검에서 추가 — 설치 사용자가 핵심 기능을 실행할 명령이 없었음)
-  cli/         # onboard.ts — 대화형 설정 CLI (`npm run onboard`, bin `retail-mcp-onboard` — 발송 설정 Resend 키·발신 주소도 선택 질문) / migrate.ts — npm 배포 bin `retail-mcp-migrate`(SR2-REL-001)
-  mcp/         # tools.ts — MCP 도구 로직(server.ts는 등록·조립만)
-  server.ts    # MCP 서버 진입점 (도구 등록·조립만, 로직 없음)
-migrations/    # 001_init.sql ... 순번 SQL 파일
-scripts/       # 저장소 전용 CLI 셸(migrate/cleanup/verifyPack/auditLockfile/secretScan/smoke) — npm 패키지에는 미포함, src/adapters의 로직을 가져다 씀
-tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(실 Postgres 전용, 기본 게이트 exclude)
-.github/workflows/ci.yml  # OS/Node matrix, coverage, 실 Postgres 컴포넌트, dependency audit/secret scan/SBOM
+  mocks/       # FixtureLoyverseClient, PGlite warehouse helper, MockNotificationProvider, FixedClock
+  agent/       # reorder.ts (Loyverse path) / folderScan.ts (CSV/Excel path, branch and HQ modes) — scheduled-run entry points, thin orchestration only. npm-distributed bins `retail-mcp-reorder`/`retail-mcp-scan` (added in the T37 pre-publish check — installed users had no command to run the core features)
+  cli/         # onboard.ts — interactive setup CLI (`npm run onboard`, bin `retail-mcp-onboard` — also asks optional questions for send settings: Resend key and sender address) / migrate.ts — npm-distributed bin `retail-mcp-migrate` (SR2-REL-001)
+  mcp/         # tools.ts — MCP tool logic (server.ts only registers and assembles)
+  server.ts    # MCP server entry point (registration and assembly only, no logic)
+migrations/    # 001_init.sql ... sequentially numbered SQL files
+scripts/       # repo-only CLI shells (migrate/cleanup/verifyPack/auditLockfile/secretScan/smoke) — not included in the npm package, reuse the logic in src/adapters
+tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(real Postgres only, excluded from the default gate)
+.github/workflows/ci.yml  # OS/Node matrix, coverage, real Postgres component, dependency audit/secret scan/SBOM
 ```
 
-## 컨벤션
+## Conventions
 
-- **지표 수식의 진실의 원천은 `docs/DESIGN.md` §3.** 코드·테스트·문서가 다르면 문서 기준으로 맞춘다.
-- 모든 외부 IO(POS, DB, 발송, 시계, LLM)는 인터페이스 뒤에. `core/`는 인터페이스와 순수 계산만.
-- `any` 금지. 외부 입력(API 응답, 도구 인자)은 경계에서 `zod` 파싱.
-- MCP 질의 도구의 SQL은 **파라미터라이즈드 고정 쿼리만**. `explore_sql`(임의 SELECT 조회, 운영 기본값 비활성)이 가드레일 4가 사전 승인한 유일한 예외 — `docs/SPEC.md` §17·§18, `docs/DESIGN.md` §12.4 참고. 새 질의 도구를 추가할 땐 이 예외를 넓히지 말고 고정 쿼리로 만든다.
-- 에러 메시지는 원인 + 수정 방법까지 (예: `LOYVERSE_API_TOKEN이 없습니다. Loyverse 백오피스 > 액세스 토큰에서 발급해 .env에 추가하세요.`).
-- 커밋 메시지: `T{n}: 요약` (영어로 작성. 2026-09-02 이후 컨벤션 — 그 이전 커밋은 한국어로 작성됐다가 사후 영어로 재작성됨).
+- **The source of truth for metric formulas is `docs/DESIGN.md` §3.** When code, tests and docs disagree, align to the docs.
+- All external IO (POS, DB, send, clock, LLM) goes behind interfaces. `core/` contains only interfaces and pure computation.
+- No `any`. External input (API responses, tool arguments) is parsed with `zod` at the boundary.
+- SQL in MCP query tools is **parameterized fixed queries only**. `explore_sql` (arbitrary SELECT queries, disabled by default in production) is the only exception, pre-approved by guardrail 4 — see `docs/SPEC.md` §17·§18, `docs/DESIGN.md` §12.4. When adding a new query tool, do not widen this exception; build it as a fixed query.
+- Error messages include the cause plus how to fix it (e.g. `LOYVERSE_API_TOKEN이 없습니다. Loyverse 백오피스 > 액세스 토큰에서 발급해 .env에 추가하세요.` — "LOYVERSE_API_TOKEN is missing. Issue one in Loyverse back office > Access tokens and add it to .env.").
+- Commit messages: `T{n}: summary` (written in English. Convention since 2026-09-02 — earlier commits were written in Korean and later rewritten in English).
 
-## 가드레일 (위반 금지)
+## Guardrails (must not be violated)
 
-1. **실발송 이중 게이트**: 기본 `SEND_MODE=dry_run`. 실발송은 `SEND_MODE=live` **그리고** 에이전트 실행 인자 `--confirm`이 둘 다 있어야 한다. 테스트는 어떤 경우에도 live 경로 금지.
-2. 테스트에서 **네트워크 호출 0건**: DB는 PGlite, POS는 픽스처, 발송은 목, LLM은 목 응답. `tests/component/**`(실 Postgres 대상, `vitest.component.config.ts`)가 가드레일 4의 explore_sql과 같은 패턴의 유일한 예외 — 기본 게이트(`vitest.config.ts`)가 이 디렉터리를 exclude해 원칙 자체는 안 깨지고, CI의 별도 job(`postgres-component`)에서만 돈다. 새 실 네트워크 테스트를 추가할 땐 이 예외를 넓히지 말고 여기 안에 넣는다.
-3. **LLM은 숫자를 만들지 않는다**: 품목·수량·금액은 결정론 계산 결과에서만 오고, LLM 출력은 요약 문구로만 쓰인다. LLM 출력의 수치를 파싱해 로직에 쓰는 코드 금지.
-4. 웨어하우스 **쓰기는 ETL 경로만**. MCP 질의 도구는 읽기 전용 (운영 DB에는 읽기 전용 롤 사용). `explore_sql`을 켤 때는 위험 함수 실행 권한이 없는 전용 role을 필수로 요구한다 — `BEGIN READ ONLY`만으로는 advisory lock류 부수효과를 막지 못함(`docs/SPEC.md` §18, `docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md` SEC-001/002).
-5. `npm run migrate`를 프로덕션 `DATABASE_URL`에 실행하는 것은 사람만. 에이전트는 마이그레이션 **파일 작성까지만**.
-6. 시크릿(`LOYVERSE_API_TOKEN`, `DATABASE_URL`, `RESEND_API_KEY`, `ANTHROPIC_API_KEY`)은 `.env`만. 커밋 금지, `.env.example`만 커밋.
+1. **Live-send double gate**: default `SEND_MODE=dry_run`. A live send requires both `SEND_MODE=live` **and** the agent run argument `--confirm`. Tests must never take the live path under any circumstances.
+2. **Zero network calls** in tests: DB is PGlite, POS is fixtures, send is a mock, LLM is a mock response. `tests/component/**` (targets real Postgres, `vitest.component.config.ts`) is the sole exception, following the same pattern as explore_sql in guardrail 4 — the default gate (`vitest.config.ts`) excludes this directory so the principle itself is not broken, and it runs only in CI's separate job (`postgres-component`). When adding a new real-network test, do not widen this exception; put it in here.
+3. **The LLM does not produce numbers**: items, quantities and amounts come only from deterministic computation results, and LLM output is used only as summary text. Code that parses numbers out of LLM output and uses them in logic is forbidden.
+4. Warehouse **writes go through the ETL path only**. MCP query tools are read-only (use a read-only role on the production DB). When enabling `explore_sql`, a dedicated role without execute permission on dangerous functions is mandatory — `BEGIN READ ONLY` alone does not prevent side effects such as advisory locks (`docs/SPEC.md` §18, `docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md` SEC-001/002).
+5. Running `npm run migrate` against a production `DATABASE_URL` is human-only. The agent goes only as far as **writing the migration files**.
+6. Secrets (`LOYVERSE_API_TOKEN`, `DATABASE_URL`, `RESEND_API_KEY`, `ANTHROPIC_API_KEY`) live in `.env` only. Never commit them; commit only `.env.example`.
 
-## 작업 방식
+## Way of working
 
-- 한 세션 = `docs/TASKS.md`의 한 태스크. 완료 기준 전부 충족 + `npm run check` 통과까지 자가 수정 루프. 스펙 모호로 진행 불가할 때만 멈추고 질문.
-- 완료 시 변경 파일과 검증 결과 요약 후 종료.
+- One session = one task from `docs/TASKS.md`. Self-correction loop until all completion criteria are met and `npm run check` passes. Stop and ask only when spec ambiguity makes progress impossible.
+- On completion, summarize the changed files and verification results, then finish.
 
-## 프루닝 로그
+## Pruning log
 
-격주 검토, 낡은 규칙 삭제 (`docs/WORKFLOW.md`).
+Biweekly review, delete stale rules (`docs/WORKFLOW.md`).
 
-- 2026-09-02: 최초 작성.
-- 2026-09-03: v0.2(CSV/Excel 채널, SCM 대사, 팩단위 반올림, `explore_sql`) 완료 + npm 출시 전 적대적 검수(`docs/004~009`) 반영 — 스택/레이아웃/가드레일을 v0.2 실제 구조로 갱신, "v0.1 데이터 소스는 Loyverse 단일"만 남기지 않고 v0.2 전환 상태를 명시. 낡은 규칙 삭제는 없음(v0.1 규칙은 여전히 유효, v0.2가 추가된 것).
-- 2026-09-03(T36): T29~T35 완료를 반영해 명령어 목록(coverage/onboard/agent:folder-scan/cleanup/verify:pack)·소스 레이아웃(scripts/, tests/component/, .github/workflows/)·가드레일 2(tests/component/** 예외)·출시 전 검수 절을 갱신. 재검토 결과 삭제할 낡은 규칙은 없었음 — v0.1 규칙(가드레일 1/2/3/5/6, Loyverse 경로)은 실배포 보류와 무관하게 여전히 코드에 실존하고 테스트로 지켜짐.
-- 2026-09-04: 2차 적대적 검수(`docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`) P0 SR2-REL-001 해결 — `retail-mcp-migrate` bin 추가로 남아 있던 마지막 npm 패키징 간극(`docs/004` REL-006)을 닫았다. 소스 레이아웃(`src/cli/migrate.ts`, `src/adapters/migratePg.ts`)·출시 전 검수 절을 갱신. 삭제할 낡은 규칙은 없음 — 이 변경은 기존 가드레일 5("프로덕션 마이그레이션은 사람만")를 유지한 채 그 실행 방법만 npm 배포 사용자에게 제공한 것.
+- 2026-09-02: Initial version.
+- 2026-09-03: Reflected completion of v0.2 (CSV/Excel channel, SCM reconciliation, pack-size rounding, `explore_sql`) + the pre-npm-release adversarial review (`docs/004~009`) — updated stack/layout/guardrails to the actual v0.2 structure, and stated the v0.2 transition status instead of leaving only "v0.1 data source is Loyverse only". No stale rules deleted (v0.1 rules remain valid; v0.2 was added on top).
+- 2026-09-03 (T36): Reflected completion of T29~T35 by updating the command list (coverage/onboard/agent:folder-scan/cleanup/verify:pack), source layout (scripts/, tests/component/, .github/workflows/), guardrail 2 (tests/component/** exception) and the pre-release review section. On re-review there were no stale rules to delete — the v0.1 rules (guardrails 1/2/3/5/6, the Loyverse path) still exist in code and are enforced by tests regardless of the live-deployment hold.
+- 2026-09-04: Resolved P0 SR2-REL-001 from the second adversarial review (`docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`) — adding the `retail-mcp-migrate` bin closed the last remaining npm packaging gap (`docs/004` REL-006). Updated the source layout (`src/cli/migrate.ts`, `src/adapters/migratePg.ts`) and the pre-release review section. No stale rules to delete — this change keeps the existing guardrail 5 ("production migrations are human-only") intact and merely gives npm-distributed users a way to run it.
 
-## 구현 해석 보충 (2026-09-02 문서 점검)
+## Implementation interpretation supplement (2026-09-02 document check)
 
-- `cursor`라는 이름을 한 의미로 섞지 않는다. API 페이지네이션 토큰은 메모리의 `pageCursor`, 완료된 증분 범위는 DB의 `watermark`로 구분한다. 리소스 전체 페이지가 성공한 뒤에만 watermark를 커밋한다.
-- 날짜·기간 계산은 `Clock`과 명시적 사업장 타임존을 사용한다. DB에는 UTC를 저장하고 로컬 머신 타임존에 의존하지 않는다.
-- 수량·금액은 JS 부동소수점으로 암묵 변환하지 않는다. DB `numeric`의 파싱/반올림 정책을 경계에서 명시하고, 금액은 통화 코드와 함께 다룬다.
-- 로그·오류·dry-run 출력에 토큰, DB URL, 이메일 API 키 또는 전체 외부 응답을 남기지 않는다.
-- 가드레일 4의 “웨어하우스 쓰기는 ETL 경로만”은 비즈니스 데이터(`stores/products/sales/inventory`)에 대한 규칙이다. 에이전트의 감사용 실행·발송 로그 쓰기는 허용하되, MCP 조회 도구가 비즈니스 데이터를 변경해서는 안 된다. `sync_now`는 MCP에서 ETL을 호출하는 명시적 예외이며 운영 기본값에서는 비활성이다.
-- 문서 간 충돌 시 우선순위는 `SPEC(제품 범위·지표 정의) → DESIGN(구현 계약) → TESTING/TASKS(검증·작업 순서) → README`다. 충돌을 발견하면 구현으로 추측하지 말고 관련 문서를 먼저 함께 보정한다.
+- Do not mix the name `cursor` across different meanings. Distinguish the API pagination token as the in-memory `pageCursor` and the completed incremental range as the DB `watermark`. Commit the watermark only after all pages of a resource have succeeded.
+- Date and period calculations use `Clock` and an explicit business timezone. Store UTC in the DB and do not depend on the local machine timezone.
+- Do not implicitly convert quantities and amounts to JS floating point. Make the parsing/rounding policy for DB `numeric` explicit at the boundary, and handle amounts together with a currency code.
+- Do not leave tokens, DB URLs, email API keys or full external responses in logs, errors or dry-run output.
+- Guardrail 4's "warehouse writes go through the ETL path only" is a rule about business data (`stores/products/sales/inventory`). The agent's audit-purpose run/send log writes are allowed, but MCP query tools must not modify business data. `sync_now` is an explicit exception that invokes ETL from MCP and is disabled by default in production.
+- When documents conflict, the priority is `SPEC (product scope, metric definitions) → DESIGN (implementation contract) → TESTING/TASKS (verification, task order) → README`. When you find a conflict, do not guess from the implementation; first correct the related documents together.
 
-## 출시 전 검수 대응 (2026-09-03, `docs/TASKS.md` T28~T37)
+## Pre-release review response (2026-09-03, `docs/TASKS.md` T28~T37)
 
-- npm publish 준비 전 적대적 검수(`docs/004~009`, finding 33건 + 문서 정합성 5건)를 실행했고 판정은 **출시 차단**이었다. T29~T35(패키징/보안/데이터/운영/테스트 게이트) 전부 완료 — finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`. 남은 건 T36(이 절 — 운영 문서 동기화)과 T37(`docs/008` 8단계 release gate 최종 통과 + 사람 확인)뿐이다. `npm publish`는 T37 통과 후 **사용자에게 별도로 확인받기 전까지** 실행하지 않는다.
-- 파일 기반 authoritative 스캔(CSV/Excel 폴더 채널)에서 사라진 SKU/매장은 **자동 tombstone**(비활성 상태, 물리 삭제 금지, 이력 보존) — `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2.
-- 지점 폴더 스캔의 저재고 알림은 **하루 최대 1회 다이제스트를 보장**한다 — 파일이 안 바뀌어도 완전 무음은 아니다(SCM 실패 등 "조용한 실패"를 놓치지 않기 위해). `docs/SPEC.md` §18, `docs/DESIGN.md` §12.3.
-- npm 공개 배포 대상은 `@shiz_son/retail-mcp`(scoped, `publishConfig.access=public`, MIT) — unscoped `retail-mcp`는 이름 재사용 불확실성(2026-01-12 unpublish 이력)이 있어 채택하지 않는다. 처음 정한 `@trapa-eureka` scope는 T37에서 그 이름의 npm 조직이 없음이 확인돼(게시 계정 `shiz_son`) 2026-09-04 사용자 결정으로 계정 scope `@shiz_son`으로 바꿨다 — GitHub 저장소(`Trapa-Eureka/retail-mcp`)와 `author`는 그대로다.
-- **CI가 이 저장소에 존재한다**(`.github/workflows/ci.yml`, T35) — 매 push/PR에서 지원 OS/Node matrix, coverage threshold, 실 Postgres 컴포넌트 테스트, dependency audit/secret scan/SBOM을 돈다. 새 코드가 이 게이트를 깨면 머지하지 않는다.
-- **외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI**: `retail-mcp-migrate` bin(SR2-REL-001, 2차 적대적 검수, `docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`)이 이 간극을 해소했다 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션만 표시, 자격증명은 안 보임), 실제 적용은 `--confirm`. `scripts/migrate.ts`(저장소 전용, `files`/빌드 산출물 미포함)는 여전히 개발자 전용으로 남아 있고, 실제 적용 로직은 `src/adapters/migratePg.ts`를 함께 쓴다. `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`는 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`로 스키마 누락을 raw Postgres 에러 대신 이 명령을 안내하는 에러로 즉시 알린다(`docs/004` REL-006 완전 해소).
+- We ran an adversarial review before preparing npm publish (`docs/004~009`, 33 findings + 5 document-consistency issues) and the verdict was **release blocked**. T29~T35 (packaging/security/data/operations/test gates) are all complete — the per-finding resolution evidence is in `docs/010_FINDING_TEST_CROSSREF.md`. All that remains is T36 (this section — operational document sync) and T37 (final pass of the 8-step release gate in `docs/008` + human confirmation). `npm publish` is not run after T37 passes **until the user has separately confirmed**.
+- SKUs/stores that disappear from a file-based authoritative scan (CSV/Excel folder channel) are **auto-tombstoned** (inactive status, no physical deletion, history preserved) — `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2.
+- Low-stock notifications from the branch folder scan **guarantee at most one digest per day** — even if the files do not change, it is not completely silent (so that "silent failures" such as SCM failures are not missed). `docs/SPEC.md` §18, `docs/DESIGN.md` §12.3.
+- The public npm distribution target is `@shiz_son/retail-mcp` (scoped, `publishConfig.access=public`, MIT) — the unscoped `retail-mcp` is not adopted because of name-reuse uncertainty (unpublish history on 2026-01-12). The originally chosen `@trapa-eureka` scope was found in T37 to have no npm organization of that name (the publishing account is `shiz_son`), so by user decision on 2026-09-04 it was changed to the account scope `@shiz_son` — the GitHub repository (`Trapa-Eureka/retail-mcp`) and `author` are unchanged.
+- **CI exists in this repository** (`.github/workflows/ci.yml`, T35) — on every push/PR it runs the supported OS/Node matrix, the coverage threshold, real Postgres component tests, and dependency audit/secret scan/SBOM. New code that breaks this gate is not merged.
+- **Migration CLI for users of an external `DATABASE_URL` (Neon etc.)**: the `retail-mcp-migrate` bin (SR2-REL-001, second adversarial review, `docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`) closed this gap — dry-run by default (shows only the target host/db name and pending migrations; credentials are not shown), actual application with `--confirm`. `scripts/migrate.ts` (repo-only, not included in `files`/build output) remains developer-only, and the actual application logic is shared via `src/adapters/migratePg.ts`. `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`, when starting on the `DATABASE_URL` path, use `ensureNetworkMigrationsApplied()` to report a missing schema immediately with an error that points to this command instead of a raw Postgres error (`docs/004` REL-006 fully resolved).

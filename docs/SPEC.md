@@ -1,383 +1,383 @@
 # SPEC — retail-mcp v0.1
 
-작성: 2026-09-02 · 상태: 확정 (변경 시 이 문서를 먼저 수정)
+Written: 2026-09-02 · Status: finalized (when anything changes, update this document first)
 
-## 1. 배경
+## 1. Background
 
-필리핀 다지점 리테일(편의형 매장, 잡화, 뷰티, 자재상 등)은 Loyverse류 POS로 판매는 찍지만, "뭐가 잘 나가고(셀스루) 뭐가 곧 떨어지는지(품절 위험)"는 감으로 운영한다. 대시보드를 만들어줘도 보러 들어가지 않는 것이 현실이므로:
+Multi-branch retail in the Philippines (convenience-style stores, general goods, beauty, building materials, etc.) rings up sales on Loyverse-type POS systems, but runs "what sells well (sell-through) and what is about to run out (stockout risk)" on gut feeling. Since the reality is that even if you build them a dashboard they will not go and look at it:
 
-> ⚠️ **2026-09-03 재검토 및 결정**: 위 전제("Loyverse류 POS를 이미 쓴다")는 확정된 파일럿 고객이 아니라 가정이었다. POS 기기 자체는 관찰됐지만 브랜드(=API 존재 여부)는 미확인이고, 실제로는 Excel/자체 ERP/수기 재고 관리가 더 흔할 수 있다는 신호가 있다. 이 아래 §1~§10은 **이미 구현·완료된 v0.1(Loyverse)을 그대로 기록한 것**이고, 실배포는 보류한 채 **다음 실제 출시는 CSV/Excel 업로드 데이터소스를 우선 개발하는 쪽으로 결정했다**(v0.2로 승격, §7 로드맵·§11 상세). Loyverse는 파일럿이 API형 POS 사용을 확인해줄 때 버전업으로 재활성화한다 — 데이터소스는 `LoyverseClient` 인터페이스 뒤에 있어(DESIGN §1) core/ETL 오케스트레이션/MCP 도구/에이전트는 데이터소스 교체와 무관하게 재사용된다.
+> ⚠️ **2026-09-03 re-review and decision**: The premise above ("they already use a Loyverse-type POS") was an assumption, not a confirmed pilot customer. POS devices themselves have been observed, but the brand (= whether an API exists) is unconfirmed, and there are signals that Excel / in-house ERP / manual inventory management may actually be more common. §1~§10 below are **a verbatim record of v0.1 (Loyverse), which is already implemented and complete**; with production deployment on hold, **the decision is that the next actual release prioritizes developing a CSV/Excel upload data source** (promoted to v0.2; §7 roadmap, §11 details). Loyverse will be reactivated in a later version bump when a pilot confirms use of an API-type POS — the data source sits behind the `LoyverseClient` interface (DESIGN §1), so core / ETL orchestration / MCP tools / agent are reused regardless of data source replacement.
 
-- **물어보면 답하는 BI** — Claude에 자연어로 묻는 MCP 조회 도구
-- **찾아가는 BI** — 품절 위험을 계산해 재주문 제안을 밀어주는 에이전트
+- **BI that answers when asked** — MCP query tools you ask Claude in natural language
+- **BI that comes to you** — an agent that computes stockout risk and pushes reorder suggestions
 
-두 가지를 하나의 코어 위에 얹는다. 역할 구분은 확정된 원칙을 따른다: **조회 = MCP, 예측·발송 = 에이전트. 감지·계산은 결정론 코드, LLM은 해석·문구만.**
+Both are layered on one core. The division of roles follows a settled principle: **querying = MCP, forecasting and sending = agent. Detection and calculation are deterministic code; the LLM does interpretation and wording only.**
 
-## 2. v0.1 지표 정의 (진실의 원천)
+## 2. v0.1 Metric Definitions (Source of Truth)
 
-입고(매입) 이력은 Loyverse API에서 안정적으로 확보하기 어려우므로, v0.1은 **판매량 + 현재고만으로 계산 가능한 근사식**을 쓴다. 근사임을 숨기지 않고 도구 응답과 리포트에 명시한다.
+Because receipt (purchase) history is hard to obtain reliably from the Loyverse API, v0.1 uses **approximation formulas computable from sales quantity + current stock alone**. The approximation is not hidden; it is stated explicitly in tool responses and reports.
 
-| 지표 | v0.1 정의 | 비고 |
+| Metric | v0.1 definition | Notes |
 |---|---|---|
-| 셀스루율(근사) | 기간 판매수량 ÷ (기간 판매수량 + 기말재고) | 정통 정의(판매 ÷ (기초재고+입고))는 입고 데이터 확보 후 v0.2 |
-| 일평균판매 | 최근 28일 판매수량 ÷ 28 (달력일 기준, 무판매일 포함) | 창(window)은 도구 인자로 조정 가능 |
-| 재고커버일수 | 현재고 ÷ 일평균판매 | 일평균판매 0이면 ∞ 처리(별도 표기) |
-| 품절위험 | 재고커버일수 < 리드타임 + 안전일수 | 기본 리드타임 7일, 안전 3일 (인자로 조정) |
-| 재주문 제안량 | max(0, ⌈목표커버일수 × 일평균판매 − 현재고⌉) | 기본 목표커버 21일. 팩 단위 반올림은 v0.2 |
+| Sell-through rate (approx.) | Period sales qty ÷ (period sales qty + ending stock) | The canonical definition (sales ÷ (opening stock + receipts)) comes in v0.2 once receipt data is available |
+| Average daily sales | Last 28 days sales qty ÷ 28 (calendar days, including no-sale days) | The window is adjustable via a tool argument |
+| Days of cover | Current stock ÷ average daily sales | If average daily sales is 0, treat as ∞ (marked separately) |
+| Stockout risk | Days of cover < lead time + safety days | Default lead time 7 days, safety 3 days (adjustable via arguments) |
+| Reorder suggestion qty | max(0, ⌈target days of cover × average daily sales − current stock⌉) | Default target cover 21 days. Pack size rounding is v0.2 |
 
-## 3. v0.1 목표
+## 3. v0.1 Goals
 
-1. **ETL**: Loyverse에서 매장·상품·영수증 라인·현재고를 증분 동기화해 Postgres에 적재. 동기화 시마다 재고 스냅샷을 남겨 시계열을 쌓기 시작한다.
-2. **MCP 도구 6종**: `sell_through`, `inventory_status`, `stockout_risk`, `reorder_suggestions`(조회형), `sync_now`, `sync_status` — Claude Code/Desktop에서 자연어 조회.
-3. **재주문 에이전트**: `npm run agent:reorder` 1회 실행 → 품절위험 품목 계산 → 제안 0건이면 종료 → LLM이 요약 2~3문장 작성(수치는 표에서만) → 이메일 발송(sheet_mcp 이식 어댑터) → 발송 로그. cron 등록은 이 스크립트를 걸기만 하면 된다.
-4. 같은 데이터로 두 경로(도구 조회 / 에이전트 리포트)의 숫자가 항상 일치한다 (같은 core 함수 사용).
+1. **ETL**: Incrementally sync stores, products, receipt lines, and current stock from Loyverse into Postgres. Leave an inventory snapshot on every sync to start building a time series.
+2. **6 MCP tools**: `sell_through`, `inventory_status`, `stockout_risk`, `reorder_suggestions` (query type), `sync_now`, `sync_status` — natural-language querying from Claude Code/Desktop.
+3. **Reorder agent**: run `npm run agent:reorder` once → compute stockout-risk items → exit if 0 suggestions → the LLM writes a 2~3 sentence summary (figures come only from the table) → send email (adapter ported from sheet_mcp) → send log. Registering with cron is just a matter of hooking up this script.
+4. The numbers from the two paths (tool query / agent report) on the same data always match (same core functions are used).
 
-## 4. v0.1 비목표
+## 4. v0.1 Non-Goals
 
-- CSV/Excel 업로드 기반 재고 데이터소스 — v0.1 범위 밖(v0.2로 승격, §7 로드맵 참고. 원래 "StoreHub 등 타 POS 폴백"으로 부목적이었으나 2026-09-03 결정으로 다음 실제 출시의 주 데이터소스로 우선순위가 올라갔다)
-- SCM 시트(발주·입고) 연동 — v0.2 (sheet_mcp 시트 클라이언트 재사용 예정)
-- 자유 SQL 조회 도구(`explore_sql`) — v0.2 (읽기 전용 롤 + SELECT 검증 전제)
-- 웹훅 실시간 반영, 이상 감지(보이드·할인) 에이전트 — v0.3
-- Looker Studio 템플릿/Linking API 프로비저닝 — 상위 bi 구상에서 별도 진행
-- 멀티테넌트, 셀프서브, SMS 발송, 마진 지표(원가 데이터 품질 검증 전)
+- CSV/Excel upload-based inventory data source — out of v0.1 scope (promoted to v0.2, see §7 roadmap. Originally a secondary goal as a "fallback for other POS such as StoreHub", but the 2026-09-03 decision raised its priority to the primary data source of the next actual release)
+- SCM sheet (purchase order / receipt) integration — v0.2 (planning to reuse the sheet_mcp sheet client)
+- Free-form SQL query tool (`explore_sql`) — v0.2 (assumes a read-only role + SELECT validation)
+- Webhook real-time updates, anomaly detection (voids / discounts) agent — v0.3
+- Looker Studio templates / Linking API provisioning — handled separately in the higher-level bi initiative
+- Multi-tenancy, self-serve, SMS sending, margin metrics (until cost data quality is verified)
 
-## 5. 대표 시나리오
+## 5. Representative Scenarios
 
-1. **조회(MCP)** — 오너: "지난 30일 셀스루 하위 10개, 본점만." → `sell_through(store, period_days=30, order=asc, top=10)` 표 반환.
-2. **조회(MCP)** — "다음 주에 떨어질 것 같은 거?" → `stockout_risk(lead_time_days=7)` → 위험 품목 + 예상 소진일.
-3. **에이전트** — 매주 월 07:00 실행 → 지점별 재주문 제안 표 + 요약 2문장(영어/타글리시) 이메일. 제안 0건 주는 발송 없음.
+1. **Query (MCP)** — Owner: "Bottom 10 sell-through over the last 30 days, main store only." → `sell_through(store, period_days=30, order=asc, top=10)` returns a table.
+2. **Query (MCP)** — "What looks like it'll run out next week?" → `stockout_risk(lead_time_days=7)` → at-risk items + projected depletion dates.
+3. **Agent** — runs every Monday 07:00 → email with a per-branch reorder suggestion table + 2-sentence summary (English/Taglish). No send in weeks with 0 suggestions.
 
-## 6. 성공 기준 (v0.1 완료 판정)
+## 6. Success Criteria (v0.1 completion judgment)
 
-- 실제 Loyverse 계정 1개(테스트 매장 데이터)로 동기화 → 도구 조회 → 에이전트 dry-run 리포트까지 수동 스모크 통과.
-- 동기화 2회 연속 실행 시 중복 적재 0 (멱등 upsert).
-- 도구 응답과 에이전트 리포트의 동일 품목 수치 일치.
-- `npm run check` 통과, `src/core/` 커버리지 90% 이상.
+- Manual smoke test passes with 1 real Loyverse account (test store data): sync → tool query → agent dry-run report.
+- Running sync twice in a row produces 0 duplicate loads (idempotent upsert).
+- Figures for the same item match between tool responses and the agent report.
+- `npm run check` passes, `src/core/` coverage 90% or higher.
 
-## 7. 로드맵
+## 7. Roadmap
 
-**2026-09-03 재정렬**: CSV/Excel 데이터소스를 다음 실제 출시 목표로 앞당기고, Loyverse는 파일럿이 API형 POS 사용을 확인해줄 때까지 미룬다(§11 결정). v0.1(Loyverse)은 코드는 완료돼 있으나 실배포는 보류 — 데이터소스가 어댑터로 격리돼 있어 폐기가 아니라 대기 상태다.
+**2026-09-03 realignment**: The CSV/Excel data source is pulled forward as the next actual release target, and Loyverse is deferred until a pilot confirms use of an API-type POS (§11 decision). v0.1 (Loyverse) code is complete but production deployment is on hold — the data source is isolated as an adapter, so this is a standby state, not a discard.
 
-| 버전 | 내용 | 전제 |
+| Version | Content | Prerequisite |
 |---|---|---|
-| v0.1 | Loyverse ETL + MCP 6도구 + 재주문 에이전트(이메일) — **구현 완료(T0~T11), 실배포는 보류(파일럿 미확정)** | — |
-| **v0.2** | **CSV/Excel 업로드 기반 재고 데이터소스(다음 실제 출시 목표)** — 폴더 감시 채널(cron 주기 스캔), 임베디드 PGlite 웨어하우스 + 자체 파일 락(§12) | 새 백로그(TASKS.md) 설계 |
-| v0.3 | **Loyverse(및 기타 API형 POS) 어댑터 재활성화**, 웹훅 실시간화, 이상 감지 에이전트(보이드·할인·재고 불일치) | 파일럿이 API형 POS 사용 확인 |
-| v0.4 | 알림 계층 공용 패키지 추출(sheet_mcp와 공유), 다지점 비교 주간 리포트, bi_mcp 일반화 판단 | 두 레포 안정화 |
+| v0.1 | Loyverse ETL + 6 MCP tools + reorder agent (email) — **implementation complete (T0~T11), production deployment on hold (pilot unconfirmed)** | — |
+| **v0.2** | **CSV/Excel upload-based inventory data source (next actual release target)** — folder watch channel (periodic cron scan), embedded PGlite warehouse + own file lock (§12) | New backlog (TASKS.md) designed |
+| v0.3 | **Reactivate the Loyverse (and other API-type POS) adapter**, webhook real-time, anomaly detection agent (voids / discounts / inventory mismatches) | Pilot confirms API-type POS use |
+| v0.4 | Extract the notification layer into a shared package (shared with sheet_mcp), multi-branch comparison weekly report, decide on generalizing bi_mcp | Both repos stabilized |
 
-## 8. 미결 사항
+## 8. Open Items
 
-- [x] **(2026-09-03 결정)** 데이터소스 우선순위: CSV/Excel 업로드를 먼저 개발하고 Loyverse는 버전업으로 미룬다(§7·§11). 파일럿의 실제 POS/재고 관리 방식 확인을 기다리지 않고 "Excel/수기 쪽이 더 흔할 것"이라는 판단으로 순서를 정했다 — 이후 파일럿이 API형 POS 사용을 확인하면 Loyverse 어댑터(구현 완료)를 재활성화한다.
-- [x] **(2026-09-03 결정)** CSV/Excel 레이아웃·채널 범위 확정 — 폴더 감시 채널만, 고정 템플릿, 인코딩 자동감지, 판매이력 유무에 따른 셀스루/임계치 분기, 임베디드 PGlite 웨어하우스. 상세는 §12.
-- [x] **(2026-09-03 결정)** 실행 모델: 기존 `agent:reorder`와 같은 **주기 스캔(cron)**으로 정했다 — 상시 워처(데몬)는 비개발자 운영자에게 재시작·크래시 복구 등 새 운영 부담을 지우는 반면, 재고 변동을 실시간 반영할 필요는 없다(재주문 의사결정은 이미 주간 주기로 설계돼 있다, §5). 상세는 §12.
-- [x] **(2026-09-03 결정)** 다지점 헤드오피스 통합 조회: 지점별 산출물을 본사가 취합하는 방식으로 정했다. 상세는 §12 "다지점 헤드오피스 통합 조회".
-- [x] **(2026-09-03 스파이크 결과)** PGlite 다중 프로세스 동시 접근: 실제로 재현한 결과 겹쳐 열어도 에러 없이 **나중에 연 프로세스의 쓰기가 조용히 유실**된다(락 거부가 아니라 silent data loss). retail-mcp가 자체 파일 락(PID+타임스탬프)으로 동시 접근을 막기로 결정 — 구현 요구사항으로 확정. 상세·재현 방법은 §12.
-- [ ] Loyverse 원가(cost) 필드 데이터 품질 → 마진 지표 포함 여부 (Loyverse 어댑터 재활성화 시점에 재검토)
-- [ ] 리드타임을 공급자별로 다르게 줄 방법 (v0.1은 전역 기본값 + 인자)
-- [ ] 재주문 리포트 수신자: 오너 단일 vs 지점장별 분리 (v0.1은 단일 수신자)
-- [ ] 파일럿 매장 후보 확정 (지점 2개 이상)
+- [x] **(Decided 2026-09-03)** Data source priority: develop CSV/Excel upload first, defer Loyverse to a version bump (§7·§11). The order was set on the judgment that "Excel / manual is likely more common" without waiting to confirm the pilot's actual POS / inventory management method — if a pilot later confirms API-type POS use, reactivate the Loyverse adapter (implementation complete).
+- [x] **(Decided 2026-09-03)** CSV/Excel layout and channel scope finalized — folder watch channel only, fixed template, automatic encoding detection, sell-through / threshold branching depending on presence of sales history, embedded PGlite warehouse. Details in §12.
+- [x] **(Decided 2026-09-03)** Execution model: settled on **periodic scan (cron)**, the same as the existing `agent:reorder` — an always-on watcher (daemon) burdens non-developer operators with new operational load such as restarts and crash recovery, whereas there is no need to reflect stock changes in real time (reorder decisions are already designed on a weekly cadence, §5). Details in §12.
+- [x] **(Decided 2026-09-03)** Multi-branch head-office consolidated view: settled on HQ collecting per-branch output. Details in §12 "Multi-branch head-office consolidated view".
+- [x] **(2026-09-03 spike result)** PGlite multi-process concurrent access: actual reproduction shows that overlapping opens raise no error and instead **the writes of the process that opened later are silently lost** (silent data loss, not a lock rejection). Decided that retail-mcp blocks concurrent access with its own file lock (PID + timestamp) — confirmed as an implementation requirement. Details and reproduction method in §12.
+- [ ] Loyverse cost field data quality → whether to include margin metrics (re-review when the Loyverse adapter is reactivated)
+- [ ] A way to give different lead times per supplier (v0.1 is a global default + argument)
+- [ ] Reorder report recipients: single owner vs split per branch manager (v0.1 is a single recipient)
+- [ ] Confirm pilot store candidates (2 or more branches)
 
-## 9. v0.1 운영 가정과 판정 규칙
+## 9. v0.1 Operating Assumptions and Judgment Rules
 
-- **배포 단위**: 한 배포·한 DB는 한 사업자만 담당한다. 멀티테넌트 격리는 v0.1 범위 밖이다.
-- **시간 기준**: 원시 시각은 UTC로 저장한다. “최근 N일”의 달력일 경계와 리포트 표시는 사업장 타임존(기본 `Asia/Manila`) 기준이며, 설정값을 리포트에 표시한다.
-- **판매수량**: 판매와 환불을 합친 순판매량을 사용하되, 지표 계산 입력은 `max(0, 순판매량)`으로 하여 환불 초과 기간에 음수 수요·음수 재주문량이 생기지 않게 한다. 원시 순판매량은 별도 필드로 반환해 데이터 이상을 숨기지 않는다.
-- **취소 영수증**: `cancelled_at`이 있는 영수증(Loyverse `receipt_type`과 무관하게 취소된 거래)은 판매·환불 어느 쪽 집계에도 포함하지 않는다 — 완결되지 않은 거래이므로 셀스루·재고커버·재주문량 계산에서 전부 제외한다(품절위험 등에는 영향 없음). 이 제외는 ETL(T7)에서 수행한다.
-- **재고 예외**: 음수 현재고는 데이터 품질 경고 대상으로 표시하고 계산에는 0을 사용한다. 품목·매장 참조가 누락된 판매 라인은 동기화를 실패시켜 조용한 누락을 막는다.
-- **금액·통화**: v0.1 핵심 지표는 수량 기반이다. 매출액을 표시할 때는 Loyverse 통화 코드를 함께 반환하며 서로 다른 통화를 합산하지 않는다.
-- **데이터 신선도**: 모든 조회와 리포트는 마지막 성공 동기화 시각을 포함한다. 허용 신선도 기준을 넘으면 결과를 숨기지 않고 `stale` 경고를 붙인다.
-- **제안의 성격**: 재주문량은 발주 초안이며 자동 발주가 아니다. 미입고 주문, 공급자 최소주문량·팩 단위는 v0.1 계산에 포함되지 않음을 리포트에 명시한다.
+- **Deployment unit**: One deployment and one DB serve exactly one business. Multi-tenant isolation is out of v0.1 scope.
+- **Time basis**: Raw timestamps are stored in UTC. Calendar-day boundaries for "last N days" and report display are based on the business timezone (default `Asia/Manila`), and the configured value is shown in the report.
+- **Sales quantity**: Use net sales quantity combining sales and refunds, but feed the metric calculations `max(0, net sales qty)` so that periods where refunds exceed sales do not produce negative demand or negative reorder quantities. The raw net sales quantity is returned as a separate field so data anomalies are not hidden.
+- **Cancelled receipts**: Receipts with `cancelled_at` (transactions cancelled regardless of Loyverse `receipt_type`) are included in neither the sales nor the refund aggregates — they are incomplete transactions, so they are excluded entirely from sell-through, days of cover, and reorder quantity calculations (no impact on stockout risk etc.). This exclusion is performed in ETL (T7).
+- **Inventory exceptions**: Negative current stock is flagged as a data-quality warning and 0 is used in calculations. Sales lines whose item or store reference is missing fail the sync to prevent silent omissions.
+- **Amounts and currency**: The v0.1 core metrics are quantity-based. When displaying revenue, the Loyverse currency code is returned alongside, and different currencies are never summed together.
+- **Data freshness**: Every query and report includes the timestamp of the last successful sync. If the allowed freshness threshold is exceeded, results are not hidden; a `stale` warning is attached.
+- **Nature of suggestions**: The reorder quantity is a purchase order draft, not automatic ordering. The report states explicitly that outstanding orders, supplier minimum order quantities, and pack sizes are not included in the v0.1 calculation.
 
-## 10. v0.1 추가 비기능 기준
+## 10. v0.1 Additional Non-Functional Criteria
 
-- API 토큰과 개인정보는 로그·도구 응답·LLM 입력에 포함하지 않는다. LLM에는 재주문 표 작성에 필요한 품목명과 결정론 결과만 전달한다.
-- 외부 API는 타임아웃, 제한된 재시도, 429 `Retry-After`를 지원해야 하며 무한 재시도하지 않는다. Loyverse는 계정당 "300 requests per 300 sec" 한도를 공식 문서에 명시한다(developer.loyverse.com/docs "API rate limits", 2026-09-03 확인, 플랜과 무관한 계정 단위 한도) — 클라이언트는 이 한도에 걸려 429를 반응적으로 받기 전에, 슬라이딩 윈도우 속도 제한으로 능동적으로 스스로를 늦춘다(기본 250요청/300초, `LOYVERSE_RATE_LIMIT_MAX_REQUESTS`/`LOYVERSE_RATE_LIMIT_WINDOW_MS`로 조정).
-- 동기화 실패는 마지막 성공 데이터로 조회 가능하되 `stale` 상태와 실패 원인을 노출한다. 부분 적재가 성공 동기화로 보이면 안 된다.
+- API tokens and personal data are not included in logs, tool responses, or LLM input. Only the item names and deterministic results needed to write the reorder table are passed to the LLM.
+- External APIs must support timeouts, bounded retries, and 429 `Retry-After`, and must not retry indefinitely. Loyverse states a per-account "300 requests per 300 sec" limit in its official docs (developer.loyverse.com/docs "API rate limits", confirmed 2026-09-03, an account-level limit independent of plan) — rather than reactively receiving a 429 after hitting this limit, the client proactively throttles itself with sliding-window rate limiting (default 250 requests/300 seconds, adjustable via `LOYVERSE_RATE_LIMIT_MAX_REQUESTS`/`LOYVERSE_RATE_LIMIT_WINDOW_MS`).
+- On sync failure, the last successful data remains queryable, but the `stale` status and the failure cause are exposed. A partial load must never appear as a successful sync.
 
-## 11. 사용처와 데이터소스 재검토 (2026-09-03)
+## 11. Re-review of Usage and Data Source (2026-09-03)
 
-기존 T0~T11 구현(main에 병합됨) 완료 후, "이 MCP+에이전트를 실제로 어디에 연결해 쓰는가"를 점검하며 나온 결론. 코드 변경은 없고 이후 우선순위 판단의 근거를 남긴다.
+Conclusions reached after completing the existing T0~T11 implementation (merged to main), while examining "where is this MCP + agent actually going to be connected and used". No code changes; this records the rationale for subsequent prioritization.
 
-### 사용 채널
+### Usage channels
 
-- **MCP 조회 도구 6종**은 **개발자/운영자**가 Claude Code(로컬 stdio 연결, DESIGN §9)로 쓰는 것을 기본 채널로 본다. 매장 오너가 Claude Code/Desktop을 직접 설치해 자연어로 묻는 시나리오는 §5에 예시로 남아 있지만, 확정된 사용처는 아니다 — 비개발자인 매장 오너가 유료 데스크톱 앱을 설치·설정할 가능성은 낮다고 판단한다.
-- **재주문 에이전트의 이메일 리포트가 매장 오너 쪽의 실질적인 유일한 채널**이다 — 설치·로그인이 필요 없다. "찾아가는 BI"(에이전트)가 제품의 실제 오너 접점이고, "물어보면 답하는 BI"(MCP)는 운영자가 데이터를 검증·분석하는 내부 도구에 가깝다.
-- 오너 대상 확장이 필요해지면(웹 대시보드, 메신저 알림 등) MCP 계층과 별개로 설계한다 — 이 결정이 MCP 도구 자체의 필요성을 없애지는 않는다(운영자 채널로는 여전히 유효).
+- The **6 MCP query tools** are regarded as primarily a channel for **developers/operators** using Claude Code (local stdio connection, DESIGN §9). The scenario where a store owner installs Claude Code/Desktop directly and asks in natural language remains as an example in §5, but it is not a confirmed use case — we judge it unlikely that a non-developer store owner will install and configure a paid desktop app.
+- **The reorder agent's email report is effectively the only channel on the store owner's side** — no installation or login required. The "BI that comes to you" (agent) is the product's real owner touchpoint, and the "BI that answers when asked" (MCP) is closer to an internal tool for operators to verify and analyze data.
+- If owner-facing expansion becomes necessary (web dashboard, messenger notifications, etc.), design it separately from the MCP layer — this decision does not eliminate the need for the MCP tools themselves (they remain valid as an operator channel).
 
-### 데이터소스 재검토
+### Data source re-review
 
-- v0.1은 Loyverse ETL로 구현·완료했으나, 확정된 파일럿 후보가 없는 상태에서 고른 가정이었다. 실제 타겟(불특정 다수의 리테일 다지점 매장/본사)은 Loyverse 같은 API형 POS보다 **Excel/자체 ERP/수기 재고 관리를 쓸 가능성이 더 높다**는 관찰 기반 신호가 있다(§8 미결 사항 최우선 항목).
-- 다행히 `LoyverseClient` 인터페이스(`core/types.ts`)가 POS 종속 로직을 어댑터 뒤에 격리한다(DESIGN §1 아키텍처). 데이터소스를 CSV/Excel 업로드 파서 등으로 교체·추가해도 `core/metrics.ts`(지표 계산), `etl/sync.ts`(동기화 오케스트레이션), MCP 6도구, 재주문 에이전트는 그대로 재사용된다 — T0~T11 작업 대부분은 데이터소스와 무관하게 유효하다는 뜻이다. 이번 재검토로 기존 구현이 무효화되지는 않는다.
-- **다음 결정은 코드가 아니라 고객 확인이 먼저다**: 실제 파일럿 후보 2~3곳의 재고 관리 방식을 확인한 뒤 (a) Loyverse 어댑터를 그대로 채택할지, (b) CSV/Excel 업로드 어댑터를 v0.2로 미루지 않고 지금 우선 개발할지 결정한다. 확인 전까지는 어느 한쪽에 추가로 깊게 투자하지 않는다.
+- v0.1 was implemented and completed as a Loyverse ETL, but that was an assumption chosen with no confirmed pilot candidate. There are observation-based signals that the actual target (an unspecified population of multi-branch retail stores / head offices) is **more likely to use Excel / in-house ERP / manual inventory management** than an API-type POS such as Loyverse (top-priority item in §8 open items).
+- Fortunately, the `LoyverseClient` interface (`core/types.ts`) isolates POS-dependent logic behind an adapter (DESIGN §1 architecture). Even if the data source is replaced or augmented with a CSV/Excel upload parser or similar, `core/metrics.ts` (metric calculation), `etl/sync.ts` (sync orchestration), the 6 MCP tools, and the reorder agent are reused as-is — meaning most of the T0~T11 work remains valid regardless of data source. This re-review does not invalidate the existing implementation.
+- **The next decision is customer confirmation first, not code**: after checking the inventory management method of 2~3 actual pilot candidates, decide whether to (a) adopt the Loyverse adapter as-is, or (b) prioritize developing the CSV/Excel upload adapter now instead of deferring it to v0.2. Until confirmation, do not invest further deeply in either direction.
 
-### 결정 (2026-09-03)
+### Decision (2026-09-03)
 
-**(b) CSV/Excel 업로드 데이터소스를 먼저 개발하고, (a) Loyverse는 이후 버전업 때 추가한다.** 파일럿 후보의 재고 관리 방식을 아직 특정하지 못한 상태에서 우선순위를 확정한 것 — "확인 후 결정"이 아니라 "Excel/수기 관리 쪽이 더 흔할 것"이라는 판단으로 순서를 먼저 정하고, 실제 파일럿이 API형 POS(Loyverse 등)를 쓰는 것으로 확인되면 그때 Loyverse 어댑터(이미 구현·완료된 T0~T11)를 재활성화한다. §7 로드맵에 반영. 상세 데이터 형식(어떤 CSV/Excel 레이아웃을 지원할지)은 아직 미정 — 별도 태스크로 설계한다.
+**(b) Develop the CSV/Excel upload data source first, and add (a) Loyverse in a later version bump.** The priority was fixed while the pilot candidates' inventory management method is still unidentified — not "decide after confirmation" but ordering first on the judgment that "Excel / manual management is likely more common", and if an actual pilot is confirmed to use an API-type POS (Loyverse etc.), reactivate the Loyverse adapter (T0~T11, already implemented and complete) at that point. Reflected in the §7 roadmap. The detailed data format (which CSV/Excel layouts to support) is still undecided — to be designed as a separate task.
 
-## 12. v0.2 CSV/Excel 채널 설계 (2026-09-03)
+## 12. v0.2 CSV/Excel Channel Design (2026-09-03)
 
-§11 결정 이후, "설치 후 어떤 온보딩으로 연결하는가"를 구체화하며 정한 것. 코드 변경은 없고 이후 태스크 설계의 근거를 남긴다.
+Decisions made after the §11 decision while fleshing out "what onboarding connects things after installation". No code changes; this records the rationale for subsequent task design.
 
-### 연결 채널: 폴더 감시만
+### Connection channel: folder watch only
 
-사용자가 제안한 세 채널(폴더 / 로컬·구글 엑셀 원본 / ERP 연동) 중 v0.2는 **폴더 감시 하나만** 만든다.
+Of the three channels the user proposed (folder / local or Google Excel original / ERP integration), v0.2 builds **folder watch only**.
 
-- **ERP 연동은 채널로 다루지 않는다.** ERP는 제품마다 API 유무·형태가 달라 "연동"이 하나의 기능이 아니라 시스템별 별도 통합 프로젝트가 된다. 현실적인 경로는 "ERP에서 CSV/Excel로 내보내기 → 폴더 채널로 투입"이며, 이 경우 폴더 채널의 사용 사례 중 하나로 흡수된다.
-- **로컬 엑셀 원본에 새 시트를 추가하는 방식은 채택하지 않는다.** 사용자가 그 파일을 엑셀에서 열어둔 상태면 쓰기 충돌·손상 위험이 있고, 사용자의 원본 작업 파일을 프로그램이 직접 수정하는 것 자체가 신뢰 리스크다. 원본은 읽기 전용으로만 다루고, 결과는 별도 산출물로 낸다.
-- **구글드라이브 엑셀 연동은 미룬다.** Google Sheets API OAuth 인증 흐름이 통째로 추가되어 범위가 크게 늘어난다.
+- **ERP integration is not treated as a channel.** ERPs differ per product in whether an API exists and what shape it takes, so "integration" is not a single feature but a separate integration project per system. The realistic path is "export from ERP to CSV/Excel → feed into the folder channel", in which case it is absorbed as one use case of the folder channel.
+- **Adding a new sheet to the user's local Excel original is not adopted.** If the user has that file open in Excel, there is a risk of write conflicts and corruption, and having a program directly modify the user's original working file is itself a trust risk. Originals are treated as read-only, and results go out as separate output.
+- **Google Drive Excel integration is deferred.** It would add the entire Google Sheets API OAuth authentication flow, greatly expanding scope.
 
-### 컬럼 구성: 고정 템플릿
+### Column layout: fixed template
 
-사용자 파일을 그대로 받아 컬럼을 추론하는 "자유 매핑" 대신, retail-mcp가 정한 컬럼명의 템플릿 파일을 제공하고 사용자가 그 틀에 맞춰 채우게 한다. 파서가 단순해지고 온보딩이 빨라진다.
+Instead of "free mapping" that takes the user's file as-is and infers columns, retail-mcp provides a template file with column names it defines, and the user fills it in to fit that frame. The parser becomes simpler and onboarding faster.
 
-| 컬럼 | 필수 여부 | 설명 |
+| Column | Required | Description |
 |---|---|---|
-| `매장명` | 필수 | 지점 식별자 |
-| `상품명` | 필수 | 품목명 |
-| `SKU` | 필수 | 매장+SKU로 유일해야 함 |
-| `재고수량` | 필수 | 현재고 |
-| `판매수량` | 선택 | 있으면 셀스루/일평균판매 계산 가능(§2 근사식). 없으면 임계치 폴백(아래) |
-| `판매기간시작일`/`판매기간종료일` | 선택 (판매수량 있으면 필수) | 영수증 단위 이력이 아니라 기간 합계이므로, `판매수량`이 어느 기간의 합인지 명시해야 일평균판매 계산이 가능하다 |
-| `단가`/`통화` | 선택 | 매출액 표시용. 통화 코드 없이 금액을 합산하지 않는다(§9 원칙과 동일) |
-| `저재고임계치` | 선택 | 상품별 override. 없으면 전역 기본값 사용 |
+| `매장명` | Required | Branch identifier |
+| `상품명` | Required | Item name |
+| `SKU` | Required | Must be unique per store+SKU |
+| `재고수량` | Required | Current stock |
+| `판매수량` | Optional | If present, sell-through / average daily sales can be computed (§2 approximation). If absent, threshold fallback (below) |
+| `판매기간시작일`/`판매기간종료일` | Optional (required if `판매수량` is present) | Because this is a period total rather than receipt-level history, the period over which `판매수량` was summed must be stated for average daily sales to be computable |
+| `단가`/`통화` | Optional | For displaying revenue. Amounts are not summed without a currency code (same principle as §9) |
+| `저재고임계치` | Optional | Per-product override. If absent, the global default is used |
 
-### 인코딩: 자동감지 + 폴백
+### Encoding: auto-detect + fallback
 
-UTF-8을 기본 가정하지 않는다. 한국어 윈도우 엑셀 저장은 CP949/EUC-KR이 흔하고, 필리핀/타갈로그 텍스트가 섞인 파일도 다양할 수 있다. 라이브러리로 자동 감지를 시도하고, 신뢰도가 낮으면 온보딩 중 목록에서 선택하게 한다(무음 mojibake보다 확인 질문이 낫다).
+UTF-8 is not assumed by default. Korean Windows Excel saves are commonly CP949/EUC-KR, and files mixing Filipino/Tagalog text can vary widely. Attempt automatic detection with a library, and if confidence is low, let the user pick from a list during onboarding (a confirmation question is better than silent mojibake).
 
-### 판매이력 없을 때: 임계치 폴백
+### When there is no sales history: threshold fallback
 
-`판매수량`(과 기간) 컬럼이 없는 파일은 셀스루·일평균판매·재고커버일수(§2)를 계산할 수 없다 — 판매 이력 없이 재고 스냅샷만으로는 "판매 속도"를 알 수 없기 때문이다. 이 경우:
+A file without the `판매수량` (and period) columns cannot compute sell-through, average daily sales, or days of cover (§2) — without sales history, an inventory snapshot alone gives no "sales velocity". In this case:
 
-- **셀스루 계산은 건너뛴다** (해당 지표는 "판매 이력 없음"으로 표시, 조용히 0 처리하지 않는다).
-- **`재고수량 < 임계치`(전역 기본값 또는 품목별 `저재고임계치`)일 때만 저재고 알림**을 보낸다 — §2의 근사 셀스루 로직과는 별개의 단순 규칙이다.
-- 판매 이력이 있는 파일은 기존 §2 근사식을 그대로 적용한다. 같은 v0.2 배포 안에서 지점마다, 또는 같은 지점이라도 시점마다 두 모드가 섞일 수 있다는 뜻이다 — MCP 응답·리포트에 어느 모드로 계산됐는지 표시해야 한다.
+- **Skip the sell-through calculation** (display the metric as "no sales history"; do not silently treat it as 0).
+- **Send a low-stock alert only when `재고수량 < threshold`** (global default or per-item `저재고임계치`) — a simple rule separate from the §2 approximate sell-through logic.
+- Files with sales history apply the existing §2 approximation as-is. This means that within the same v0.2 deployment the two modes can be mixed per branch, or even per point in time for the same branch — MCP responses and reports must indicate which mode the calculation used.
 
-### 실행 모델: 주기 스캔 (cron)
+### Execution model: periodic scan (cron)
 
-폴더 감시는 기존 `agent:reorder`와 같은 **주기 스캔** 방식으로 정했다 — 상시 워처(파일시스템 이벤트를 실시간 감지하는 데몬)는 항상 떠 있는 프로세스를 새로 관리해야 한다(크래시 복구, 재시작 등록, 로그 관리). 이는 비개발자 운영자에게 지우기 어려운 운영 부담인 반면, 재고 변동을 실시간으로 반영해야 할 이유가 없다 — 재주문 의사결정은 이미 주간 주기로 설계돼 있고(§5 대표 시나리오), 수기/엑셀로 재고를 갱신하는 빈도 자체가 실시간과 거리가 멀다.
+Folder watch is settled as a **periodic scan**, the same as the existing `agent:reorder` — an always-on watcher (a daemon detecting filesystem events in real time) requires managing a newly always-running process (crash recovery, restart registration, log management). That is an operational burden hard to impose on non-developer operators, whereas there is no reason to reflect stock changes in real time — reorder decisions are already designed on a weekly cadence (§5 representative scenarios), and the frequency at which manual/Excel stock is updated is itself far from real time.
 
-- README의 cron/launchd 등록 예시(`agent:reorder`)와 동일한 패턴으로, 폴더 스캔용 스크립트를 같은 방식으로 등록한다.
-- 스캔 1회 실행에서 "폴더의 현재 파일 파싱 → 웨어하우스 upsert → 저재고 알림(필요 시) → (지점 인스턴스라면) 스냅샷 파일 갱신"까지 한 번에 끝낸다 — 별도 트리거 없이 한 스크립트가 전부 수행하므로, 지점이 본사로 보내는 스냅샷의 최신성도 이 스캔 주기와 자동으로 같아진다(다지점 절의 "미해결" 사항 해소).
-- 스캔 간격 자체(매일 1회 등)는 cron 표현식으로 정하며 앱 코드에 하드코딩하지 않는다 — 운영자가 사업장 사정에 맞게 정한다.
-### 웨어하우스: 임베디드 PGlite 기본, Neon은 옵션
+- Register the folder-scan script in the same way as the README's cron/launchd registration example (`agent:reorder`), following the same pattern.
+- A single scan run completes "parse the folder's current files → warehouse upsert → low-stock alert (if needed) → (if a branch instance) refresh the snapshot file" in one go — one script does everything with no separate trigger, so the freshness of the snapshot a branch sends to HQ automatically matches this scan cadence (resolving the "unresolved" item in the multi-branch section).
+- The scan interval itself (e.g. once a day) is set by the cron expression and is not hard-coded in app code — the operator sets it to suit the business.
+### Warehouse: embedded PGlite by default, Neon as an option
 
-당초 "DB는 Neon" 결정(§11 이전)은 Loyverse 채택을 전제로 한 것이었다. CSV/Excel 채널 사용자는 비개발자에 가까운 리테일 운영자일 수 있고, Neon 계정 생성·연결 문자열 발급·`.env` 설정은 "npm install해서 폴더 하나 지정"이라는 눈높이에 비해 진입장벽이 크다.
+The original "DB is Neon" decision (before §11) assumed Loyverse adoption. CSV/Excel channel users may be retail operators closer to non-developers, and creating a Neon account, issuing a connection string, and configuring `.env` is a high barrier relative to the expectation of "npm install and point at one folder".
 
-- v0.2 **기본값은 PGlite를 임베디드·파일 영속 모드로 로컬에 실행**한다(예: `.retail-mcp/data/`) — 별도 계정 가입도, 네트워크 DB도 필요 없다. `pgWarehouse` 어댑터는 이미 PGlite와 실 Postgres 양쪽에서 동작하도록 테스트돼 있으므로(`src/mocks/`), "어떤 Postgres 인스턴스를 쓰느냐"만 바뀌는 것이지 어댑터 계약 자체는 그대로다.
-- `DATABASE_URL`을 명시하면 기존처럼 Neon 등 네트워크 Postgres를 쓸 수 있다 — 다지점을 한 DB로 모으고 싶은 사업자를 위한 옵션으로 유지한다(아래 다지점 열린 질문과 연결).
-- 확인 필요(§8): PGlite는 데이터 디렉터리에 대해 동시에 여는 프로세스가 여러 개일 때의 동작이 실 Postgres만큼 검증돼 있지 않다 — CLI 온보딩·MCP 서버·에이전트 cron이 로컬에서 같은 디렉터리를 동시에 열 가능성이 있으므로 구현 착수 시 스파이크로 확인한다.
+- The v0.2 **default runs PGlite locally in embedded, file-persistent mode** (e.g. `.retail-mcp/data/`) — no separate account signup, no network DB. The `pgWarehouse` adapter is already tested to work against both PGlite and real Postgres (`src/mocks/`), so only "which Postgres instance is used" changes; the adapter contract itself is unchanged.
+- If `DATABASE_URL` is specified, a network Postgres such as Neon can be used as before — kept as an option for businesses that want to consolidate multiple branches in one DB (connected to the multi-branch open question below).
+- Needs confirmation (§8): PGlite's behavior when multiple processes open the data directory concurrently is not as well verified as real Postgres — since CLI onboarding, the MCP server, and the agent cron could open the same directory concurrently on the local machine, verify with a spike when implementation starts.
 
-### 다지점 헤드오피스 통합 조회
+### Multi-branch head-office consolidated view
 
-지점마다 로컬 PGlite에 적재하면 지점별로 데이터가 분리된다. 본사가 여러 지점을 한 번에 보려면 결과를 모아야 하는데, 지점에 공용 Neon 업로드를 요구하는 대신 **지점별 산출물 파일을 본사가 취합하는 방식**으로 정했다 — 웨어하우스 절의 "비개발자 지점 사용자에게 DB 계정 발급을 요구하지 않는다"는 원칙과 일관된다.
+If each branch loads into a local PGlite, data is separated per branch. For HQ to see multiple branches at once the results must be gathered, and rather than requiring branches to upload to a shared Neon, the decision is **HQ collects per-branch output files** — consistent with the warehouse section's principle of "do not require non-developer branch users to be issued DB accounts".
 
-- **지점 인스턴스**는 지금까지 설계대로 동작한다 — 자신의 재고 파일을 폴더 감시로 처리해 로컬 PGlite에 적재하고, 그 지점 자체의 저재고 알림을 보낸다.
-- 지점 인스턴스는 처리 결과를 **§12 컬럼 구성과 동일한 고정 템플릿 형식의 스냅샷 파일**로도 함께 내보낸다. `매장명`이 이미 필수 컬럼이라 스키마 변경 없이 그대로 재사용된다 — 이 스냅샷은 사람이 보는 요약이 아니라 다시 읽어들일 수 있는 기계 판독용 산출물이다.
-- **본사 인스턴스**는 같은 retail-mcp를 "통합 조회" 모드로 별도 설치해, 각 지점의 스냅샷 파일이 모이는 "수집 폴더"를 동일한 폴더 감시 채널로 관찰한다. 지점 스냅샷이 그 폴더까지 도달하는 전송 수단(사업장이 이미 쓰는 공유 드라이브 동기화, 이메일 첨부 수동 저장, USB, 수기 복사 등)은 이 설계에서 규정하지 않는다 — 새 동기화 서비스를 만들지 않고 이미 쓰는 수단에 얹는다.
-- 본사 인스턴스는 여러 지점의 스냅샷을 같은 스키마(매장명이 이미 구분자)로 적재하므로, 기존 MCP 도구·에이전트가 이미 지원하는 지점 필터링(§5 "본점만" 예시)이 스키마 변경 없이 그대로 다지점 비교·통합 조회에 쓰인다.
-- 적재는 스냅샷 시점 기준 (매장, SKU)별 upsert다. 지점 파일은 거래 로그가 아니라 그 시점의 전체 재고·판매 요약이므로, 본사 ETL은 한 지점 스냅샷 파일이 끝까지 성공 파싱된 뒤에만 그 지점의 watermark를 커밋한다 — 일부만 파싱된 상태로 watermark를 올리지 않는다는 원칙(CLAUDE.md 구현 해석 보충)을 지점 단위로도 지킨다.
-- 본사 인스턴스의 웨어하우스 선택은 위 "웨어하우스" 절과 동일한 기준을 따른다 — 한 사무실·한 기기에서만 보면 로컬 PGlite로 충분하고, 여러 사람·여러 기기에서 봐야 하면 `DATABASE_URL`로 Neon을 선택한다.
-- 이 설계는 온보딩에 "지점(단일 매장)" vs "본사(다지점 통합)" 모드 선택이 필요하다는 뜻이다 — 온보딩 마법사 세부 단계는 실제 구현 태스크에서 정한다.
-- 스냅샷 전송 주기는 별도로 정하지 않는다 — 위 "실행 모델" 절대로 지점의 스캔 1회가 스냅샷 갱신까지 포함하므로, 지점의 폴더 감시 주기와 자동으로 같다.
+- **Branch instances** operate as designed so far — process their own inventory file via folder watch, load into local PGlite, and send that branch's own low-stock alerts.
+- A branch instance also exports its processing results as a **snapshot file in the same fixed template format as the §12 column layout**. Since `매장명` is already a required column, it is reused as-is with no schema change — this snapshot is not a human-readable summary but a machine-readable output that can be read back in.
+- The **HQ instance** is a separate installation of the same retail-mcp in "consolidated view" mode, observing a "collection folder" where each branch's snapshot files gather, via the identical folder watch channel. The transport by which branch snapshots reach that folder (shared-drive sync the business already uses, manually saving email attachments, USB, manual copy, etc.) is not prescribed by this design — no new sync service is built; it rides on means already in use.
+- Because the HQ instance loads multiple branches' snapshots into the same schema (store name is already the discriminator), the branch filtering the existing MCP tools and agent already support (§5 "main store only" example) serves multi-branch comparison and consolidated queries as-is with no schema change.
+- Loading is an upsert per (store, SKU) as of the snapshot time. A branch file is not a transaction log but a full inventory/sales summary at that point in time, so the HQ ETL commits that branch's watermark only after the branch's snapshot file has been fully and successfully parsed — the principle of not advancing the watermark in a partially parsed state (CLAUDE.md implementation interpretation supplement) is upheld at the branch level as well.
+- The HQ instance's warehouse choice follows the same criteria as the "Warehouse" section above — if viewed from one office and one device, local PGlite suffices; if multiple people on multiple devices need to view it, choose Neon via `DATABASE_URL`.
+- This design means onboarding needs a mode selection: "branch (single store)" vs "HQ (multi-branch consolidated)" — the detailed steps of the onboarding wizard are decided in the actual implementation task.
+- No separate snapshot transfer cadence is defined — per the "Execution model" section above, a branch's single scan includes the snapshot refresh, so it automatically equals the branch's folder watch cadence.
 
-### PGlite 다중 프로세스 동시 접근 (스파이크 결과, 2026-09-03)
+### PGlite multi-process concurrent access (spike result, 2026-09-03)
 
-문서로 정할 사안이 아니라 실제 재현이 필요해 스파이크로 확인했다. 방법: 같은 파일 영속 PGlite 데이터 디렉터리를 서로 다른 Node 프로세스 두 개(A, B)가 겹쳐서 열게 했다 — A가 먼저 열어 행을 하나 insert하고 연결을 6초간 유지(장시간 열려 있는 MCP 서버 상황을 흉내), 1.5초 뒤 B가 같은 디렉터리를 열어 자기 행을 insert. 이후 A·B가 모두 종료된 뒤 세 번째 프로세스 C가 다시 그 디렉터리를 열어 최종 상태를 확인. 두 번 반복해 재현성을 확인했다.
+This was not something to settle on paper; it needed actual reproduction, so it was verified with a spike. Method: two different Node processes (A, B) open the same file-persistent PGlite data directory with overlap — A opens first, inserts one row, and keeps the connection for 6 seconds (mimicking a long-running MCP server); 1.5 seconds later B opens the same directory and inserts its own row. After both A and B exit, a third process C reopens the directory to check the final state. Repeated twice to confirm reproducibility.
 
-**결과 — PGlite는 겹쳐 열어도 에러를 내거나 막지 않는다. 대신 나중에 연 프로세스(B)의 쓰기가 조용히 사라진다.** B는 자기 세션 안에서는 insert가 성공한 것처럼 보였고(자기가 넣은 행이 자기 SELECT에는 보임), 어떤 에러도 발생하지 않았다. 그런데 A·B가 모두 끝난 뒤 C가 다시 열어보면 **B가 넣은 행은 없고 A가 넣은 행만 남아 있다** — 락 경합으로 거부된 게 아니라, 나중에 연 프로세스의 쓰기가 durable하게 반영되지 않은 채 유실됐다. PGlite README도 "single user/connection"을 명시한다(2026-09-03 확인, 로컬 패키지 문서). 조용한 데이터 유실이라 락 충돌보다 더 위험하다 — 에러 메시지도 없고 그 프로세스 입장에서는 성공한 것처럼 보인다.
+**Result — PGlite neither raises an error nor blocks on overlapping opens. Instead, the writes of the process that opened later (B) silently disappear.** Within its own session, B's insert appeared to succeed (the row it inserted was visible to its own SELECT), and no error occurred at all. Yet when C reopened after A and B had both finished, **B's row was gone and only A's row remained** — not a rejection from lock contention, but the later process's writes lost without ever being made durable. The PGlite README also states "single user/connection" (confirmed 2026-09-03, local package docs). Silent data loss is more dangerous than a lock conflict — no error message, and from that process's perspective it looks like success.
 
-**대응 (v0.2 구현 요구사항으로 확정)**: PGlite 자체의 동시성 보장에 기대지 않고, retail-mcp가 **자체 외부 잠금**을 둔다 — PGlite 데이터 디렉터리를 열기 전에 PID+타임스탬프를 담은 락 파일을 확인하고, 이미 살아있는 프로세스가 그 디렉터리를 쓰고 있으면 **시작을 거부**한다(원인+조치 포함한 에러 메시지, CLAUDE.md 컨벤션). CLI 온보딩·MCP 서버·에이전트 cron 스캔이 같은 디렉터리를 동시에 여는 상황을 막는 게 목적이며, §12 "실행 모델" 결정(단발성 스캔 스크립트, 상시 데몬 아님)으로 겹치는 시간대는 짧아졌지만 완전히 없어지지는 않는다(느린 스캔이 끝나기 전에 다음 cron이 겹쳐 실행되거나, 스캔 도중 사람이 온보딩을 다시 실행하는 경우 등).
+**Response (confirmed as a v0.2 implementation requirement)**: Do not rely on PGlite's own concurrency guarantees; retail-mcp maintains **its own external lock** — before opening the PGlite data directory, check a lock file containing PID + timestamp, and if a still-alive process is using that directory, **refuse to start** (error message including cause + remedy, CLAUDE.md convention). The goal is to prevent CLI onboarding, the MCP server, and the agent cron scan from opening the same directory concurrently; the §12 "Execution model" decision (one-shot scan script, not an always-on daemon) shortens the overlap window but does not eliminate it entirely (e.g. the next cron overlapping before a slow scan finishes, or a person re-running onboarding in the middle of a scan).
 
-### 실제 사용 절차 (구현 완료, 2026-09-03, TASKS T12~T22)
+### Actual usage procedure (implementation complete, 2026-09-03, TASKS T12~T22)
 
-위 설계 전체가 구현됐다 — 이 절은 새 결정이 아니라, 설계가 실제로 어떤 명령/파일로 구현됐는지 연결하는 참조다. 사람이 실행하는 절차는 README "CSV/Excel 채널 퀵스타트"에 실제 명령으로 정리돼 있다 — 여기서는 그 명령이 위 설계 절과 어떻게 대응하는지만 짧게 남긴다.
+The entire design above has been implemented — this section is not a new decision but a reference connecting the design to the actual commands/files that implement it. The human-run procedure is laid out with actual commands in the README "CSV/Excel channel quickstart" — here we only briefly note how those commands correspond to the design sections above.
 
-- **온보딩**(`npm run onboard`, `src/cli/onboard.ts`) — "연결 채널: 폴더 감시만"·"다지점 헤드오피스 통합 조회" 절의 "지점/본사 모드 선택"을 대화형으로 구현한다. 지점 모드를 고르면 위 "컬럼 구성" 표와 완전히 같은 헤더의 예시 템플릿 CSV를 감시 폴더에 만들어준다(임의로 다시 만들지 않고 스냅샷 export 함수를 재사용 — 두 산출물이 어긋날 일이 구조적으로 없다).
-- **지점 스캔**(`npm run agent:folder-scan`, `CSV_MODE=branch` 기본값) — "실행 모델" 절의 "스캔 1회 = 파싱 → 적재 → 알림 → 스냅샷 갱신"을 그대로 구현한다. 판매이력 유무 분기("판매이력 없을 때: 임계치 폴백")는 판정 결과에 `mode: "history" | "no_history"`로 남아 리포트에도 어느 모드로 계산됐는지 표시된다.
-- **본사 통합 스캔**(`CSV_MODE=consolidated`, `CSV_COLLECT_DIR`) — "다지점 헤드오피스 통합 조회" 절의 "지점 스냅샷 파일이 끝까지 성공 파싱된 뒤에만 그 지점의 watermark를 커밋"을 지점별 독립 트랜잭션으로 구현한다. 스냅샷 전송 수단(공유드라이브/이메일 첨부/USB) 자체는 여전히 이 프로젝트가 규정하지 않는다 — 수집 폴더에 파일이 도착해 있다고만 가정한다.
-- **동시 접근 방지** — 위 "PGlite 다중 프로세스 동시 접근" 절의 대응(자체 파일 락)은 `src/adapters/fileLock.ts` + `src/adapters/warehouseFactory.ts`(임베디드 PGlite 경로를 여는 진입점 전부가 공용으로 거친다)로 구현됐다.
-- **e2e 검증**(`tests/e2eCsvChannel.test.ts`) — 지점 단독 시나리오(파일→파싱→적재→실제 발송)와 본사 통합 시나리오(서로 독립된 웨어하우스 두 개가 각자 만든 실제 스냅샷 파일을 세 번째 독립 웨어하우스가 취합해 매장명으로 필터링 조회)를 실제 파일시스템·PGlite로 끝까지 이어 붙여 통과시킨다.
+- **Onboarding** (`npm run onboard`, `src/cli/onboard.ts`) — interactively implements the "branch/HQ mode selection" from the "Connection channel: folder watch only" and "Multi-branch head-office consolidated view" sections. Choosing branch mode creates an example template CSV in the watched folder with headers exactly identical to the "Column layout" table above (reusing the snapshot export function rather than rebuilding it arbitrarily — structurally, the two outputs cannot diverge).
+- **Branch scan** (`npm run agent:folder-scan`, `CSV_MODE=branch` default) — implements the "Execution model" section's "one scan = parse → load → alert → snapshot refresh" as-is. The sales-history branching ("When there is no sales history: threshold fallback") is recorded in the result as `mode: "history" | "no_history"`, and the report also shows which mode the calculation used.
+- **HQ consolidated scan** (`CSV_MODE=consolidated`, `CSV_COLLECT_DIR`) — implements the "Multi-branch head-office consolidated view" section's "commit a branch's watermark only after its snapshot file has been fully and successfully parsed" as independent per-branch transactions. The snapshot transport itself (shared drive / email attachment / USB) is still not prescribed by this project — it only assumes the files have arrived in the collection folder.
+- **Concurrent access prevention** — the response from the "PGlite multi-process concurrent access" section above (own file lock) is implemented in `src/adapters/fileLock.ts` + `src/adapters/warehouseFactory.ts` (a shared path that every entry point opening the embedded PGlite route goes through).
+- **e2e verification** (`tests/e2eCsvChannel.test.ts`) — passes the branch-standalone scenario (file → parse → load → actual send) and the HQ consolidated scenario (two mutually independent warehouses each produce real snapshot files, which a third independent warehouse collects and queries filtered by store name) end to end on a real filesystem and PGlite.
 
-## 13. SCM 시트 연동 + 재고 정합성 검증 (2026-09-03, v0.2 대기열 착수)
+## 13. SCM Sheet Integration + Stock Reconciliation Check (2026-09-03, v0.2 queue started)
 
-`docs/TASKS.md` "v0.2 대기열"의 "SCM 시트 연동"·"정통 셀스루"를, 사용자가 제공한 실제 샘플 구글시트(발주·입고 데이터, "상품목록"·"입출고내역"·"재고현황"·"판매요약"·"대시보드" 5개 탭)를 근거로 설계·착수한다.
+The "SCM sheet integration" and "canonical sell-through" items from the "v0.2 queue" in `docs/TASKS.md` are designed and started based on the actual sample Google Sheet the user provided (purchase order / receipt data, 5 tabs: "상품목록", "입출고내역", "재고현황", "판매요약", "대시보드").
 
-### 스코프 결정 — 이번에 하는 것 / 미룬 것
+### Scope decision — what is done now / what is deferred
 
-- **한다**: 시트의 "입출고내역" 탭 중 **구분=입고 행만** 신규 테이블(`purchase_receipts`)에 적재하는 스키마·웨어하우스 계층, 그리고 그 입고 실적으로 "정통 셀스루"와 "재고 정합성 검증"을 계산하는 순수 함수(`computeStockReconciliation`).
-- **구분=출고 행은 적재하지 않는다.** retail-mcp의 판매 원천은 Loyverse/CSV 채널이다 — SCM 시트의 출고까지 별도 파이프라인으로 적재하면 같은 판매를 이중 계산하게 된다.
-- **"발주"(주문했지만 아직 안 들어온 것) 상태는 다루지 않는다.** 확인한 샘플 시트에 발주 상태 컬럼 자체가 없다 — 있는 건 이미 들어온 "입고 실적"뿐이다. 원래 "SCM 시트 연동"이 노렸던 "미입고 주문을 재주문 제안에서 빼는" 기능은 시트에 그 컬럼이 추가돼야 후속 작업이 가능하다.
-- **실제 Google Sheets API 연동은 미룬다.** 앱이 시트를 직접 읽으려면 서비스 계정/OAuth 같은 새 자격증명·의존성(`googleapis`)이 필요한데, 이는 CLAUDE.md 시크릿 목록에 없는 새 결정이라 이번 스코프에서 뺐다. 지금은 시트 스냅샷을 테스트 픽스처(`tests/fixtures/scm/sample-receipts.csv`, 실제 샘플 시트 값 그대로)로만 쓴다. 실 연동 방식(서비스 계정 vs 공개 링크 CSV export)은 이후 별도 태스크에서 결정한다.
-- **매장 매핑**: 시트 자체에는 매장 구분이 없다(단일 사업장 전제). `mapScmRowsToPurchaseReceipts(rawRows, storeId)`가 `storeId`를 호출자로부터 명시적으로 받는다 — CSV 채널의 `매장명` 필수 컬럼과 달리, 이 시트는 애초에 그 개념이 없어서 어댑터 경계에서 채운다.
-- **MCP 도구·에이전트 배선은 이번 스코프 밖.** 지금 배포된 건 `core/`(스키마+지표 계산)와 `Warehouse`(적재+조회) 계층뿐이다 — `sell_through` 같은 MCP 도구에 노출하거나 재주문 에이전트가 참조하게 하는 건 실제 Google Sheets 연동이 결정된 뒤 이어질 태스크다.
+- **Done**: a schema and warehouse layer that loads **only rows with 구분=입고** from the sheet's "입출고내역" tab into a new table (`purchase_receipts`), plus a pure function (`computeStockReconciliation`) that computes "canonical sell-through" and "stock reconciliation check" from those receipt actuals.
+- **Rows with 구분=출고 are not loaded.** retail-mcp's sales source is the Loyverse/CSV channel — loading the SCM sheet's outbound rows through a separate pipeline would double-count the same sales.
+- **The "purchase order" state (ordered but not yet received) is not handled.** The sample sheet examined has no purchase order status column at all — all it has is "receipt actuals" that have already arrived. The feature that "SCM sheet integration" originally targeted, "subtract outstanding orders from reorder suggestions", becomes possible as follow-up work only once that column is added to the sheet.
+- **Actual Google Sheets API integration is deferred.** For the app to read the sheet directly it would need new credentials and dependencies such as a service account/OAuth (`googleapis`), which is a new decision not in the CLAUDE.md secrets list, so it was excluded from this scope. For now the sheet snapshot is used only as a test fixture (`tests/fixtures/scm/sample-receipts.csv`, the actual sample sheet values verbatim). The real integration method (service account vs public-link CSV export) is decided in a later separate task.
+- **Store mapping**: The sheet itself has no store discriminator (single-business assumption). `mapScmRowsToPurchaseReceipts(rawRows, storeId)` takes `storeId` explicitly from the caller — unlike the CSV channel's required `매장명` column, this sheet has no such concept to begin with, so it is filled in at the adapter boundary.
+- **MCP tool and agent wiring is out of this scope.** What ships now is only the `core/` (schema + metric calculation) and `Warehouse` (load + query) layers — exposing it in an MCP tool such as `sell_through` or having the reorder agent reference it is a task that follows once actual Google Sheets integration is decided.
 
-### 발견 — "정통 셀스루"는 근사식과 대수적으로 같은 값이다
+### Finding — "canonical sell-through" is algebraically identical to the approximation
 
-`판매÷(기초재고+입고)`(정통)과 `판매÷(판매+기말재고)`(§2 근사식)는, 재고가 보존되는 한(`기초재고+입고−판매=기말재고`) 두 식의 분모가 항상 같아 **동일한 값**이 나온다. v0.1이 근사식을 쓴 이유는 공식이 부정확해서가 아니라 입고 데이터 자체가 없어서 관측 가능한 기말재고로 대신 계산한 것뿐이다.
+`sales ÷ (opening stock + receipts)` (canonical) and `sales ÷ (sales + ending stock)` (§2 approximation) yield **the same value**, because as long as inventory is conserved (`opening stock + receipts − sales = ending stock`) the two denominators are always equal. v0.1 used the approximation not because the formula was inaccurate but simply because receipt data itself was unavailable, so it computed from the observable ending stock instead.
 
-그래서 이 기능의 실제 가치는 "더 정확한 셀스루 숫자"가 아니라 **재고 정합성 검증**이다 — 확인한 샘플 시트의 "재고현황" 탭은 `현재재고`를 실사가 아니라 `입고합계−출고합계`로 **계산**한다(시트 비고에 명시). 반면 retail-mcp의 재고수량(Loyverse/CSV `재고수량`)은 POS가 보고하는 **실사 기반** 값이다. 두 값(원장이 계산한 예상 재고 vs POS/CSV가 보고한 실제 재고)을 대사하면 도난·파손·실사오차처럼 원장에 안 잡히는 재고 손실을 잡아낼 수 있다 — `computeStockReconciliation`이 `discrepancy`/`hasDiscrepancy`로 이걸 표면화한다.
+Therefore the real value of this feature is not "a more accurate sell-through number" but **stock reconciliation checking** — the "재고현황" tab of the sample sheet examined **computes** `현재재고` as `입고합계−출고합계` rather than from a physical count (stated in the sheet's notes). By contrast, retail-mcp's stock quantity (Loyverse/CSV `재고수량`) is a **count-based** value reported by the POS. Reconciling the two values (the ledger's computed expected stock vs the actual stock reported by POS/CSV) can catch inventory losses not captured in the ledger, such as theft, damage, or count errors — `computeStockReconciliation` surfaces this via `discrepancy`/`hasDiscrepancy`.
 
-### 구현
+### Implementation
 
-- `migrations/004_purchase_receipts.sql` — `purchase_receipts(store_id, variant_id, received_at, received_qty, unit_cost, currency, vendor)`, PK `(store_id, variant_id, received_at)`. 같은 매장·SKU·같은 날짜에 입고가 여러 건이면 마지막 값으로 덮어써진다(합산 아님) — 원본 시트에 이벤트 순번이 없어 생기는 v0.1 한계로 문서화(필요해지면 시퀀스 컬럼 추가).
-- `src/core/types.ts` — `PurchaseReceiptRow`, `PurchaseAgg`, `Warehouse.upsertPurchaseReceipts`/`queryPurchaseAgg`(`querySalesAgg`와 대칭적으로 `SalesAggQuery`를 재사용).
-- `src/adapters/pgWarehouse.ts` — 위 두 메서드 구현. `received_at`은 `date` 컬럼이라 기간 경계와 `::date`로 비교한다(사업장 타임존 인지 경계 변환은 이번 스코프 밖 — 알려진 단순화로 문서화).
-- `src/core/scmSchema.ts` — 확인한 샘플 시트 "입출고내역" 탭 헤더 그대로(일자/구분/상품코드/상품명/수량/단가/거래처)를 zod로 검증하는 `scmReceiptRowSchema`, 그리고 구분=입고 행만 걸러 `PurchaseReceiptRow[]`로 변환하는 `mapScmRowsToPurchaseReceipts`.
-- `src/core/metrics.ts` — `computeStockReconciliation(inventory, purchases, sales, opts)`. `opts.openingStock`(키 `${storeId}:${variantId}`)로 기초재고를 명시할 수 있고, 없으면 0(그 시점부터 원장을 새로 시작한 것으로 취급 — 온보딩 시 1회 실사값을 입력받는 흐름은 이후 태스크).
-- 테스트: `tests/scmSchema.test.ts`, `tests/metrics.test.ts`(`computeStockReconciliation` describe), `tests/pgWarehouse.test.ts`(`purchase_receipts`/`queryPurchaseAgg`) — 골든 케이스 숫자(P001: 입고 30·판매 21·실사재고 9)는 실제 확인한 샘플 시트 값 그대로다.
+- `migrations/004_purchase_receipts.sql` — `purchase_receipts(store_id, variant_id, received_at, received_qty, unit_cost, currency, vendor)`, PK `(store_id, variant_id, received_at)`. If there are multiple receipts for the same store, SKU, and date, the last value overwrites (not summed) — documented as a v0.1 limitation arising from the source sheet having no event sequence number (add a sequence column if needed).
+- `src/core/types.ts` — `PurchaseReceiptRow`, `PurchaseAgg`, `Warehouse.upsertPurchaseReceipts`/`queryPurchaseAgg` (reuses `SalesAggQuery`, symmetric with `querySalesAgg`).
+- `src/adapters/pgWarehouse.ts` — implements the two methods above. `received_at` is a `date` column, so period boundaries are compared with `::date` (business-timezone-aware boundary conversion is out of this scope — documented as a known simplification).
+- `src/core/scmSchema.ts` — `scmReceiptRowSchema`, which validates with zod the headers of the sample sheet's "입출고내역" tab verbatim (일자/구분/상품코드/상품명/수량/단가/거래처), and `mapScmRowsToPurchaseReceipts`, which filters to 구분=입고 rows only and converts them to `PurchaseReceiptRow[]`.
+- `src/core/metrics.ts` — `computeStockReconciliation(inventory, purchases, sales, opts)`. Opening stock can be given explicitly via `opts.openingStock` (key `${storeId}:${variantId}`); if absent, 0 (treated as starting the ledger fresh from that point — the flow of entering a one-time count value during onboarding is a later task).
+- Tests: `tests/scmSchema.test.ts`, `tests/metrics.test.ts` (`computeStockReconciliation` describe), `tests/pgWarehouse.test.ts` (`purchase_receipts`/`queryPurchaseAgg`) — the golden case numbers (P001: receipts 30 · sales 21 · counted stock 9) are the actual sample sheet values verbatim.
 
-## 14. 팩 단위 반올림 (2026-09-03, v0.2 대기열 착수)
+## 14. Pack Size Rounding (2026-09-03, v0.2 queue started)
 
-`docs/TASKS.md` "v0.2 대기열"의 "팩 단위 반올림"을, 사용자가 §13 샘플 시트에 `포장수량(팩사이즈)` 컬럼과 검증용 계산 결과(계산 제안량/최종 발주량/발주 팩수)를 채워 업로드한 새 버전을 근거로 착수한다.
+The "pack size rounding" item from the "v0.2 queue" in `docs/TASKS.md` is started based on a new version of the §13 sample sheet the user uploaded, filled in with a `포장수량(팩사이즈)` column and verification calculations (계산 제안량/최종 발주량/발주 팩수).
 
-### 배경
+### Background
 
-`reorderQty()`(§2)가 계산하는 재주문 제안량은 개수 단위다. 실제 발주는 공급자가 정한 팩/박스 단위로만 가능한 경우가 많다 — 계산상 27개가 필요해도 24개입 1박스 단위로만 살 수 있으면 실제로는 48개(2박스)를 발주해야 한다. 이 기능은 그 후처리 단계다.
+The reorder suggestion quantity computed by `reorderQty()` (§2) is in units. Actual ordering is often possible only in the pack/box units set by the supplier — even if the calculation says 27 units are needed, if you can only buy in boxes of 24 you actually have to order 48 (2 boxes). This feature is that post-processing step.
 
-### 구현
+### Implementation
 
-- `migrations/005_product_pack_size.sql` — `products.pack_size`(nullable numeric, `pack_size > 0` 체크). 없으면 낱개 매입 가능한 품목으로 취급한다.
-- `core/types.ts` — `ProductRow.packSize`(optional). `lowStockThreshold`와 달리 **소스 중립적**이다(CSV/Excel 전용이 아니다) — 어느 채널이 채우든 상관없다.
-- `adapters/pgWarehouse.ts` — `upsertProductsOn`이 `pack_size`도 함께 upsert한다. `low_stock_threshold`와 같은 `coalesce` 패턴(TASKS T16) — 이 값을 안 채우는 upsert가 다른 채널이 이미 저장해둔 값을 조용히 지우지 않는다.
-- `core/metrics.ts` — **`reorderQty()` 자체는 건드리지 않는다.** 그 대신:
-  - `roundToPackMultiple(reorderQtyValue, packSize)` — §2의 5개 순수 수식과 나란한 순수 함수. `packSize`가 없으면 반올림 없이 그대로 반환(`packCount: null` — "팩 단위가 없다"와 "팩이 0개 필요하다"를 구분). 제안량이 0이면 `packSize`가 있어도 1팩으로 올리지 않는다(0팩).
-  - `applyPackRounding(rows, products)` — `computeReorderMetrics`(또는 `computeCsvReorderMetrics`의 history 행)가 만든 배열에 `(storeId,variantId)`로 조인한 `ProductRow.packSize`를 적용한다. TASKS T17이 `computeCsvReorderMetrics`로 `computeReorderMetrics`를 감싼 것과 같은 패턴 — 원본 함수는 변경 없음.
-- **CSV/Excel 템플릿에도 선택 컬럼으로 추가했다** — `core/csvSchema.ts`에 `포장수량`(optional, 0 초과)을 추가하고 `adapters/csvExcelParser.ts`가 `저재고임계치`와 같은 방식으로 같은 SKU의 값 일관성을 검증해 `ProductRow.packSize`로 변환한다. 기존 템플릿(이 컬럼이 없는 파일)은 그대로 통과한다 — 하위 호환. **T18 폴더 스캔·에이전트·MCP 도구에 실제로 연결하는 건 T25로 이어졌다** — 아래 §15 참고(이 절 작성 당시엔 스코프 밖이었으나 이후 착수됨).
-- 테스트: `tests/metrics.test.ts`(`roundToPackMultiple`/`applyPackRounding` describe — 골든 케이스는 §13 시트가 자체적으로 미리 계산해둔 8개 품목의 `계산 제안량→최종 발주량/발주 팩수` 값을 그대로 사용), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts`(`pack_size` upsert·coalesce).
+- `migrations/005_product_pack_size.sql` — `products.pack_size` (nullable numeric, `pack_size > 0` check). If absent, the item is treated as purchasable individually.
+- `core/types.ts` — `ProductRow.packSize` (optional). Unlike `lowStockThreshold`, it is **source-neutral** (not CSV/Excel-specific) — it does not matter which channel fills it.
+- `adapters/pgWarehouse.ts` — `upsertProductsOn` also upserts `pack_size`. Same `coalesce` pattern as `low_stock_threshold` (TASKS T16) — an upsert that does not fill this value does not silently erase a value another channel has already stored.
+- `core/metrics.ts` — **`reorderQty()` itself is untouched.** Instead:
+  - `roundToPackMultiple(reorderQtyValue, packSize)` — a pure function alongside the 5 pure formulas of §2. If `packSize` is absent, returns the value unchanged without rounding (`packCount: null` — distinguishing "no pack size" from "0 packs needed"). If the suggestion quantity is 0, it is not rounded up to 1 pack even if `packSize` is present (0 packs).
+  - `applyPackRounding(rows, products)` — applies `ProductRow.packSize`, joined on `(storeId,variantId)`, to the array produced by `computeReorderMetrics` (or the history rows of `computeCsvReorderMetrics`). Same pattern as TASKS T17 wrapping `computeReorderMetrics` with `computeCsvReorderMetrics` — the original function is unchanged.
+- **Also added as an optional column to the CSV/Excel template** — `포장수량` (optional, greater than 0) added to `core/csvSchema.ts`, and `adapters/csvExcelParser.ts` validates value consistency for the same SKU in the same way as `저재고임계치` and converts it to `ProductRow.packSize`. Existing templates (files without this column) pass unchanged — backward compatible. **Actually wiring it into T18 folder scan, agent, and MCP tools carried over to T25** — see §15 below (out of scope when this section was written, but started afterwards).
+- Tests: `tests/metrics.test.ts` (`roundToPackMultiple`/`applyPackRounding` describes — the golden cases use verbatim the `계산 제안량→최종 발주량/발주 팩수` values for the 8 items the §13 sheet had already computed itself), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts` (`pack_size` upsert / coalesce).
 
-## 15. MCP 도구·에이전트 배선 (2026-09-03, T23/T24 후속)
+## 15. MCP Tool and Agent Wiring (2026-09-03, T23/T24 follow-up)
 
-T23·T24가 각각 미룬 "MCP 도구·에이전트 배선"의 **팩 단위 반올림(§14) 부분**을 착수한다. 재고 정합성 검증(§13)은 이 절에서 다루지 않는다 — 아래 "이번에 안 하는 것" 참고.
+Starts the **pack size rounding (§14) portion** of the "MCP tool and agent wiring" that T23 and T24 each deferred. Stock reconciliation checking (§13) is not covered in this section — see "Not done this time" below.
 
-### 배선 대상
+### Wiring targets
 
-- **`agent/reorder.ts`의 `buildReorderReport()`(Loyverse 경로)** — `computeReorderMetrics` 결과를 새로 추가한 `Warehouse.queryProducts(variantIds)`로 조회한 `ProductRow.packSize`와 `applyPackRounding()`으로 조인해, `ReorderLineItem`에 `packSize`/`finalOrderQty`/`packCount`를 채운다. `reorder_suggestions` MCP 도구는 `buildReorderReport()`를 그대로 재사용하므로(T9 결정) **별도 도구 코드 변경 없이 자동으로 같이 배선된다** — "도구 결과 = 에이전트 리포트" 회귀 가드가 그대로 유지된다.
-- **`agent/folderScan.ts`의 CSV 채널 알림** — `computeCsvReorderMetrics`의 history 모드 행에 `applyPackRounding()`을 적용해(CSV 파싱 결과가 이미 `ProductRow.packSize`를 담고 있다, T24), 저재고 알림에 "제안수량 → 최종 발주량(N팩)"을 표시한다. no_history 모드는 판매이력이 없어 재주문 제안량 자체가 없으므로(T17 설계) 대상이 아니다.
-- **신규 `Warehouse.queryProducts(variantIds?)`** — Loyverse 경로는 `ProductRow`를 메모리에 들고 있지 않고(products는 sync 시 DB로 upsert되고 끝) `queryStock`/`querySalesAgg`도 `name`/`category`만 select한다 — `packSize`를 다시 읽어올 방법이 아예 없었다는 걸 착수 중 발견했다. 읽기 전용 조회이므로 가드레일 4("웨어하우스 쓰기는 ETL 경로만")에 저촉되지 않는다.
+- **`buildReorderReport()` in `agent/reorder.ts` (Loyverse path)** — joins the `computeReorderMetrics` result with `ProductRow.packSize` fetched via the newly added `Warehouse.queryProducts(variantIds)` using `applyPackRounding()`, and fills `packSize`/`finalOrderQty`/`packCount` on `ReorderLineItem`. Since the `reorder_suggestions` MCP tool reuses `buildReorderReport()` as-is (T9 decision), **it is wired automatically with no separate tool code change** — the "tool result = agent report" regression guard is preserved intact.
+- **CSV channel alerts in `agent/folderScan.ts`** — applies `applyPackRounding()` to the history-mode rows of `computeCsvReorderMetrics` (the CSV parse result already carries `ProductRow.packSize`, T24) and shows "제안수량 → 최종 발주량(N팩)" in the low-stock alert. no_history mode has no sales history and thus no reorder suggestion quantity at all (T17 design), so it is not a target.
+- **New `Warehouse.queryProducts(variantIds?)`** — discovered mid-task that the Loyverse path does not hold `ProductRow` in memory (products are upserted to the DB at sync time and that is it) and `queryStock`/`querySalesAgg` select only `name`/`category` — there was simply no way to read `packSize` back. It is a read-only query, so it does not conflict with guardrail 4 ("warehouse writes only via the ETL path").
 
-### 이번에 안 하는 것
+### Not done this time
 
-- **재고 정합성 검증(§13, `computeStockReconciliation`)은 MCP·에이전트 어디에도 연결하지 않는다.** 이유: 이 계산은 `Warehouse.queryPurchaseAgg`(SCM 입고 실적)를 입력으로 받는데, 실 SCM 데이터 유입 경로가 없는 지금은 `purchase_receipts`가 운영 환경에서 항상 비어 있다 — 그 상태로 계산을 돌리면 "입고 0건"을 실제 입고 이력으로 오인해 모든 품목에 대해 `discrepancy`(불일치)가 거짓으로 잡힌다. 의미 없는 경고를 자동 노출하는 대신, 실 데이터 유입 경로가 생긴 뒤(→ §16) 노출하기로 미룬다.
-- 새 MCP 조회 도구를 추가하지 않는다 — 기존 6개 도구(`reorder_suggestions` 포함) 재사용만으로 이번 배선이 끝난다.
+- **Stock reconciliation checking (§13, `computeStockReconciliation`) is not connected to either MCP or the agent.** Reason: this calculation takes `Warehouse.queryPurchaseAgg` (SCM receipt actuals) as input, and with no real SCM data ingestion path today, `purchase_receipts` is always empty in production — running the calculation in that state would mistake "0 receipts" for actual receipt history and falsely flag `discrepancy` on every item. Rather than automatically surfacing meaningless warnings, exposure is deferred until a real data ingestion path exists (→ §16).
+- No new MCP query tool is added — this wiring is completed purely by reusing the existing 6 tools (including `reorder_suggestions`).
 
-### 구현
+### Implementation
 
-- `core/types.ts` — `Warehouse.queryProducts(variantIds?: string[])`(전체 `ProductRow[]` 조회, variantIds 생략 시 전체·빈 배열이면 빈 결과), `ReorderLineItem`에 `packSize`/`finalOrderQty`/`packCount` 필드 추가(선택이 아니라 필수 — `buildReorderReport()`가 이제 항상 채운다).
-- `adapters/pgWarehouse.ts` — `queryProductsOn` 구현.
-- `agent/reorder.ts` — `buildReorderReport()`에서 `queryProducts` + `applyPackRounding` 호출, `renderReportText`/`renderReportHtml`에 `formatOrderQty()` 헬퍼로 팩 단위 반올림 표시("42 → 최종 발주량 48(2팩, 팩당 24개)").
-- `agent/folderScan.ts` — `alertsFrom()`이 `products: ProductRow[]`를 추가로 받아 history 모드 행에 팩 단위 반올림을 적용, `FolderScanAlertItem`에 `reorderQty`/`finalOrderQty`/`packCount`(선택 필드 — no_history 모드는 없음) 추가.
-- 테스트: `tests/pgWarehouse.test.ts`(`queryProducts`), `tests/reorderAgent.test.ts`(packSize 있는 golden case), `tests/claudeSummarizer.test.ts`(리포트 타입 갱신), `tests/folderScan.test.ts`(CSV 알림에 팩 단위 반올림 반영/미반영 각각). 기존 `tests/mcpTools.test.ts`/`tests/e2e.test.ts`의 "도구=에이전트 완전 동일" 회귀 가드는 두 경로가 같은 함수를 재사용하므로 코드 변경 없이 그대로 통과한다.
+- `core/types.ts` — `Warehouse.queryProducts(variantIds?: string[])` (queries all `ProductRow[]`; omitting variantIds returns all, an empty array returns an empty result), `packSize`/`finalOrderQty`/`packCount` fields added to `ReorderLineItem` (required, not optional — `buildReorderReport()` now always fills them).
+- `adapters/pgWarehouse.ts` — `queryProductsOn` implemented.
+- `agent/reorder.ts` — `buildReorderReport()` calls `queryProducts` + `applyPackRounding`; `renderReportText`/`renderReportHtml` show pack size rounding via a `formatOrderQty()` helper ("42 → 최종 발주량 48(2팩, 팩당 24개)").
+- `agent/folderScan.ts` — `alertsFrom()` additionally receives `products: ProductRow[]` and applies pack size rounding to history-mode rows; `reorderQty`/`finalOrderQty`/`packCount` added to `FolderScanAlertItem` (optional fields — absent in no_history mode).
+- Tests: `tests/pgWarehouse.test.ts` (`queryProducts`), `tests/reorderAgent.test.ts` (golden case with packSize), `tests/claudeSummarizer.test.ts` (report type update), `tests/folderScan.test.ts` (CSV alerts with and without pack size rounding applied). The existing "tool = agent exactly identical" regression guards in `tests/mcpTools.test.ts`/`tests/e2e.test.ts` pass unchanged with no code change because both paths reuse the same function.
 
-## 16. SCM 입고 실적 — 수동 CSV 내보내기로 흡수 (2026-09-03, T23/T25 후속)
+## 16. SCM Receipt Actuals — Absorbed via Manual CSV Export (2026-09-03, T23/T25 follow-up)
 
-T25가 "실 Google Sheets 연동이 없어 의미 없다"며 미룬 재고 정합성 검증(§13, §15)을 실제로 쓸 수 있게 한다. **실 Google Sheets API 연동은 채택하지 않는다** — 아래 "접근 방식 재검토"가 그 이유다.
+Makes the stock reconciliation check (§13, §15), which T25 deferred as "meaningless without real Google Sheets integration", actually usable. **Real Google Sheets API integration is not adopted** — the "Approach re-review" below explains why.
 
-### 접근 방식 재검토 — 왜 서비스 계정을 안 쓰나
+### Approach re-review — why not a service account
 
-이 프로젝트는 npm으로 배포해 불특정 다수(비개발자 리테일 운영자 포함)가 쓴다는 전제다(SPEC §11 "사용 채널" 재정의, §12 "웨어하우스: 임베디드 PGlite 기본"이 이미 이 전제로 여러 번 결정을 내렸다). 이 전제로 세 가지 접근을 다시 체크했다:
+This project assumes distribution via npm to an unspecified audience (including non-developer retail operators) (SPEC §11 "Usage channels" redefinition and §12 "Warehouse: embedded PGlite by default" have already made several decisions on this premise). Three approaches were re-checked against this premise:
 
-| 방식 | 사용자가 매번 해야 하는 일 | 판정 |
+| Approach | What the user has to do every time | Verdict |
 |---|---|---|
-| 서비스 계정 + Sheets API | Google Cloud 콘솔 가입 → 프로젝트 생성 → API 활성화 → 서비스 계정 생성 → JSON 키 발급 → 그 계정 이메일을 자기 시트에 공유. 온보딩 CLI로 자동화 불가(브라우저 로그인이 아니라 콘솔 수동 조작) | **기각** — Neon DB 연결 문자열(§12에서 이미 "진입장벽 크다"고 판단해 PGlite 기본값 채택)보다도 진입장벽이 높다 |
-| 공개 링크 CSV export | 시트를 "링크 있으면 누구나 보기"로 전환 | **기각** — 매입단가·거래처 등이 사실상 인터넷에 공개됨(§9 원칙과도 배치) |
-| OAuth(사용자 계정으로 연결) | 사용자 부담은 낮지만, 유지관리자가 OAuth 클라이언트 등록 + 로컬 리다이렉트 서버(`gh`/`gcloud` 패턴) + 토큰 저장·리프레시를 새로 구현해야 함 | **보류** — 구현 복잡도가 셋 중 가장 크다. 실시간 자동화가 실제로 필요하다고 확인되면(Loyverse를 대했던 것과 같은 패턴) 그때 버전업으로 검토 |
-| **수동 CSV 내보내기 → 폴더 채널 흡수** | "파일 > 다운로드 > CSV" 한 번, 감시 폴더에 두기 | **채택** |
+| Service account + Sheets API | Sign up for Google Cloud Console → create project → enable API → create service account → issue JSON key → share their sheet with that account's email. Cannot be automated by the onboarding CLI (manual console operation, not a browser login) | **Rejected** — a higher barrier than even the Neon DB connection string (already judged in §12 to be "a high barrier", leading to the PGlite default) |
+| Public-link CSV export | Switch the sheet to "anyone with the link can view" | **Rejected** — purchase unit costs, vendors, etc. become effectively public on the internet (also contrary to the §9 principle) |
+| OAuth (connect with the user's account) | Low user burden, but the maintainer must newly implement OAuth client registration + a local redirect server (`gh`/`gcloud` pattern) + token storage and refresh | **Deferred** — the highest implementation complexity of the three. If real-time automation is confirmed to be actually needed (the same pattern as with Loyverse), review it then in a version bump |
+| **Manual CSV export → absorbed by the folder channel** | One "File > Download > CSV", place it in the watched folder | **Adopted** |
 
-**채택 근거**: `docs/SPEC.md` §12가 이미 "ERP는 채널로 다루지 않는다 — ERP에서 CSV/Excel로 내보내기 → 폴더 채널로 투입"이라는 선례를 만들어뒀다. 구글시트도 동일하게 취급할 수 있다 — 새 의존성·시크릿이 전혀 없고, T23의 `mapScmRowsToPurchaseReceipts`가 이미 "헤더별로 파싱된 원시 행 배열"을 받는 순수 함수라 그대로 재사용된다. §12의 "실행 모델: 주기 스캔, 상시 워처 아님" 결정과도 자연스럽게 맞는다 — 폴더 채널 자체가 "사람이 파일을 갱신하면 다음 스캔이 읽는다"는 모델이라, "내보내기"라는 수동 단계 하나가 이질적이지 않다.
+**Rationale for adoption**: `docs/SPEC.md` §12 already set the precedent "ERP is not treated as a channel — export from ERP to CSV/Excel → feed into the folder channel". Google Sheets can be treated identically — no new dependencies or secrets at all, and T23's `mapScmRowsToPurchaseReceipts` is already a pure function taking "an array of raw rows parsed by header", so it is reused as-is. It also fits naturally with §12's "Execution model: periodic scan, not an always-on watcher" decision — the folder channel is itself a model of "when a person updates a file, the next scan reads it", so the single manual step of "export" is not out of place.
 
-### 구현
+### Implementation
 
-- **`SCM_RECEIPTS_DIR`**(선택, 지점 모드 전용) — 설정하면 `runFolderScan`이 이 폴더의 최신 CSV를 찾아 T23 스키마로 파싱해 `Warehouse.upsertPurchaseReceipts`로 적재한다. 미설정 시 기존 동작과 완전히 동일(재고 정합성 검증 스킵).
-- **매장 귀속**: SCM 시트 자체엔 매장 컬럼이 없다(§13에서 이미 확인). 이번 스캔의 재고 파일에 매장이 정확히 하나면 자동 추론, 여럿이면 `SCM_RECEIPTS_STORE_ID`(또는 `scmReceiptsStoreId` 옵션)로 명시해야 한다 — 안 하면 명확한 에러.
-- **SCM 처리 실패 격리**: SCM 파일이 없거나 파싱에 실패해도 지점 스캔의 핵심 임무(저재고 알림)는 그대로 진행된다 — 경고만 남기고 재고 정합성 검증만 건너뛴다. CSV 채널(T18)의 "부분 적재 없이 명확한 에러로 중단" 원칙은 재고 파일 자체에만 적용되고, SCM은 부가 기능이라 격리한다.
-- **재고 정합성 계산 범위**: DB 재조회 없이 **이번 스캔에서 방금 파싱한 SCM 파일·재고 파일만으로** 계산한다(T17이 DB 재조회를 피한 것과 같은 패턴). `sales_period_agg`는 스캔마다 최신 기간으로 **교체**되지 갱신되지 않으므로(TASKS T12), "추적 시작 이후 전체 누적"이 아니라 **이번 스캔이 보고하는 기간만의 근사 대사**다.
-- **기초재고·기간 미확인 시 insufficient_data(006 DATA-006, TASKS T33)**: 기초재고(`openingStock`)를 명시적으로 넘기지 않으면(온보딩 실사값 입력은 여전히 이후 태스크 — 그래서 지금은 항상 안 넘긴다) 또는 SCM 입고 기간과 판매 기간이 겹치지 않으면, `computeStockReconciliation`이 해당 행을 `insufficientData: true`로 표시하고 "도난·파손·실사오차"처럼 확정 원인을 단정하는 경고를 내보내지 않는다 — 예전엔 조용히 0을 기초재고로 가정해 대량의 거짓 불일치 경고를 만들 수 있었다(해결 전 상태). `agent/folderScan.ts`는 확정 불일치만 `reconciliation`에 남기고, insufficientData 여부는 `scmStatus` 한 줄 요약으로 알린다.
-- **알림 통합**: 저재고 알림과 재고 정합성 경고(**확정 불일치**가 있는 행만)를 **같은 이메일**에 합쳐 보낸다(별도 발송 파이프라인을 새로 만들지 않음) — 저재고 알림이 0건이어도 확정 정합성 불일치만으로 발송 대상이 된다. insufficientData/SCM 처리 실패는 별도 요약 줄로만 들어간다(DATA-007).
+- **`SCM_RECEIPTS_DIR`** (optional, branch mode only) — if set, `runFolderScan` finds the latest CSV in this folder, parses it with the T23 schema, and loads it via `Warehouse.upsertPurchaseReceipts`. If unset, behavior is completely identical to before (stock reconciliation check skipped).
+- **Store attribution**: The SCM sheet itself has no store column (already confirmed in §13). If the inventory file in this scan has exactly one store, it is inferred automatically; if several, it must be specified via `SCM_RECEIPTS_STORE_ID` (or the `scmReceiptsStoreId` option) — otherwise a clear error.
+- **SCM failure isolation**: Even if the SCM file is missing or fails to parse, the branch scan's core mission (low-stock alerts) proceeds as usual — only a warning is left and only the stock reconciliation check is skipped. The CSV channel (T18) principle of "abort with a clear error rather than a partial load" applies only to the inventory file itself; SCM is an auxiliary feature and is isolated.
+- **Stock reconciliation calculation scope**: computed **only from the SCM file and inventory file just parsed in this scan**, with no DB re-query (the same pattern as T17 avoiding DB re-queries). Because `sales_period_agg` is **replaced** with the latest period on every scan rather than accumulated (TASKS T12), this is **an approximate reconciliation for only the period this scan reports**, not "the full cumulative total since tracking began".
+- **insufficient_data when opening stock or period is unconfirmed (006 DATA-006, TASKS T33)**: If opening stock (`openingStock`) is not passed explicitly (entering a count value during onboarding is still a later task — so today it is never passed) or the SCM receipt period and sales period do not overlap, `computeStockReconciliation` marks the row `insufficientData: true` and does not emit a warning that asserts a definite cause such as "theft, damage, or count error" — previously it silently assumed 0 as opening stock, which could produce a flood of false discrepancy warnings (the pre-fix state). `agent/folderScan.ts` keeps only confirmed discrepancies in `reconciliation` and reports insufficientData status in a one-line `scmStatus` summary.
+- **Alert consolidation**: Low-stock alerts and stock reconciliation warnings (**only rows with confirmed discrepancies**) are combined into **the same email** (no new separate send pipeline) — even with 0 low-stock alerts, confirmed reconciliation discrepancies alone qualify for a send. insufficientData / SCM processing failures are included only as a separate summary line (DATA-007).
 
-### 구현 파일
+### Implementation files
 
-- `core/scmSchema.ts`/`core/metrics.ts`/`core/types.ts`: T23이 이미 만든 것을 그대로 재사용(변경 없음).
-- `agent/folderScan.ts`: `findLatestScmFile`(CSV만 지원), `resolveScmStoreId`, `ingestScmReceipts`(실패 격리), `aggregatePurchases`(DB 재조회 없이 이번 스캔 파일 합산), `salesAggFromCsv`(T17 내부 매핑과 동일 패턴) 추가. `FolderScanOptions.scmReceiptsDir`/`scmReceiptsStoreId`, `FolderScanResult.reconciliation` 추가. `renderAlertText`가 재고 정합성 섹션을 함께 렌더링.
-- `.env.example`: `SCM_RECEIPTS_DIR`/`SCM_RECEIPTS_STORE_ID` 추가.
-- 테스트: `tests/folderScan.test.ts`(새 describe — 미설정 시 기존 동작 동일, 불일치 검출 골든 케이스, 매장 다중일 때 명시 요구, SCM 파싱 실패 격리, 파일 없음 시 조용히 스킵).
+- `core/scmSchema.ts`/`core/metrics.ts`/`core/types.ts`: reuse what T23 already built as-is (no changes).
+- `agent/folderScan.ts`: added `findLatestScmFile` (CSV only), `resolveScmStoreId`, `ingestScmReceipts` (failure isolation), `aggregatePurchases` (sums this scan's file without DB re-query), `salesAggFromCsv` (same pattern as T17's internal mapping). Added `FolderScanOptions.scmReceiptsDir`/`scmReceiptsStoreId`, `FolderScanResult.reconciliation`. `renderAlertText` also renders the stock reconciliation section.
+- `.env.example`: added `SCM_RECEIPTS_DIR`/`SCM_RECEIPTS_STORE_ID`.
+- Tests: `tests/folderScan.test.ts` (new describe — identical behavior when unset, discrepancy detection golden case, explicit specification required with multiple stores, SCM parse failure isolation, silent skip when file is absent).
 
-## 17. explore_sql — 임의 SELECT 조회 (2026-09-03, v0.2 대기열 마지막 항목)
+## 17. explore_sql — Arbitrary SELECT Queries (2026-09-03, last item of the v0.2 queue)
 
-`docs/TASKS.md` "v0.2 대기열"의 마지막 항목. `docs/DESIGN.md` §6이 "자유 SQL은 v0.2(`explore_sql`, 읽기 전용 롤 전제)"로 이름까지 미리 예고해둔 도구다 — CLAUDE.md 가드레일 4("MCP 질의 도구는 읽기 전용")를 어기는 게 아니라, 그 가드레일이 사전 승인해둔 유일한 예외다. SCM/팩단위와 달리 데이터·시트와 무관한 순수 보안/인프라 설계 항목이라 별도 트리거 없이 착수했다(사용자 확인).
+The last item of the "v0.2 queue" in `docs/TASKS.md`. `docs/DESIGN.md` §6 had already announced this tool by name as "free-form SQL is v0.2 (`explore_sql`, assuming a read-only role)" — it does not violate CLAUDE.md guardrail 4 ("MCP query tools are read-only"); it is the sole exception that guardrail pre-approved. Unlike SCM / pack size, it is a pure security/infrastructure design item unrelated to data or sheets, so it was started without a separate trigger (user confirmed).
 
-### 설계 — 심층 방어(defense in depth)
+### Design — defense in depth
 
-이 도구가 실행하는 SQL은 고정 쿼리가 아니라 **사용자가 준 임의 텍스트**라, 파라미터라이즈드 쿼리 원칙이 애초에 적용되지 않는다(파라미터화할 고정된 쿼리 형태 자체가 없다 — 그게 이 기능의 정의다). 그래서 안전장치를 "입력 검증" 한 겹이 아니라 **두 겹**으로 설계했다:
+The SQL this tool executes is not a fixed query but **arbitrary text supplied by the user**, so the parameterized-query principle does not apply in the first place (there is no fixed query shape to parameterize — that is the definition of this feature). Therefore the safeguards are designed not as a single layer of "input validation" but as **two layers**:
 
-1. **`core/sqlValidator.ts`(1차, UX 계층)** — `select`/`with`로 시작하는 단일 문장만 허용, `insert/update/delete/drop/...` 등 블록리스트를 단어 경계로 검사(주석은 검증 전 제거해 오탐 방지). **완벽하지 않다는 걸 안다** — 블록리스트 우회가 이론상 가능하다. 목적은 "명백히 잘못된 요청"을 실행 전에 빠르고 명확한 에러로 걸러 UX를 개선하는 것뿐이다.
-2. **`adapters/exploreSqlExecutor.ts`의 `BEGIN READ ONLY`(2차, 진짜 방어선)** — 검증을 통과한 SQL도 반드시 이 트랜잭션 모드 안에서만 실행한다. Postgres 엔진 자체가 이 모드의 모든 쓰기 시도(시퀀스 `nextval()` 진행까지 포함)를 거부한다 — 1차 검증기를 우회하는 SQL이 있어도 여기서 최종적으로 막힌다. 테스트로 직접 재현해 증명했다(`nextval()`은 SELECT 구문이라 블록리스트를 통과하지만 READ ONLY 트랜잭션이 거부함, `tests/exploreSqlExecutor.test.ts`). 이 안전성은 **실행하는 DB 롤이 쓰기 권한을 갖고 있어도** 성립한다 — 운영 읽기 전용 롤 분리(README "권한 분리")는 여전히 권장하지만, 이 도구의 안전성 자체가 거기 의존하지는 않는다.
+1. **`core/sqlValidator.ts` (1st layer, UX layer)** — allows only a single statement starting with `select`/`with`, and checks a blocklist such as `insert/update/delete/drop/...` at word boundaries (comments are stripped before validation to avoid false positives). **We know it is not perfect** — blocklist bypass is theoretically possible. Its sole purpose is to improve UX by filtering "obviously wrong requests" with a fast, clear error before execution.
+2. **`BEGIN READ ONLY` in `adapters/exploreSqlExecutor.ts` (2nd layer, the real line of defense)** — even SQL that passes validation is executed only inside this transaction mode. The Postgres engine itself rejects every write attempt in this mode (including advancing a sequence with `nextval()`) — even if some SQL bypasses the 1st-layer validator, it is ultimately blocked here. Proven by direct reproduction in tests (`nextval()` is SELECT syntax and passes the blocklist, but the READ ONLY transaction rejects it, `tests/exploreSqlExecutor.test.ts`). This safety holds **even if the executing DB role has write privileges** — separating a read-only role in production (README "Privilege separation") is still recommended, but the tool's safety itself does not depend on it.
 
-> **정정(2026-09-03, T30, §18 참고)**: 위 "이 안전성은 실행하는 DB 롤이 쓰기 권한을 갖고 있어도 성립한다"는 **테이블/시퀀스 쓰기에 한정된 얘기였다** — 005 적대적 검수가 advisory lock류 세션 부수효과와 `set_config()` 재정의는 `BEGIN READ ONLY`로 막히지 않음을 실증했다. §18에서 정책을 재확정하고 `sqlValidator.ts`에 함수명 블록리스트를 추가했다 — 상세는 §18 "explore_sql 허용조건 강화".
+> **Correction (2026-09-03, T30, see §18)**: The statement above that "this safety holds even if the executing DB role has write privileges" **was limited to table/sequence writes** — the 005 adversarial review demonstrated that session side effects such as advisory locks and `set_config()` overrides are not blocked by `BEGIN READ ONLY`. §18 reconfirms the policy and adds a function-name blocklist to `sqlValidator.ts` — details in §18 "Tightened explore_sql allow conditions".
 
-결과 행수 제한은 사용자 SQL을 파싱·재작성하지 않고 바깥에서 서브쿼리로 감싼다(`select * from (<검증된 SQL>) as t limit $1`) — LIMIT은 파라미터 바인딩, `statement_timeout`은 `set_config()`로 파라미터 바인딩해 어느 쪽도 SQL 텍스트에 값을 직접 보간하지 않는다.
+The result row limit is applied by wrapping the user's SQL in a subquery from the outside, without parsing or rewriting it (`select * from (<validated SQL>) as t limit $1`) — LIMIT is a bound parameter, and `statement_timeout` is bound as a parameter via `set_config()`, so neither value is interpolated directly into SQL text.
 
-### 알려진 한계 — PGlite는 statement_timeout을 집행하지 않는다
+### Known limitation — PGlite does not enforce statement_timeout
 
-스파이크로 직접 확인했다: 임베디드 PGlite(단일 프로세스 WASM Postgres)는 `set_config('statement_timeout', ...)` 호출 자체는 성공하지만, 실제로 오래 걸리는 쿼리를 취소하지 **않는다**(백그라운드 인터럽트 처리가 없는 구조적 한계로 추정) — 실 Postgres/Neon과 다른 동작이다. **영향받는 건 "느린 쿼리를 자동으로 끊는" 기능뿐**이고, 이 도구의 진짜 안전장치인 `BEGIN READ ONLY`(쓰기 차단)는 PGlite에서도 정상 동작을 직접 확인했다 — 안전성에는 영향이 없다. `tests/exploreSqlExecutor.test.ts`에 이 한계를 문서화하고, PGlite에서 실제로 검증 불가능한 "취소 동작"만 테스트에서 뺐다(나머지 timeoutMs 검증·상한 로직은 그대로 테스트).
+Confirmed directly with a spike: embedded PGlite (single-process WASM Postgres) accepts the `set_config('statement_timeout', ...)` call itself, but does **not** actually cancel a long-running query (presumably a structural limitation from having no background interrupt handling) — different behavior from real Postgres/Neon. **Only the "automatically cut off slow queries" feature is affected**; the tool's real safeguard, `BEGIN READ ONLY` (write blocking), was directly confirmed to work normally on PGlite as well — no impact on safety. This limitation is documented in `tests/exploreSqlExecutor.test.ts`, and only the "cancellation behavior" that genuinely cannot be verified on PGlite was removed from the tests (the remaining timeoutMs validation and cap logic is still tested).
 
-### 운영 기본값과 노출 범위
+### Production defaults and exposure scope
 
-- **기본 비활성** — `EXPLORE_SQL_ENABLED=true`일 때만 MCP 도구로 등록된다(`sync_now`의 `SYNC_TOOL_ENABLED`와 같은 패턴, DESIGN §11.4). `sync_now`와 달리 `DATABASE_URL`을 강제하지 않는다 — advisory lock 같은 pg 전용 기능에 의존하지 않아 임베디드 PGlite 경로에서도 그대로 쓸 수 있다.
-- 도구 설명에 사용 가능한 주요 테이블 목록을 명시해 클라이언트가 스키마를 추측하지 않게 한다.
+- **Disabled by default** — registered as an MCP tool only when `EXPLORE_SQL_ENABLED=true` (same pattern as `sync_now`'s `SYNC_TOOL_ENABLED`, DESIGN §11.4). Unlike `sync_now`, it does not require `DATABASE_URL` — it does not depend on pg-only features such as advisory locks, so it can be used as-is on the embedded PGlite path.
+- The tool description lists the main available tables explicitly so clients do not have to guess the schema.
 
-### 구현
+### Implementation
 
-- `core/types.ts` — `ExploreSqlOptions`/`ExploreSqlResult`/`ExploreSqlExecutor`. 나머지 `Warehouse` 메서드와 의도적으로 분리된 인터페이스다(고정 쿼리 계약을 이 하나로 흐리지 않기 위해).
-- `core/sqlValidator.ts`(신규, 순수 함수) — `validateReadOnlySql(sql)`.
-- `adapters/exploreSqlExecutor.ts`(신규) — `createExploreSqlExecutor(provider)`. `adapters/pgWarehouse.ts`의 `withSession`을 export해 재사용(같은 acquire/release 패턴).
-- `adapters/warehouseFactory.ts` — `WarehouseHandle`에 `connectionProvider`(pg/pglite 공통, 항상 존재) 추가 — `pgPool`(pg 전용, `sync_now`용)과 같은 위치의 새 필드. explore_sql처럼 Warehouse 계약 밖에서 세션이 필요한 극소수 예외 용도.
-- `mcp/tools.ts` — `exploreSqlTool(deps, input)`(다른 5개 도구와 같은 얇은 조립 계층, 로직은 실행기에 있다).
-- `server.ts` — `ServerConfig.exploreSqlEnabled`, `RegisterToolsDeps.exploreSqlExecutor`, `EXPLORE_SQL_ENABLED=true`일 때만 등록(조립 누락 시 명확한 에러, `sync_now`와 같은 패턴).
+- `core/types.ts` — `ExploreSqlOptions`/`ExploreSqlResult`/`ExploreSqlExecutor`. An interface deliberately separated from the rest of the `Warehouse` methods (so this one does not blur the fixed-query contract).
+- `core/sqlValidator.ts` (new, pure function) — `validateReadOnlySql(sql)`.
+- `adapters/exploreSqlExecutor.ts` (new) — `createExploreSqlExecutor(provider)`. Exports and reuses `withSession` from `adapters/pgWarehouse.ts` (same acquire/release pattern).
+- `adapters/warehouseFactory.ts` — added `connectionProvider` (common to pg/pglite, always present) to `WarehouseHandle` — a new field in the same position as `pgPool` (pg only, for `sync_now`). For the very few exceptions like explore_sql that need a session outside the Warehouse contract.
+- `mcp/tools.ts` — `exploreSqlTool(deps, input)` (the same thin assembly layer as the other 5 tools; logic lives in the executor).
+- `server.ts` — `ServerConfig.exploreSqlEnabled`, `RegisterToolsDeps.exploreSqlExecutor`, registered only when `EXPLORE_SQL_ENABLED=true` (clear error if assembly is missing, same pattern as `sync_now`).
 - `.env.example` — `EXPLORE_SQL_ENABLED=false`.
-- 테스트: `tests/sqlValidator.test.ts`(1차 방어선 단위 테스트 — 정상 케이스, 블록리스트, 세미콜론 다중문장, CTE 위장, 주석 오탐 방지, 식별자 부분일치 오탐 방지), `tests/exploreSqlExecutor.test.ts`(2차 방어선 — READ ONLY 실증, LIMIT/캡, 롤백, 존재하지 않는 테이블 에러), `tests/mcpTools.test.ts`(얇은 조립 계층), `tests/server.test.ts`(EXPLORE_SQL_ENABLED 게이팅, `SYNC_TOOL_ENABLED` 테스트와 대칭), `tests/pgWarehouse.test.ts`(T9의 "읽기 전용 role" 테스트에 explore_sql 케이스 추가).
+- Tests: `tests/sqlValidator.test.ts` (1st-layer unit tests — normal cases, blocklist, semicolon multi-statement, CTE disguise, comment false-positive prevention, identifier partial-match false-positive prevention), `tests/exploreSqlExecutor.test.ts` (2nd layer — READ ONLY demonstration, LIMIT/cap, rollback, nonexistent table error), `tests/mcpTools.test.ts` (thin assembly layer), `tests/server.test.ts` (EXPLORE_SQL_ENABLED gating, symmetric with the `SYNC_TOOL_ENABLED` test), `tests/pgWarehouse.test.ts` (explore_sql case added to T9's "read-only role" test).
 
-## 18. npm 출시 전 적대적 검수 대응 — 배포·데이터·보안 정책 확정 (2026-09-03, TASKS T28)
+## 18. Response to the Pre-npm-Release Adversarial Review — Distribution, Data, and Security Policy Finalized (2026-09-03, TASKS T28)
 
-v0.2 대기열(§13~§17) 완료 직후 npm publish 준비 전 사용자 지시로 코드 검수(`/code-review`)를 실행했다. 판정은 **출시 차단** — `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`에 40건, `docs/009_DOCUMENTATION_CHANGE_STRATEGY.md`에 문서 정합성 5건을 기록했다. 이 절은 `docs/009`가 권고한 "①규범 문서 먼저" 단계에 해당한다 — 구현이 아니라 정책 확정만 담는다. finding ID(REL-\*/SEC-\*/DATA-\*/OPS-\*/QA-\*/DOC-\*)는 각 004~008 문서를 참조한다. 실제 구현은 `docs/TASKS.md` T29~T37에서 진행한다.
+Immediately after completing the v0.2 queue (§13~§17), a code review (`/code-review`) was run at the user's direction in preparation for npm publish. The verdict was **release blocked** — 40 findings were recorded in `docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`docs/008_TEST_AND_RELEASE_GATE_REVIEW.md`, and 5 documentation consistency findings in `docs/009_DOCUMENTATION_CHANGE_STRATEGY.md`. This section corresponds to the "① normative documents first" step recommended by `docs/009` — it contains only policy finalization, not implementation. Finding IDs (REL-\*/SEC-\*/DATA-\*/OPS-\*/QA-\*/DOC-\*) refer to the respective 004~008 documents. Actual implementation proceeds in `docs/TASKS.md` T29~T37.
 
-### npm 배포 대상 (REL-001/005/008, DOC-004)
+### npm publish target (REL-001/005/008, DOC-004)
 
-사용자 확인(2026-09-03, AskUserQuestion)으로 확정:
+Finalized by user confirmation (2026-09-03, AskUserQuestion):
 
-- **범위**: `@shiz_son/retail-mcp` — scoped, 공개(public) 배포. `publishConfig.access=public`을 명시해 scoped 패키지가 기본값인 restricted로 실수 게시되지 않게 한다. **scope 변경(2026-09-04, 사용자 결정, T37)**: 처음 확정한 `@trapa-eureka`는 npm에 그 이름의 조직이 존재하지 않아(`npm org ls trapa-eureka` 403, 게시 계정은 `shiz_son`) 그대로는 게시할 수 없었다. 조직을 새로 만드는 대신 게시 계정 소유의 사용자 scope `@shiz_son`을 쓴다 — "계정 소유 scope로 이름 재사용 불확실성을 없앤다"는 아래 원칙은 그대로다. GitHub 저장소 경로(`Trapa-Eureka/retail-mcp`)·`author`·라이선스는 바뀌지 않는다.
-- **이름 재사용 위험 회피**: unscoped `retail-mcp`는 2026-01-12 unpublish 이력이 있는 이름이라(REL-008) npm이 일정 기간 재사용을 막을 수 있다 — 계정 소유 scope를 쓰면 이 불확실성 자체가 사라진다.
-- **라이선스**: MIT. LICENSE 파일과 `package.json.license`/`author`/`repository`/`bugs`/`homepage`를 일치시킨다(REL-005).
-- 이 결정 전까지는 `private: true`를 유지한다 — 실제 `private` 해제와 `bin`/`exports`/`main`/빌드 파이프라인/`files` allowlist 구현은 T29.
+- **Scope**: `@shiz_son/retail-mcp` — scoped, public distribution. `publishConfig.access=public` is stated explicitly so the scoped package is not accidentally published as the default restricted. **Scope change (2026-09-04, user decision, T37)**: the originally finalized `@trapa-eureka` could not be published as-is because no npm organization by that name exists (`npm org ls trapa-eureka` 403; the publishing account is `shiz_son`). Instead of creating a new organization, the user scope `@shiz_son` owned by the publishing account is used — the principle below, "eliminate name-reuse uncertainty with an account-owned scope", is unchanged. The GitHub repository path (`Trapa-Eureka/retail-mcp`), `author`, and license do not change.
+- **Avoiding name-reuse risk**: the unscoped `retail-mcp` is a name with a 2026-01-12 unpublish history (REL-008), so npm may block reuse for a period — using an account-owned scope removes this uncertainty entirely.
+- **License**: MIT. Align the LICENSE file with `package.json.license`/`author`/`repository`/`bugs`/`homepage` (REL-005).
+- Keep `private: true` until this decision — actually lifting `private` and implementing `bin`/`exports`/`main`/build pipeline/`files` allowlist is T29.
 
-### 데이터 보존 정책 — authoritative snapshot에서 누락된 SKU/매장 (DATA-002)
+### Data retention policy — SKUs/stores missing from the authoritative snapshot (DATA-002)
 
-파일 기반 채널(CSV/Excel 폴더 스캔, §12)은 "이번 스캔 파일이 현재 상태의 authoritative 원천"이라는 전제로 설계됐다. 그런데 실제 upsert는 "현재 파일의 행"만 갱신할 뿐 이전 스캔에 있었지만 새 파일에 없는 행을 지우지 않아, 판매 중단·폐기·지점 철수 품목이 DB에 영구 잔존하며 재주문 제안에 계속 섞일 수 있다(006 DATA-002).
+The file-based channel (CSV/Excel folder scan, §12) was designed on the premise that "this scan's file is the authoritative source of current state". However, the actual upsert only updates "rows in the current file" and does not remove rows that were in a previous scan but are absent from the new file, so discontinued, disposed, or branch-withdrawn items can remain in the DB permanently and keep getting mixed into reorder suggestions (006 DATA-002).
 
-- **정책: 자동 tombstone.** 최신 authoritative 스캔(지점 모드의 감시 폴더 최신 파일, 본사 모드의 지점별 스냅샷)에 더 이상 나타나지 않는 (매장,SKU)/`inventory_levels`/`sales_period_agg` 행은 **비활성 상태로 표시**한다 — 물리적으로 삭제하지 않고 이력은 보존한다.
-- 비활성 행은 재주문 제안·저재고 알림·MCP 조회 결과(기본 필터)에서 **제외**한다. 다시 파일에 나타나면 자동으로 재활성화한다(같은 스캔 upsert 경로).
-- tombstone 판정은 "같은 authoritative 경계(같은 매장의 같은 채널) 안에서 이번 스캔에 없음"으로 한정한다 — 본사 통합 모드가 여러 지점 스냅샷을 취합할 때, 다른 지점의 데이터를 이번 지점 스캔의 누락으로 오판하지 않는다(§12 "다지점 헤드오피스 통합 조회"의 지점별 독립 트랜잭션 원칙과 일치).
-- 구현 계약은 DESIGN §12.2, 실제 구현은 TASKS T31.
+- **Policy: automatic tombstone.** (store, SKU)/`inventory_levels`/`sales_period_agg` rows that no longer appear in the latest authoritative scan (the latest file in the watched folder in branch mode, the per-branch snapshot in HQ mode) are **marked inactive** — not physically deleted; history is preserved.
+- Inactive rows are **excluded** from reorder suggestions, low-stock alerts, and MCP query results (default filter). If they reappear in a file, they are automatically reactivated (same scan upsert path).
+- Tombstone judgment is confined to "absent from this scan within the same authoritative boundary (same store, same channel)" — when HQ consolidated mode collects multiple branches' snapshots, another branch's data is not misjudged as missing from this branch's scan (consistent with the independent per-branch transaction principle in §12 "Multi-branch head-office consolidated view").
+- Implementation contract in DESIGN §12.2, actual implementation in TASKS T31.
 
-### 반복 발송 정책 — 파일이 안 바뀌어도 cron마다 재처리되는 문제 (DATA-003)
+### Repeat-send policy — the problem of reprocessing on every cron even when the file is unchanged (DATA-003)
 
-지점 폴더 스캔은 최신 파일의 경로/mtime/hash를 이전 실행과 비교하지 않고 매 실행 새 `runId`를 생성한다 — 사용자가 파일을 갱신하지 않아도 cron 주기(예: 매일 07:00)마다 동일한 저재고 이메일이 반복 발송될 수 있다(006 DATA-003).
+The branch folder scan generates a new `runId` on every run without comparing the latest file's path/mtime/hash to the previous run — so even if the user does not update the file, the same low-stock email can be sent repeatedly every cron cycle (e.g. daily at 07:00) (006 DATA-003).
 
-- **정책: 파일 변경 여부와 무관하게 하루 최대 1회 다이제스트를 보장하고, 같은 날 안에서는 재발송을 억제한다.** 완전 무음(변경 없으면 절대 안 보냄)은 채택하지 않는다 — "SCM/파일 처리가 조용히 실패해서 아무 알림도 못 받는" 상황(DATA-007과도 연결)을 피하기 위해 최소 하루 1회는 보낸다는 걸 사용자가 명시적으로 선택했다(AskUserQuestion, 2026-09-03).
-- 판정 기준: source identity(감시 폴더 경로) + 파일 content hash/mtime로 "이번 스캔 입력이 마지막 발송 시점과 동일한가"를 본다. 동일하면 **마지막 발송 이후 사업장 타임존 기준 하루(24시간 또는 로컬 자정 경계 중 구현 시 결정, DESIGN §12.3)가 지났는지**를 추가로 확인한다 — 안 지났으면 `unchanged`로 조용히 종료, 지났으면 같은 내용이라도 다이제스트로 발송한다.
-- 파일이 실제로 바뀌었으면(내용 변경) 하루 상한과 무관하게 즉시 발송한다 — 상한은 "변경 없는 반복"만 억제한다.
-- **적용 범위 확정(T31)**: 판정은 실제로 이메일을 보내려는 시도(이슈가 있고 `SEND_MODE=live && --confirm`)에만 적용한다 — `no_suggestions`/`dry_run`은 애초에 발송이 없으니 이 정책과 무관하며 매번 그대로 처리된다(사람이 dry-run으로 반복 확인하는 흐름을 억제하면 안 되기 때문). 근거는 DESIGN §12.3.
-- 구현 계약은 DESIGN §12.3, 실제 구현은 TASKS T31.
+- **Policy: guarantee at most one digest per day regardless of whether the file changed, and suppress re-sends within the same day.** Complete silence (never send if unchanged) is not adopted — the user explicitly chose to send at least once a day (AskUserQuestion, 2026-09-03) to avoid the situation where "SCM/file processing fails silently and no alert is ever received" (also connected to DATA-007).
+- Judgment criterion: use source identity (watched folder path) + file content hash/mtime to determine "is this scan's input identical to what it was at the last send". If identical, additionally check **whether one day in the business timezone (24 hours or local midnight boundary, to be decided at implementation time, DESIGN §12.3) has passed since the last send** — if not, exit quietly as `unchanged`; if so, send as a digest even with the same content.
+- If the file actually changed (content change), send immediately regardless of the daily cap — the cap suppresses only "unchanged repeats".
+- **Scope of application finalized (T31)**: the judgment applies only to actual attempts to send email (there are issues and `SEND_MODE=live && --confirm`) — `no_suggestions`/`dry_run` involve no send in the first place, so they are unrelated to this policy and are processed as-is every time (a person's flow of repeatedly checking via dry-run must not be suppressed). Rationale in DESIGN §12.3.
+- Implementation contract in DESIGN §12.3, actual implementation in TASKS T31.
 
-### explore_sql 허용조건 강화 (SEC-001/002)
+### Tightened explore_sql allow conditions (SEC-001/002)
 
-§17이 설계한 2단계 방어(`sqlValidator` 1차 + `BEGIN READ ONLY` 2차)는 **테이블/시퀀스 쓰기**는 실제로 막지만, `pg_advisory_lock`류 volatile 함수의 세션 부수효과나 사용자 SELECT 안에서의 `set_config()` 재정의(예: `statement_timeout`을 0으로 되돌리기)까지는 막지 못한다는 것을 005가 실증했다 — `BEGIN READ ONLY`는 "쓰기 금지"이지 "부수효과 없는 샌드박스"가 아니다.
+005 demonstrated that the two-layer defense designed in §17 (`sqlValidator` 1st + `BEGIN READ ONLY` 2nd) does actually block **table/sequence writes**, but cannot block session side effects of volatile functions such as `pg_advisory_lock` or `set_config()` overrides inside a user SELECT (e.g. resetting `statement_timeout` to 0) — `BEGIN READ ONLY` means "no writes", not "a side-effect-free sandbox".
 
-- **정책**: `BEGIN READ ONLY`가 최종 방어선이라는 §17의 설계 전제를 낮춘다 — 이제 "쓰기 자체는 막는다"까지만 보장하고, **운영 배포는 explore_sql 전용의, 위험 함수 실행 권한이 없는 DB role을 필수로 요구**한다(README "권한 분리"의 권장을 필수로 격상). 임의 표현식 허용 대신 허용 schema/table로 제한된 쿼리로 좁히는 방향은 이번엔 채택하지 않는다 — `explore_sql`의 정의 자체가 "고정 쿼리 형태가 없는 유일한 예외"(가드레일 4)이기 때문이다. 대신 role 제한 + 공격 회귀 테스트로 방어한다.
-- **PGlite 노출 재검토**: PGlite는 `statement_timeout`을 집행하지 않을 뿐 아니라(§17 기존 한계) role 기반 함수 실행 제한 자체를 지원하지 않는다 — 임베디드 PGlite에서 explore_sql을 켜면 SEC-002가 지적한 DoS 경로(느린 쿼리를 취소할 수단이 없음)에 그대로 노출된다. `EXPLORE_SQL_ENABLED=true`이고 웨어하우스가 PGlite 경로일 때는 **명확한 경고**를 노출하거나(운영자가 의도적으로 켠 것인지 확인), 최소한 문서에서 "PGlite + explore_sql" 조합을 권장하지 않는다고 명시한다 — 완전 차단할지 경고로 둘지는 구현 시점(T30)에 확정한다.
-- **결정(T30)**: 완전 차단(예외 없음)이 아니라 **기본 차단 + 명시적 override**로 확정했다 — `DATABASE_URL`이 없는데(PGlite 경로) `EXPLORE_SQL_ENABLED=true`면 `resolveServerConfig()`가 원인+조치가 담긴 에러로 서버 기동을 거부하고, 새 env `EXPLORE_SQL_ALLOW_PGLITE=true`를 함께 설정해야만 우회된다 — 가드레일 1(`SEND_MODE=live && --confirm`)과 같은 "위험을 이해했다는 명시적 신호" 패턴이다. 완전 차단이 아니라 override를 둔 이유: 순수 로컬/오프라인 데모나 신뢰된 단일 사용자 환경처럼 role 분리가 애초에 의미 없는 사용처를 원천 봉쇄하지 않기 위해서다. `sqlValidator.ts`에도 advisory lock/`set_config`/백엔드 제어/파일·원격 접근 함수를 함수명 단위로 막는 `FORBIDDEN_FUNCTION_CALLS`를 추가해, 005가 실증한 "`\block\b`가 `pg_advisory_lock`의 밑줄 때문에 못 잡는" 구체적 우회를 닫았다 — 이 목록도 완전하지 않다는 걸 문서화(진짜 방어선은 여전히 role 제한).
-- 구현 계약은 DESIGN §12.4, 실제 구현·회귀 테스트는 TASKS T30.
+- **Policy**: lower §17's design premise that `BEGIN READ ONLY` is the final line of defense — it now guarantees only "writes themselves are blocked", and **production deployments must require a dedicated explore_sql DB role with no permission to execute dangerous functions** (elevating the README "Privilege separation" recommendation to mandatory). The direction of narrowing to queries restricted to allowed schemas/tables instead of permitting arbitrary expressions is not adopted this time — because the very definition of `explore_sql` is "the sole exception with no fixed query shape" (guardrail 4). Instead, defend with role restriction + attack regression tests.
+- **PGlite exposure re-review**: PGlite not only does not enforce `statement_timeout` (existing §17 limitation) but does not support role-based function execution restriction at all — enabling explore_sql on embedded PGlite leaves it fully exposed to the DoS path SEC-002 pointed out (no means to cancel a slow query). When `EXPLORE_SQL_ENABLED=true` and the warehouse is on the PGlite path, either expose a **clear warning** (confirming the operator enabled it deliberately) or at minimum state in the docs that the "PGlite + explore_sql" combination is not recommended — whether to block entirely or leave as a warning is finalized at implementation time (T30).
+- **Decision (T30)**: finalized as **blocked by default + explicit override**, not a complete block (no exceptions) — if `DATABASE_URL` is absent (PGlite path) and `EXPLORE_SQL_ENABLED=true`, `resolveServerConfig()` refuses to start the server with an error containing cause + remedy, and it is bypassed only by also setting the new env `EXPLORE_SQL_ALLOW_PGLITE=true` — the same "explicit signal that the risk is understood" pattern as guardrail 1 (`SEND_MODE=live && --confirm`). The reason for an override rather than a complete block: to avoid categorically shutting out use cases where role separation is meaningless to begin with, such as purely local/offline demos or trusted single-user environments. `FORBIDDEN_FUNCTION_CALLS` was also added to `sqlValidator.ts`, blocking advisory lock / `set_config` / backend control / file and remote access functions by function name, closing the specific bypass 005 demonstrated where "`\block\b` cannot catch `pg_advisory_lock` because of the underscore" — documenting that this list is not complete either (the real line of defense is still the role restriction).
+- Implementation contract in DESIGN §12.4, actual implementation and regression tests in TASKS T30.
 
-### 나머지 P0/P1 검수 항목
+### Remaining P0/P1 review items
 
-위 3가지 외의 004~008 나머지 항목(REL-002~004/006/007, SEC-003~007, DATA-001/004~008, OPS-001~006, QA-001~006)은 새로운 정책 결정이 필요하지 않은 순수 구현/테스트 보강이다 — 각 검수 문서의 "수정 기준"을 그대로 구현 계약으로 채택하고, DESIGN §12에 필요한 설계만 추가한다. TASKS T29~T35에 우선순위(P0/P1)별로 배정했다.
+Apart from the 3 above, the remaining 004~008 items (REL-002~004/006/007, SEC-003~007, DATA-001/004~008, OPS-001~006, QA-001~006) are pure implementation/test hardening requiring no new policy decisions — each review document's "fix criteria" are adopted as-is as the implementation contract, and only the necessary design is added to DESIGN §12. Assigned by priority (P0/P1) to TASKS T29~T35.

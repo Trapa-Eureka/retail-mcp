@@ -1,71 +1,70 @@
-# 008 — 테스트·출시 게이트 적대적 검수
+# 008 — Test and Release Gate Adversarial Review
 
-- 검수일: 2026-09-03
-- 현재 결과: `npm run check` 통과, 33 files/376 tests 통과
+- Review date: 2026-09-03
+- Current result: `npm run check` passes, 33 files/376 tests pass
 - coverage: statements 99.66%, branches 94.66%, functions 100%, lines 100% (`src/core`)
-- 판정: **수치상 우수하지만 npm 설치·운영 경계와 공격 시나리오가 게이트 밖에 있음**
-- 상태: **RESOLVED(T29 PR #40 — QA-001, T35 PR #47 — QA-002~006, 2026-09-03)** — QA-001~006 전부 해결. T37(2026-09-04): 8단계 release gate 중 기계적 단계 1~7 통과 + `prepublishOnly` 연결 완료 — 실행 기록은 `docs/TASKS.md` T37 "gate 실행 기록". 8단계(버전·changelog·tag·provenance·사람 승인): 버전 `0.1.0` 확정, scope는 `@shiz_son`으로 변경(PR #74), provenance는 `.github/workflows/release.yml`(태그 push → `npm publish --provenance`, `prepublishOnly` gate 포함)로 결정 — 남은 사람 작업은 `NPM_TOKEN` secret 등록과 게시 승인(`docs/TASKS.md` T37). 게이트 목록은 `docs/TESTING.md` §8, finding별 테스트 대조는 `docs/010_FINDING_TEST_CROSSREF.md`에 반영됨.
+- Verdict: **Excellent on the numbers, but the npm install/operations boundary and attack scenarios sit outside the gate**
+- Status: **RESOLVED(T29 PR #40 — QA-001, T35 PR #47 — QA-002~006, 2026-09-03)** — QA-001~006 all resolved. T37(2026-09-04): mechanical steps 1~7 of the 8-step release gate passed + `prepublishOnly` wired up — the execution record is in `docs/TASKS.md` T37 "gate execution log". Step 8 (version, changelog, tag, provenance, human approval): version `0.1.0` confirmed, scope changed to `@shiz_son` (PR #74), provenance decided as `.github/workflows/release.yml` (tag push → `npm publish --provenance`, including the `prepublishOnly` gate) — the remaining human work is registering the `NPM_TOKEN` secret and approving the publish (`docs/TASKS.md` T37). The gate list is reflected in `docs/TESTING.md` §8, and the per-finding test cross-reference in `docs/010_FINDING_TEST_CROSSREF.md`.
 
-## QA-001 — 테스트는 source tree만 검증하고 실제 tarball을 검증하지 않음
+## QA-001 — Tests verify only the source tree, not the actual tarball
 
-- 심각도: **치명적**
-- 근거: 모든 테스트가 저장소의 TS 소스와 devDependency가 설치된 환경에서 실행된다. `npm pack → fresh directory → npm install --omit=dev → bin/MCP 실행` 테스트가 없다.
-- 영향: 376개 테스트가 전부 통과해도 게시된 패키지는 실행 불가능하다.
-- 수정 기준: tarball 설치 smoke test를 release 필수 게이트로 추가한다.
+- Severity: **Critical**
+- Basis: All tests run against the repository's TS source in an environment with devDependencies installed. There is no `npm pack → fresh directory → npm install --omit=dev → run bin/MCP` test.
+- Impact: Even if all 376 tests pass, the published package can be unrunnable.
+- Fix criteria: Add a tarball install smoke test as a mandatory release gate.
 
-## QA-002 — `npm run check`에 coverage threshold가 포함되지 않음
+## QA-002 — `npm run check` does not include the coverage threshold
 
-- 심각도: **중간**
-- 근거: `coverage`는 별도 script다. 현재 coverage는 통과하지만 일반 PR/배포 게이트인 `check`만으로는 하락을 탐지하지 못한다.
-- 영향: 이후 변경에서 core coverage가 90% 아래로 내려가도 필수 게이트가 통과할 수 있다.
-- 수정 기준: CI/release gate에 `npm run coverage`를 포함한다. 매 로컬 check에 포함할지는 실행시간을 고려해 선택할 수 있다.
-- **해결(T35, 2026-09-03)**: CI `coverage` job이 매 PR에서 `npm run coverage`를 실행한다(`.github/workflows/ci.yml`). 로컬 `npm run check`엔 의도적으로 안 넣었다(제안대로 실행시간 고려 — TESTING.md §8에 근거 기록).
+- Severity: **Medium**
+- Basis: `coverage` is a separate script. Coverage currently passes, but `check` alone — the ordinary PR/deploy gate — cannot detect a drop.
+- Impact: In later changes, core coverage could fall below 90% while the mandatory gate still passes.
+- Fix criteria: Include `npm run coverage` in the CI/release gate. Whether to include it in every local check can be decided with execution time in mind.
+- **Resolved (T35, 2026-09-03)**: The CI `coverage` job runs `npm run coverage` on every PR (`.github/workflows/ci.yml`). It was deliberately left out of the local `npm run check` (execution time considered, as proposed — rationale recorded in TESTING.md §8).
 
-## QA-003 — coverage 범위가 core에만 한정됨
+## QA-003 — Coverage scope is limited to core
 
-- 심각도: **높음**
-- 근거: threshold include는 `src/core/**/*.ts`뿐이다. publish/보안상 중요한 `exploreSqlExecutor`, `folderScan`, `warehouseFactory`, provider와 CLI에는 강제 기준이 없다.
-- 영향: 핵심 비즈니스 순수 함수의 품질은 높지만 실제 장애가 발생하는 IO·보안 경계의 미실행 분기가 누적될 수 있다.
-- 수정 기준: 전체 프로젝트 기준을 별도로 추가하거나 위험 모듈별 threshold를 둔다. 단순 전체 백분율보다 critical branch 목록을 명시한다.
-- **해결(T35, 2026-09-03)**: `vitest.config.ts`의 `coverage.include`를 `src/{core,adapters,agent,mcp,cli}`로 확장하고, `coverage.thresholds`에 glob 키로 위험 모듈별 기준을 추가했다 — `exploreSqlExecutor.ts`/`warehouseFactory.ts`/`resendProvider.ts`는 개별 기준(각각 SEC-001/002·OPS-001·OPS-004와 직결), `agent`/`mcp`/`cli`는 그룹 기준, core는 기존 90/90/90/85 유지. 숫자는 2026-09-03 실측치(core 99.69/95.19/100/100, adapters 89.39/81.45/88.46/91.45, agent 74.63/60.3/74.35/74.27, cli 69/67.74/70.58/66.29, mcp 83.33/67.07/90/93.44)에서 소폭 여유만 둔 회귀 방지용 바닥선이다(이상적 목표치 아님).
+- Severity: **High**
+- Basis: The threshold include is only `src/core/**/*.ts`. There is no enforced standard for `exploreSqlExecutor`, `folderScan`, `warehouseFactory`, the providers, and the CLI, which matter for publishing/security.
+- Impact: The quality of the core business pure functions is high, but unexecuted branches can accumulate at the IO/security boundaries where real failures actually occur.
+- Fix criteria: Add a separate whole-project standard or set per-risk-module thresholds. Spell out a list of critical branches rather than a simple overall percentage.
+- **Resolved (T35, 2026-09-03)**: Expanded `coverage.include` in `vitest.config.ts` to `src/{core,adapters,agent,mcp,cli}` and added per-risk-module standards as glob keys in `coverage.thresholds` — `exploreSqlExecutor.ts`/`warehouseFactory.ts`/`resendProvider.ts` get individual standards (directly tied to SEC-001/002, OPS-001, and OPS-004 respectively), `agent`/`mcp`/`cli` get group standards, and core keeps the existing 90/90/90/85. The numbers are regression-prevention floors with only a small margin below the 2026-09-03 measured values (core 99.69/95.19/100/100, adapters 89.39/81.45/88.46/91.45, agent 74.63/60.3/74.35/74.27, cli 69/67.74/70.58/66.29, mcp 83.33/67.07/90/93.44) — not ideal targets.
 
-## QA-004 — 실 Postgres 계약 검증이 부족함
+## QA-004 — Insufficient real-Postgres contract verification
 
-- 심각도: **높음**
-- 근거: 대부분 PGlite 또는 mock connection 기반이다. 프로젝트 자체가 PGlite의 timeout 차이를 이미 확인했고, session lock 같은 차이/공통점도 존재한다.
-- 영향: migration lock, READ ONLY, pg pool session, numeric/date parsing이 운영 Postgres에서만 다르게 실패할 수 있다.
-- 수정 기준: CI service Postgres에서 migration, transaction rollback, read-only role, advisory lock cleanup, explore_sql timeout을 component test한다.
-- **해결(T35, 2026-09-03)**: `tests/component/postgres.component.test.ts`(+ `vitest.component.config.ts`, `npm run test:pg-component`) — migration 멱등성/checksum 불일치, 실패한 마이그레이션의 트랜잭션 롤백, advisory lock cleanup, `BEGIN READ ONLY` 쓰기 거부, 그리고 PGlite로는 확인 불가능했던 `statement_timeout` 실제 취소까지 6개 describe로 커버한다. CI `postgres-component` job(`postgres:16` 서비스 컨테이너)에서만 돈다 — 기본 게이트(가드레일 2)는 `vitest.config.ts`의 exclude로 이 디렉터리를 안 본다. 로컬 `postgresql@16`(brew)으로 8/8 실측 통과 확인.
+- Severity: **High**
+- Basis: Most tests are based on PGlite or mock connections. The project itself has already confirmed PGlite's timeout differences, and there are other differences/commonalities such as session locks.
+- Impact: Migration lock, READ ONLY, pg pool session, and numeric/date parsing can fail differently only on production Postgres.
+- Fix criteria: Component-test migration, transaction rollback, read-only role, advisory lock cleanup, and explore_sql timeout against a CI service Postgres.
+- **Resolved (T35, 2026-09-03)**: `tests/component/postgres.component.test.ts` (+ `vitest.component.config.ts`, `npm run test:pg-component`) — covers, in 6 describe blocks, migration idempotency/checksum mismatch, transaction rollback of a failed migration, advisory lock cleanup, `BEGIN READ ONLY` write rejection, and even actual `statement_timeout` cancellation, which could not be verified with PGlite. It runs only in the CI `postgres-component` job (`postgres:16` service container) — the default gate (guardrail 2) does not see this directory thanks to the exclude in `vitest.config.ts`. Confirmed 8/8 passing against a local `postgresql@16` (brew).
 
-## QA-005 — 알려진 공격·정확성 회귀 케이스가 없음
+## QA-005 — No known attack/correctness regression cases
 
-- 심각도: **높음**
-- 누락 케이스:
+- Severity: **High**
+- Missing cases:
   - snapshot packSize round-trip
-  - unchanged file 중복 발송 방지
-  - 새 snapshot에서 사라진 SKU 정리
-  - partial snapshot 동시 read
-  - `pg_advisory_lock`, `set_config`를 이용한 explore_sql 우회
-  - CSV formula injection과 대형 XLSX/CSV 한도
-  - SCM 기간 불일치/기초재고 없음/실패 상태
-- 수정 기준: 005~007 문서의 재검수 항목을 모두 자동 테스트로 연결한다.
-- **해결(T35, 2026-09-03)**: `docs/010_FINDING_TEST_CROSSREF.md`(신규)가 004~008의 33개 finding 전부를 담당 테스트와 대조했다. 위 누락 케이스 7개 중 6개는 이미 자동화돼 있었고(005~007 각 finding 해결 시 함께 추가), 실제로 비어 있던 건 "partial snapshot 동시 read" 하나뿐이었다 — `tests/atomicFile.test.ts`에 진짜 동시 write-중-반복-read 레이스 테스트를 신규 추가했다(기존 테스트는 "쓰기 전에 읽어둔 핸들"만 확인해 진짜 동시성이 아니었다).
+  - preventing duplicate sends for an unchanged file
+  - cleaning up SKUs that disappeared from a new snapshot
+  - concurrent read of a partial snapshot
+  - explore_sql bypass using `pg_advisory_lock` and `set_config`
+  - CSV formula injection and large XLSX/CSV limits
+  - SCM period mismatch / no opening inventory / failure status
+- Fix criteria: Connect all re-review items from documents 005~007 to automated tests.
+- **Resolved (T35, 2026-09-03)**: `docs/010_FINDING_TEST_CROSSREF.md` (new) cross-references all 33 findings from 004~008 against their responsible tests. Of the 7 missing cases above, 6 were already automated (added alongside the resolution of each 005~007 finding), and the only one that was actually empty was "concurrent read of a partial snapshot" — a genuine concurrent write-while-repeatedly-reading race test was newly added to `tests/atomicFile.test.ts` (the existing test only checked "a handle opened before the write", which was not real concurrency).
 
-## QA-006 — dependency audit와 tarball 내용 검사가 자동화되지 않음
+## QA-006 — Dependency audit and tarball content inspection are not automated
 
-- 심각도: **높음**
-- 근거: 수동 audit에서 moderate 2건이 발견됐고 pack dry-run은 불필요한 파일 97개를 보여줬지만 둘 다 `check`/CI에 없다.
-- 수정 기준: lockfile audit 정책, allowlist assertion, secret scan/SBOM을 release workflow에 추가한다. audit 서비스 장애 시 fail-open/fail-closed 정책도 정한다.
-- **해결(T35, 2026-09-03)**: CI `audit` job이 매 PR에서 셋 다 실행한다. ① lockfile audit(`src/adapters/auditLockfile.ts` + `npm run audit:lockfile`) — audit 실행 자체가 실패하면 fail-open(경고, 통과), 성공했는데 승인 목록(`src/core/auditAllowlist.ts`) 밖 advisory가 나오면 fail-closed. tarball 기준 audit(SEC-006, `scripts/verifyPack.ts`)과는 검사 대상이 달라 유지 — 실측으로 dev lockfile은 0건, tarball은 승인된 uuid 예외 1건으로 서로 다르게 나오는 걸 재확인했다(T32가 이미 실증한 `overrides` 비전파 문제). ② secret scan(`src/core/secretScan.ts` + `npm run secret-scan`) — AWS 키/PEM/Anthropic·Resend 키 접두사/자격증명 포함 Postgres URL 패턴, `git ls-files` 기준 추적 파일 전체. ③ SBOM(`npm sbom --sbom-format cyclonedx`, 아티팩트로 업로드 90일 보관). allowlist assertion(tarball 내용 검수)은 이미 T29의 `verify:pack` 1단계가 하고 있고 T35부터 CI `test` job에서도 매 OS/Node 조합에 돈다.
+- Severity: **High**
+- Basis: A manual audit found 2 moderate issues and the pack dry-run showed 97 unnecessary files, but neither is in `check`/CI.
+- Fix criteria: Add a lockfile audit policy, allowlist assertion, and secret scan/SBOM to the release workflow. Also decide the fail-open/fail-closed policy for when the audit service is down.
+- **Resolved (T35, 2026-09-03)**: The CI `audit` job runs all three on every PR. ① lockfile audit (`src/adapters/auditLockfile.ts` + `npm run audit:lockfile`) — if the audit run itself fails, fail-open (warn, pass); if it succeeds but an advisory outside the approved list (`src/core/auditAllowlist.ts`) shows up, fail-closed. It is kept alongside the tarball-based audit (SEC-006, `scripts/verifyPack.ts`) because the inspection targets differ — measurements reconfirmed that they come out differently: the dev lockfile has 0 findings while the tarball has 1 approved uuid exception (the `overrides` non-propagation problem T32 already demonstrated). ② secret scan (`src/core/secretScan.ts` + `npm run secret-scan`) — patterns for AWS keys/PEM/Anthropic·Resend key prefixes/Postgres URLs containing credentials, across all tracked files per `git ls-files`. ③ SBOM (`npm sbom --sbom-format cyclonedx`, uploaded as an artifact with 90-day retention). The allowlist assertion (tarball content inspection) is already done by step 1 of T29's `verify:pack`, and since T35 it also runs in the CI `test` job on every OS/Node combination.
 
-## 권장 release gate
+## Recommended release gate
 
-1. clean checkout 및 지원 Node/OS matrix 설치
+1. Clean checkout and install on the supported Node/OS matrix
 2. typecheck + lint + format check + unit/component/e2e
-3. core 및 위험 모듈 coverage threshold
-4. 운영 dependency audit + secret/license scan
-5. clean build
-6. `npm pack` allowlist 검증
-7. tarball `--omit=dev` fresh install + CLI/MCP smoke
-8. 버전·changelog·git tag·provenance 확인 후 사람 승인
-
+3. Coverage thresholds for core and risk modules
+4. Production dependency audit + secret/license scan
+5. Clean build
+6. `npm pack` allowlist verification
+7. Tarball `--omit=dev` fresh install + CLI/MCP smoke
+8. Human approval after confirming version, changelog, git tag, and provenance
