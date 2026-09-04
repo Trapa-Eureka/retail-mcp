@@ -2,9 +2,15 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식을 따릅니다.
 
-아직 `npm publish`가 나가지 않았습니다(`docs/TASKS.md` T28~T37, README 상단 "npm publish 출시 차단" 배너 참고) — 그래서 지금까지의 모든 변경은 `[Unreleased]`에 있습니다. **첫 게시 버전은 `0.1.0`으로 확정**(사용자 결정, 2026-09-04, T37 — `package.json.version`과 일치). 실제 게시 시점에 `v0.1.0` 태그를 달고 이 섹션을 `## [0.1.0] - <게시일>` 아래로 옮깁니다(게시 전에는 옮기지 않는다 — Keep a Changelog의 "릴리스된 것만 버전 헤더" 원칙). 각 항목의 구현/테스트 근거는 `docs/TASKS.md`의 해당 태스크(Txx) 절, finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`를 참고하세요.
+각 항목의 구현/테스트 근거는 `docs/TASKS.md`의 해당 태스크(Txx) 절, 출시 전 적대적 검수 finding별 해결·테스트 대조는 `docs/010_FINDING_TEST_CROSSREF.md`를 참고하세요. 게시는 `v*` 태그 push → GitHub Actions(`release.yml`)에서 전체 검사 후 `npm publish --provenance`로만 이뤄집니다.
 
 ## [Unreleased]
+
+(다음 릴리스에 들어갈 변경이 여기에 쌓입니다.)
+
+## [0.1.0] - 2026-09-04
+
+첫 공개 게시(`@shiz_son/retail-mcp@0.1.0`). v0.1(Loyverse 경로, 실배포 보류)과 v0.2(CSV/Excel 채널)를 모두 포함합니다.
 
 ### Added
 
