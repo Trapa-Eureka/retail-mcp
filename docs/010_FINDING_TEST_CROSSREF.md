@@ -1,7 +1,7 @@
 # 010 — 검수 finding ↔ 자동 테스트 대조표
 
 - 작성일: 2026-09-03 (TASKS T35, QA-005 "005~007의 재검수 항목이 전부 자동 테스트로 연결됐는지 대조표 작성" 대응)
-- 범위: `docs/004`~`008`이 지적한 전체 finding(REL/SEC/DATA/OPS/QA, 33건) + `docs/009`의 DOC-\* 5건.
+- 범위: `docs/004`~`008`이 지적한 전체 finding(REL/SEC/DATA/OPS/QA, 33건) + `docs/009`의 DOC-\* 5건 + **2차 적대적 검수 `docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`의 SR2-\* 19건**(2026-09-04 추가, 아래 "SR2" 절).
 - 갱신 규칙: finding을 다루는 코드/테스트가 바뀌면 이 표도 같은 PR에서 함께 갱신한다. 이 표 자체는
   진실의 원천이 아니다 — 각 finding의 "해결 근거"는 여전히 `docs/004`~`009` 본문에 있고, 여기는
   "그 해결이 지금 어떤 자동 테스트로 지켜지고 있는가"만 빠르게 찾기 위한 색인이다.
@@ -104,6 +104,34 @@
 > T28에서 이미 실질적으로 해소) 사이의 불일치를 지적해뒀었다 — T36에서 `docs/009`의 그 줄 자체를
 > 정정했다(009 참고).
 
+## SR2 — 2차 적대적 검수 (`docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`, 2026-09-03 검수 → 2026-09-04 처리)
+
+1차 검수 대응(T29~T36) 자체를 다시 검수한 결과 19건(P0 6·P1 10·P2 3). 각 finding은 **PR 1개**로 처리했고(태스크 번호 없음 — 아래 PR 열이 곧 해결 커밋), 해결 근거 전문은 원본 문서의 각 항목 아래 `RESOLVED` 줄에 있다. 대조 방법(2026-09-04): 아래 테스트 파일이 실제로 존재하고 finding ID가 `describe`/`it` 이름에 그대로 들어 있는지 `grep`으로 확인했다 — 코드로 해결한 13건 전부 ID가 이름에 들어 있어 이름 정리가 필요한 테스트는 없었고, `tests/component/**` 1건을 제외한 전부가 기본 게이트(`vitest.config.ts`, `npm run check`)에서 돈다.
+
+| ID | 우선순위 | 요약 | 상태 | 근거/테스트 | PR |
+|---|---|---|---|---|---|
+| SR2-SEC-001 | P0 | placeholder 단어 하나로 secret-scan 우회 | 자동화됨 | `tests/secretScan.test.ts`(흔한 단어 5종이 더 이상 제외되지 않음, 전용 마커 `secretscan-allow`만 허용) | #49 |
+| SR2-AUD-001 | P0 | audit 실행/JSON 오류가 CI 성공 처리(fail-open) | 자동화됨 | `tests/auditAllowlist.test.ts`(`isValidAuditReport`), `scripts/verifyPack.ts`(release gate에서 무효 리포트 fail-closed — `test` job에서 매 PR 실행) | #50 |
+| SR2-AUD-002 | P0 | 오류 JSON을 "취약점 0건"으로 오인 | 자동화됨 | `tests/auditLockfile.test.ts`(`{error:{…}}` 리포트가 "0건" 로그를 남기지 않음) | #50 |
+| SR2-MAIL-001 | P0 | 실행마다 random runId라 재시도 idempotency 무효 | 자동화됨(부분) + 수동 | `tests/cliArgs.test.ts`(`parseNamedArg` — `--run-id` 파싱). `main()`의 argv → `opts.runId` 배선 자체는 단위 테스트 밖 — 실제 CLI 실행으로 재현·확인(원본 문서 RESOLVED 참고). `opts.runId` 전달은 T34 테스트가 이미 고정 | #51 |
+| SR2-LOCK-001 | P0 | hostname 충돌 시 타 호스트 active lock 삭제 | 자동화됨 | `tests/fileLock.test.ts`("machineId 기반 cross-host 판정" describe 5 tests) | #53 |
+| SR2-REL-001 | P0 | network Postgres 사용자용 migration CLI 부재 | 자동화됨 + CI 전용 | `tests/cliMigrate.test.ts`, `tests/migrateRunner.test.ts`, `tests/warehouseFactory.test.ts`(`ensureNetworkMigrationsApplied`), `scripts/verifyPack.ts`(bin 실행·에러 경로); real Postgres 적용·멱등성은 `tests/component/postgres.component.test.ts`(CI `postgres-component` job 전용) | #55 |
+| SR2-CI-001 | P1 | workflow token 권한 미고정 | CI 전용(구성) | `.github/workflows/ci.yml` 최상단 `permissions: contents: read` — 테스트로 표현 불가, 워크플로 파일 자체가 산출물. `SECURITY.md` 명시 | #54 |
+| SR2-MAIL-002 | P1 | timeout 외 네트워크 오류가 `failed`로 오분류 | 자동화됨 | `tests/resendProvider.test.ts`(실제 undici 오류 형태 픽스처 6 tests — `ECONNREFUSED`/`ENOTFOUND`만 failed, `ECONNRESET`/`UND_ERR_SOCKET`/코드 없음은 ambiguous) | #56 |
+| SR2-SEC-002 | P1 | `tests/secretScan.test.ts` 전체 제외 blind spot | 자동화됨(자기 검증) | `tests/secretScan.test.ts`(픽스처 런타임 조합 + 자기 소스를 스캔해 0건 assert), `scripts/secretScan.ts`의 `SELF_EXCLUDE` 삭제 | #58 |
+| SR2-SEC-003 | P1 | git history 스캔 설명과 구현 불일치 | 자동화됨 + CI 전용 | `tests/secretScanGit.test.ts`(`scanGitRange` — "넣은 커밋 → 지운 커밋" 임시 저장소 6 tests); CI `audit` job이 `--range=$SCAN_BASE..$SCAN_HEAD`로 실제 실행 | #59 |
+| SR2-SEC-004 | P1 | 파일 읽기 실패를 조용히 무시(fail-open) | 자동화됨 | `tests/secretScanGit.test.ts`(`scanTrackedFiles` — EACCES/ENOENT/심볼릭 링크/binary allowlist 5 tests), `scripts/secretScan.ts`가 `unreadable`을 non-zero로 | #60 |
+| SR2-AUD-003 | P1 | 승인 예외 만료일이 주석일 뿐 | 자동화됨 | `tests/auditAllowlist.test.ts`(만료 경계·형식 오류·실제 데이터 검증), `tests/auditLockfile.test.ts`(기한 당일 실패 문자열), `scripts/verifyPack.ts`(release gate throw) | #61 |
+| SR2-CI-002 | P1 | Action/Postgres image가 이동 가능한 태그 | CI 전용(구성) + 수동 갱신 | `ci.yml`의 `uses:` 9줄 full SHA + `postgres:16@sha256:…`; 검증은 이 워크플로 자체가 고정값으로 매 PR 실행(job 로그의 `Download action repository … (SHA:…)`/`docker pull …@sha256:…`). 갱신은 `.github/dependabot.yml`(Action) + TESTING.md §8 수동 절차(digest) | #63 |
+| SR2-LOCK-002 | P1 | hostname 없는 구버전 lock을 same-host로 회수 | 자동화됨 | `tests/fileLock.test.ts`("hostname 없는 구버전 락은 소유 호스트 불명 → busy" describe 5 tests) | #65 |
+| SR2-MAIL-003 | P1 | dedupe 보존시간 이후 재시도 정책 없음 | 자동화됨 | `tests/sendRetryPolicy.test.ts`(순수 판정 11), `tests/reorderAgent.test.ts`(6), `tests/folderScan.test.ts`(2), `tests/pgWarehouse.test.ts`(`listAgentSendAttempts`/`markStaleSendingUnknown` 2) | #66 |
+| SR2-CI-004 | P1 | branch protection/required checks 미검증 | **수동/사람**(저장소 설정) | GitHub ruleset `22244613`(main, PR 필수·required checks 7·bypass 0) — 저장소 밖 설정이라 테스트 불가. `docs/TASKS.md` T37 사람 확인 항목 + 확인 명령(`gh api repos/…/rules/branches/main`). 매 PR 머지가 ruleset을 통과하는 것이 상시 검증(#67이 첫 사례) | #67 |
+| SR2-CI-003 | P2 | job `timeout-minutes` 없음 | **예정** | `ci.yml` job별 timeout — 구성 항목 | — |
+| SR2-LOCK-003 | P2 | release의 확인 후 삭제가 비원자적 | **예정** | `src/adapters/fileLock.ts` release 경로 — 착수 시 `tests/fileLock.test.ts`에 경합 케이스 추가 예정 | — |
+| SR2-SEC-005 | P2 | 실제 사용 credential 종류 커버 부족(npm/GitHub token, `LOYVERSE_API_TOKEN` 값 등) | **예정** | `src/core/secretScan.ts` 패턴 확장 — 착수 시 `tests/secretScan.test.ts`에 종류별 케이스 추가 + `SECURITY.md`에 경량 스캐너 한계 명시 예정 | — |
+
+**부수 조치(finding 아님)**: 위 PR들의 CI에서 관측된 환경 문제 3건 — `tests/performance.test.ts` 예산 5s→10s(#52), `vitest.config.ts` `hookTimeout` 20s(#57), `npm audit` 무효 리포트 제한 재시도 `src/adapters/npmAudit.ts` + `tests/npmAudit.test.ts`(#62). 원본 문서 머리의 "부수 조치" 줄 참고.
+
 ## 이 표가 커버하지 못하는 것
 
 - finding 하나가 "완전히 막혔다"는 뜻이 아니다 — 예를 들어 SEC-001/002는 `FORBIDDEN_FUNCTION_CALLS`
@@ -111,3 +139,5 @@
   테스트가 잡아준다"는 뜻이지 "공격이 이론적으로 불가능하다"는 뜻이 아니다.
 - REL-005/006/008, SEC-007 일부, DOC-\*는 성격상 "값이 사람 의도와 일치하는가"를 묻는 항목이라
   자동 테스트로 표현할 수 없다 — 표에 `수동/사람`으로 명시했다.
+- SR2-CI-001/002/004는 워크플로 파일·저장소 설정이라 단위 테스트가 없다 — "CI가 그 구성으로 실제로
+  돈다"(job 로그, ruleset 아래 머지)가 검증이고, CI-004는 T37에서 사람이 한 번 더 확인한다.
