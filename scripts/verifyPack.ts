@@ -25,12 +25,15 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { runNpmAuditJsonWithRetry } from "../src/adapters/npmAudit.js";
+import { ACCEPTED_ADVISORIES } from "../src/core/auditAllowlist.js";
+import { parseNamedArg } from "../src/core/cliArgs.js";
 import {
-  ACCEPTED_ADVISORIES,
-  checkAdvisoriesAgainstAllowlist,
-  extractAdvisoryUrls,
-  isValidAuditReport,
-} from "../src/core/auditAllowlist.js";
+  AUDIT_UNAVAILABLE_FLAG,
+  evaluateTarballAudit,
+  parseAuditUnavailablePolicy,
+  shouldBlock,
+  type AuditUnavailablePolicy,
+} from "../src/core/tarballAuditPolicy.js";
 
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
 const EXPECTED_DEFAULT_TOOLS = [
@@ -191,77 +194,78 @@ async function verifyMigrateBin(installDir: string): Promise<void> {
  * (TASKS T35) — `scripts/auditLockfile.ts`(CI 매 PR, dev lockfile 기준)도 같은 로직이
  * 필요해져서다. 여기 있던 승인 목록·근거·재검토 기한 주석도 그 파일로 옮겼다.
  */
-async function verifyDependencyAudit(installDir: string): Promise<void> {
-  heading("6) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인");
-  // 유효한 리포트를 못 얻으면 제한 재시도한다(`src/adapters/npmAudit.ts` — Node 22 러너의 npm이
-  // 폐기 예정 quick 엔드포인트로 fallback해 400을 받는 일시 실패가 CI에서 반복 관측됨). 재시도를
-  // 다 써도 무효면 아래 기존 fail-closed 판정이 그대로 적용된다 — 정책은 바뀌지 않는다.
+async function verifyDependencyAudit(
+  installDir: string,
+  policy: AuditUnavailablePolicy,
+): Promise<void> {
+  heading(
+    `6) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인(불능 시: ${policy})`,
+  );
+  // 유효한 리포트를 못 얻으면 제한 재시도한다(`src/adapters/npmAudit.ts` — 시도당 상한 90초).
+  // 재시도를 다 써도 무효면 정책(`policy`)에 따라 갈린다 — 판정 자체는 순수 함수
+  // `evaluateTarballAudit`(src/core/tarballAuditPolicy.ts)가 하고 여기서는 집행만 한다.
+  //
+  // - `fail`(기본, `prepublishOnly` = 실제 게시 경로): "확인 불가"도 막는다(SR2-AUD-001, fail-closed).
+  // - `warn`(CI `test` matrix가 명시적으로 켬): "확인 불가"만 경고로 통과 — 승인되지 않은 취약점·
+  //   기한 지난 예외는 정책과 무관하게 항상 막는다. 2026-09-04 레지스트리 장애로 PR #72~#74가
+  //   차례로 머지 불가가 된 뒤 사용자 위임으로 도입(근거는 tarballAuditPolicy.ts 모듈 주석).
   const stdout = await runNpmAuditJsonWithRetry({ cwd: installDir });
-  if (stdout === null) {
-    throw new Error(
-      "npm audit 실행 자체가 재시도 후에도 실패했습니다(레지스트리 접근 불가 등으로 추정) — " +
-        "release gate는 이 상태를 통과시키지 않습니다. 네트워크 상태를 확인하고 다시 시도하세요.",
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch (err) {
-    throw new Error(
-      "npm audit 출력이 재시도 후에도 JSON으로 파싱되지 않습니다 — release gate는 이 상태를 " +
-        `통과시키지 않습니다.\n${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
-  }
-  if (!isValidAuditReport(parsed)) {
-    // SR2-AUD-001/002(2차 적대적 검수) — 예전엔 여기서도 {"error": {...}} 같은 무효 응답을
-    // 파싱만 성공하면 "취약점 0건"으로 통과시켰다. 이 스크립트는 release gate(T37이 최종
-    // 게시 판단의 근거로 쓴다)라 **fail-closed**로 막는다 — CI PR 편의 게이트
-    // (auditLockfile.ts)와 달리 "확인 불가"를 통과시키지 않는다.
-    throw new Error(
-      "npm audit 출력이 유효한 취약점 리포트 형식이 아닙니다(레지스트리 오류 응답 등으로 " +
-        `추정) — release gate는 이 상태를 통과시키지 않습니다. 네트워크 상태를 확인하고 ` +
-        `다시 시도하세요.\n${JSON.stringify(parsed).slice(0, 500)}`,
-    );
-  }
-  const advisoryUrls = extractAdvisoryUrls(parsed);
   // 만료 판정 기준 시각은 여기서 한 번 명시적으로 잡는다(SR2-AUD-003) — release gate는 사람이
   // 실행하는 시점의 시스템 시계가 맞다.
-  const { unexpected, expired, noneFound } = checkAdvisoriesAgainstAllowlist(
-    advisoryUrls,
-    ACCEPTED_ADVISORIES,
-    new Date(),
-  );
-  if (unexpected.length > 0) {
-    throw new Error(
-      `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${unexpected.join(", ")} — ` +
-        "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
-    );
+  const verdict = evaluateTarballAudit(stdout, new Date());
+
+  if (shouldBlock(verdict, policy)) {
+    switch (verdict.kind) {
+      case "unavailable":
+        throw new Error(
+          `${verdict.detail}\nrelease gate(정책 fail)는 이 상태를 통과시키지 않습니다 — 네트워크/레지스트리 ` +
+            "상태를 확인하고 다시 시도하세요.",
+        );
+      case "unexpected":
+        throw new Error(
+          `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${verdict.urls.join(", ")} — ` +
+            "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
+        );
+      case "expired":
+        // SR2-AUD-003 — 승인 예외의 재검토 기한이 지났다. 예전엔 기한이 주석에만 있어 지나도
+        // release gate가 계속 통과시켰다. 게시 직전 판단이므로 fail-closed.
+        throw new Error(
+          "승인된 audit 예외의 재검토 기한이 지났습니다: " +
+            verdict.expired.map((e) => `${e.url}(기한 ${e.expiresAt})`).join(", ") +
+            " — 근본 해결(의존성 업그레이드/대체)하거나, 재검토 후 근거를 갱신하고 " +
+            "src/core/auditAllowlist.ts ACCEPTED_ADVISORIES의 expiresAt을 연장하세요(docs/005 SEC-006). " +
+            "기한이 지난 예외로는 게시하지 않습니다.",
+        );
+      case "pass":
+        break; // shouldBlock이 pass에 true를 줄 일은 없다 — 타입 완결성용.
+    }
   }
-  if (expired.length > 0) {
-    // SR2-AUD-003 — 승인 예외의 재검토 기한이 지났다. 예전엔 기한이 주석에만 있어 지나도
-    // release gate가 계속 통과시켰다. 게시 직전 판단이므로 fail-closed.
-    throw new Error(
-      "승인된 audit 예외의 재검토 기한이 지났습니다: " +
-        expired.map((e) => `${e.url}(기한 ${e.expiresAt})`).join(", ") +
-        " — 근본 해결(의존성 업그레이드/대체)하거나, 재검토 후 근거를 갱신하고 " +
-        "src/core/auditAllowlist.ts ACCEPTED_ADVISORIES의 expiresAt을 연장하세요(docs/005 SEC-006). " +
-        "기한이 지난 예외로는 게시하지 않습니다.",
+
+  if (verdict.kind === "unavailable") {
+    console.warn(
+      `⚠ ${verdict.detail}\n  PR gate 정책(warn)이라 경고로 통과합니다. 이 tarball의 audit 결과는 ` +
+        "실제 게시 직전 `prepublishOnly`(정책 fail)에서 반드시 다시 확인됩니다 — 그 단계는 유효한 " +
+        "리포트 없이는 통과하지 않습니다.",
     );
+    return;
   }
-  if (noneFound) {
+  if (verdict.kind === "pass" && verdict.noneFound) {
     console.log(
       "취약점 0건 — exceljs/uuid 승인된 예외(SEC-006)가 더 이상 필요 없을 수 있습니다. " +
         "docs/005와 src/core/auditAllowlist.ts의 ACCEPTED_ADVISORIES를 갱신하세요.",
     );
-  } else {
+  } else if (verdict.kind === "pass") {
     const described = ACCEPTED_ADVISORIES.map((a) => `${a.url}(재검토 기한 ${a.expiresAt})`);
     console.log(`승인된 예외만 확인됨(${described.join(", ")}) — docs/005 SEC-006.`);
   }
 }
 
 async function main(): Promise<void> {
+  // `--audit-unavailable=fail|warn` — 없으면 fail(게시 경로 기본). 잘못된 값은 여기서 바로 던진다
+  // (6단계까지 가서 조용히 완화되는 일이 없게).
+  const auditPolicy = parseAuditUnavailablePolicy(
+    parseNamedArg(process.argv, AUDIT_UNAVAILABLE_FLAG),
+  );
   const workDir = await mkdtemp(path.join(tmpdir(), "retail-mcp-verify-pack-"));
   const installDir = path.join(workDir, "install");
   await mkdir(installDir, { recursive: true });
@@ -272,7 +276,7 @@ async function main(): Promise<void> {
     await verifyMcpServerBin(installDir);
     await verifyOnboardBin(installDir);
     await verifyMigrateBin(installDir);
-    await verifyDependencyAudit(installDir);
+    await verifyDependencyAudit(installDir, auditPolicy);
     heading("전부 통과");
     console.log(`tarball fresh-install 검증 완료 (임시 디렉터리: ${workDir})`);
   } finally {
