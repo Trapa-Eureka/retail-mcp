@@ -1,8 +1,9 @@
 name: CI
 
 # TASKS T35(QA-002~006, OPS-006) — 이 저장소의 첫 CI 워크플로. docs/008이 권장한 release
-# gate(TESTING.md §8)를 매 push/PR에서 실행한다. T37에서 실제 npm publish 워크플로를 추가할
-# 때 이 워크플로를 그대로 전제 조건으로 재사용한다.
+# gate(TESTING.md §8)를 매 push/PR에서 실행한다. 실제 npm publish 워크플로는 `release.yml`(T37,
+# `v*` 태그 push)이다 — 게시 대상은 이 워크플로를 required check로 통과해 main에 머지된 커밋만이고
+# (SR2-CI-004 ruleset), 게시 직전엔 `prepublishOnly`가 check + verify:pack을 다시 돈다.
 
 on:
   push:

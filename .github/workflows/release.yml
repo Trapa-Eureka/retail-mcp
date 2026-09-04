@@ -1,0 +1,97 @@
+name: Release (npm publish with provenance)
+
+# T37 8단계 "provenance" 결정(2026-09-04, 사용자 위임 → 비교 후 ② 채택): 로컬 `npm publish`(provenance
+# 없음) 대신 GitHub Actions에서 `npm publish --provenance`로 게시한다. provenance는 "이 tarball이 이
+# 저장소의 이 커밋에서 이 워크플로가 빌드한 것"이라는 서명된 증명(Sigstore)이고 npm 페이지에 표시된다 —
+# 이 프로젝트가 공급망 게이트(SHA 고정 Action, ruleset, prepublishOnly)에 들인 노력의 마지막 조각이다.
+# 로컬 publish는 그 증명을 만들 수 없다(npm 문서: GitHub Actions/GitLab CI의 OIDC로만 생성).
+#
+# 실행 조건: `v*` 태그 push **만**. 태그를 미는 것 자체가 사람의 명시적 게시 결정이다(ruleset은
+# 브랜치만 보호하지만 이 저장소에 push 권한은 소유자뿐이다). 태그 이름은 package.json의 버전과 정확히
+# 일치해야 하고(아래 검증 step), 실제 게시 전 `prepublishOnly`(npm run check && npm run verify:pack —
+# 플래그 없음 = tarball audit fail-closed)가 자동으로 돈다. 즉 "태그 push → 전체 gate → 게시" 순서다.
+#
+# 인증 2단계(npm 문서 기준):
+#   1) 첫 게시(패키지가 아직 없음): repo secret `NPM_TOKEN`(npmjs.com granular access token,
+#      쓰기 권한을 이 패키지/scope로 한정, 2FA "automation" 허용)을 `NODE_AUTH_TOKEN`으로 쓴다.
+#      --provenance는 토큰 인증에서도 OIDC로 별도 생성된다(`id-token: write`).
+#   2) 첫 게시 뒤: npmjs.com 패키지 설정 → Trusted Publisher에 이 저장소(Trapa-Eureka/retail-mcp)와
+#      워크플로 파일명(release.yml), environment(npm-publish)를 등록하면 장기 토큰 없이 OIDC만으로
+#      게시된다(npm CLI 11.5.1+ 필요 — 그때 아래 "npm 버전 고정" step의 주석을 풀고 `NPM_TOKEN`
+#      secret과 `NODE_AUTH_TOKEN` 줄을 지운다). trusted publisher는 패키지 설정 화면에서 등록하므로
+#      패키지가 먼저 존재해야 한다 — 그래서 1)이 먼저다.
+#
+# 권한: 워크플로 전역은 `contents: read`(SR2-CI-001 원칙). `id-token: write`는 publish job에만 —
+# provenance 서명에 필요한 OIDC 토큰 발급 권한이고 저장소에 아무것도 쓰지 않는다.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+# 같은 태그로 두 번 돌 일은 없지만, 실수로 태그를 지웠다 다시 밀어도 동시에 두 게시가 겹치지 않게.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: npm publish --provenance
+    runs-on: ubuntu-latest # provenance는 GitHub 호스트 러너에서만 생성된다(self-hosted 불가).
+    # SR2-CI-003 원칙 — prepublishOnly가 check(≈3분) + verify:pack(≈10분)을 돌리므로 관측치 2배.
+    timeout-minutes: 40
+    # GitHub environment — 저장소 Settings → Environments → npm-publish에 "Required reviewers"를 켜면
+    # 태그 push 뒤 사람 승인이 한 번 더 들어간다(1인 저장소에서도 본인 승인 가능). 없으면 첫 실행 때
+    # 자동 생성되고 승인 없이 진행된다.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          # 릴리스 빌드는 캐시를 쓰지 않는다(npm 문서 권고) — 재현성.
+
+      # 2단계(trusted publishing)로 전환할 때 주석 해제: 러너의 npm 10.x는 OIDC 게시를 모른다.
+      # - run: npm install -g npm@11.6.2
+
+      - name: 태그가 package.json 버전과 일치하는지 확인
+        # `v0.1.0` 태그 ↔ `"version": "0.1.0"`. 다르면 게시하지 않는다 — 버전을 올리지 않고 태그만
+        # 민 실수, 또는 그 반대를 여기서 잡는다(npm은 같은 버전 재게시를 거부하지만 그 전에 막는다).
+        run: |
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "v${pkg_version}" ]; then
+            echo "::error::태그 ${GITHUB_REF_NAME} 가 package.json 버전 v${pkg_version} 과 다릅니다 — 게시하지 않습니다."
+            exit 1
+          fi
+          echo "게시 대상: $(node -p 'require("./package.json").name')@${pkg_version} (태그 ${GITHUB_REF_NAME})"
+
+      - run: npm ci
+
+      - name: npm publish --provenance (prepublishOnly가 check + verify:pack을 먼저 실행)
+        env:
+          # 1단계 인증 — 첫 게시 뒤 trusted publisher를 등록하면 이 두 줄과 secret을 지운다.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+
+      - name: 게시 확인(레지스트리에서 다시 읽기)
+        run: |
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          # 레지스트리 전파에 몇 초 걸릴 수 있어 짧게 재시도한다.
+          for i in 1 2 3 4 5 6; do
+            if npm view "${name}@${version}" version --json >/dev/null 2>&1; then
+              echo "레지스트리 확인: ${name}@${version}"
+              npm view "${name}@${version}" dist.tarball dist.integrity --json
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::게시 후 ${name}@${version} 를 레지스트리에서 읽지 못했습니다 — npmjs.com에서 직접 확인하세요."
+          exit 1
