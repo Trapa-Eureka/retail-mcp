@@ -11,16 +11,16 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
   });
 }
 
-describe("createLoyverseClient — 요청 형태 (LoyverseClient 계약)", () => {
-  it("listStores: Authorization 헤더 + 올바른 경로/쿼리로 요청하고 응답을 매핑한다", async () => {
+describe("createLoyverseClient — request shape (LoyverseClient contract)", () => {
+  it("listStores: requests with the Authorization header + correct path/query and maps the response", async () => {
     const fetchFn = vi
       .fn()
-      .mockResolvedValue(jsonResponse({ stores: [{ id: "s1", name: "본점" }] }));
+      .mockResolvedValue(jsonResponse({ stores: [{ id: "s1", name: "Main Store" }] }));
     const client = createLoyverseClient({ apiToken: "secret-token", fetchFn });
 
     const stores = await client.listStores();
 
-    expect(stores).toEqual([{ id: "s1", name: "본점" }]);
+    expect(stores).toEqual([{ id: "s1", name: "Main Store" }]);
     const call = fetchFn.mock.calls[0] as [string, RequestInit];
     const url = new URL(call[0]);
     expect(url.origin + url.pathname).toBe("https://api.loyverse.com/v1.0/stores");
@@ -29,7 +29,7 @@ describe("createLoyverseClient — 요청 형태 (LoyverseClient 계약)", () =>
     expect(headers["Authorization"]).toBe("Bearer secret-token");
   });
 
-  it("listItems: cursor 없으면 쿼리에 안 실리고, 있으면 그대로 실린다", async () => {
+  it("listItems: cursor is omitted from the query when absent and passed through as-is when present", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ items: [], cursor: "next-1" }))
@@ -46,7 +46,7 @@ describe("createLoyverseClient — 요청 형태 (LoyverseClient 계약)", () =>
     expect(url2.searchParams.get("cursor")).toBe("next-1");
   });
 
-  it("listReceipts: sinceISO를 updated_at_min 쿼리 파라미터로 보낸다", async () => {
+  it("listReceipts: sends sinceISO as the updated_at_min query parameter", async () => {
     const fetchFn = vi.fn().mockResolvedValue(jsonResponse({ receipts: [] }));
     const client = createLoyverseClient({ apiToken: "tok", fetchFn });
 
@@ -57,7 +57,7 @@ describe("createLoyverseClient — 요청 형태 (LoyverseClient 계약)", () =>
     expect(url.searchParams.get("updated_at_min")).toBe("2026-07-28T00:00:00.000Z");
   });
 
-  it("listInventory: 응답을 LvInventoryLevel[]로 매핑하고 updated_at을 보존한다", async () => {
+  it("listInventory: maps the response to LvInventoryLevel[] and preserves updated_at", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
       jsonResponse({
         inventory_levels: [
@@ -75,8 +75,8 @@ describe("createLoyverseClient — 요청 형태 (LoyverseClient 계약)", () =>
   });
 });
 
-describe("createLoyverseClient — 429/5xx 재시도", () => {
-  it("429 응답이면 지수 백오프로 재시도한 뒤 성공한다", async () => {
+describe("createLoyverseClient — 429/5xx retries", () => {
+  it("retries with exponential backoff on 429 and then succeeds", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(new Response(null, { status: 429 }))
@@ -95,7 +95,7 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
     expect(delays).toEqual([500, 1000]);
   });
 
-  it("429 응답의 Retry-After 헤더를 지수 백오프보다 우선한다", async () => {
+  it("prefers the Retry-After header of a 429 response over exponential backoff", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "Retry-After": "3" } }))
@@ -112,7 +112,7 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
     expect(delays).toEqual([3000]);
   });
 
-  it("5xx 응답도 재시도 대상이다", async () => {
+  it("5xx responses are retried too", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
@@ -125,16 +125,16 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("재시도 상한을 넘으면 명확한 에러로 중단한다 (무한 재시도 없음)", async () => {
+  it("stops with a clear error once the retry cap is exceeded (no infinite retries)", async () => {
     const fetchFn = vi.fn().mockResolvedValue(new Response(null, { status: 429 }));
     const sleepFn = vi.fn().mockResolvedValue(undefined);
 
     const client = createLoyverseClient({ apiToken: "tok", fetchFn, sleepFn, maxRetries: 2 });
-    await expect(client.listStores()).rejects.toThrow(/재시도/);
-    expect(fetchFn).toHaveBeenCalledTimes(3); // 최초 1회 + 재시도 2회
+    await expect(client.listStores()).rejects.toThrow(/retries/);
+    expect(fetchFn).toHaveBeenCalledTimes(3); // initial call + 2 retries
   });
 
-  it("400/404 등 비일시적 오류는 재시도하지 않는다", async () => {
+  it("non-transient errors such as 400/404 are not retried", async () => {
     const fetchFn = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
     const sleepFn = vi.fn().mockResolvedValue(undefined);
 
@@ -144,14 +144,14 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
     expect(sleepFn).not.toHaveBeenCalled();
   });
 
-  it("[fake timer] 기본 sleepFn(setTimeout 기반)으로도 백오프가 실제로 대기 후 재시도한다", async () => {
+  it("[fake timer] the default sleepFn (setTimeout based) also actually waits before retrying", async () => {
     vi.useFakeTimers();
     try {
       const fetchFn = vi
         .fn()
         .mockResolvedValueOnce(new Response(null, { status: 429 }))
         .mockResolvedValueOnce(jsonResponse({ stores: [] }));
-      // sleepFn을 주입하지 않는다 — 실제 프로덕션 경로(setTimeout 기반 defaultSleep)를 검증한다.
+      // sleepFn is not injected — this verifies the real production path (setTimeout-based defaultSleep).
       const client = createLoyverseClient({ apiToken: "tok", fetchFn });
 
       const promise = client.listStores();
@@ -166,8 +166,8 @@ describe("createLoyverseClient — 429/5xx 재시도", () => {
   });
 });
 
-describe("createLoyverseClient — 속도 제한 (Loyverse 공식 한도: 300 req/300초, DESIGN §10)", () => {
-  it("rateLimitMaxRequests를 넘는 요청은 sleepFn으로 대기한 뒤에야 fetchFn을 호출한다", async () => {
+describe("createLoyverseClient — rate limiting (official Loyverse limit: 300 req/300 s, DESIGN §10)", () => {
+  it("requests beyond rateLimitMaxRequests wait via sleepFn before fetchFn is called", async () => {
     const fetchFn = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ stores: [] })));
     let now = 0;
     const sleepFn = vi.fn().mockImplementation((ms: number) => {
@@ -184,16 +184,16 @@ describe("createLoyverseClient — 속도 제한 (Loyverse 공식 한도: 300 re
       rateLimitWindowMs: 1000,
     });
 
-    await client.listStores(); // 1번째
-    await client.listStores(); // 2번째 — 한도 도달, 아직 대기 없음
+    await client.listStores(); // 1st
+    await client.listStores(); // 2nd — limit reached, no wait yet
     expect(sleepFn).not.toHaveBeenCalled();
 
-    await client.listStores(); // 3번째 — 한도 초과, 대기해야 한다
+    await client.listStores(); // 3rd — over the limit, must wait
     expect(sleepFn).toHaveBeenCalled();
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
-  it("기본 속도제한(250/300초)은 일반적인 테스트 호출량에서는 대기를 유발하지 않는다", async () => {
+  it("the default rate limit (250/300 s) causes no waiting at typical test call volumes", async () => {
     const fetchFn = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ stores: [] })));
     const sleepFn = vi.fn().mockResolvedValue(undefined);
     const client = createLoyverseClient({ apiToken: "tok", fetchFn, sleepFn });
@@ -205,8 +205,8 @@ describe("createLoyverseClient — 속도 제한 (Loyverse 공식 한도: 300 re
   });
 });
 
-describe("createLoyverseClient — 시크릿 없는 에러 메시지", () => {
-  it("401 응답 시 토큰이나 원문 응답 본문 없이 문서화된 에러 코드만 포함한다", async () => {
+describe("createLoyverseClient — secret-free error messages", () => {
+  it("on a 401 response includes only the documented error code, without the token or raw response body", async () => {
     const fetchFn = vi
       .fn()
       .mockResolvedValue(
@@ -236,18 +236,18 @@ describe("createLoyverseClientFromEnv", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("LOYVERSE_API_TOKEN이 없으면 원인과 해결법이 담긴 에러를 던진다", () => {
+  it("throws an error with the cause and the fix when LOYVERSE_API_TOKEN is missing", () => {
     delete process.env["LOYVERSE_API_TOKEN"];
     expect(() => createLoyverseClientFromEnv()).toThrow(/LOYVERSE_API_TOKEN/);
   });
 
-  it("LOYVERSE_REQUEST_TIMEOUT_MS가 유효하지 않으면 명확한 에러를 던진다", () => {
+  it("throws a clear error when LOYVERSE_REQUEST_TIMEOUT_MS is invalid", () => {
     process.env["LOYVERSE_API_TOKEN"] = "tok";
     process.env["LOYVERSE_REQUEST_TIMEOUT_MS"] = "not-a-number";
     expect(() => createLoyverseClientFromEnv()).toThrow(/LOYVERSE_REQUEST_TIMEOUT_MS/);
   });
 
-  it("유효한 값이면 클라이언트를 만든다", () => {
+  it("creates the client when the values are valid", () => {
     process.env["LOYVERSE_API_TOKEN"] = "tok";
     process.env["LOYVERSE_REQUEST_TIMEOUT_MS"] = "5000";
     process.env["LOYVERSE_MAX_RETRIES"] = "3";
@@ -256,7 +256,7 @@ describe("createLoyverseClientFromEnv", () => {
     expect(() => createLoyverseClientFromEnv()).not.toThrow();
   });
 
-  it("LOYVERSE_RATE_LIMIT_MAX_REQUESTS가 유효하지 않으면 명확한 에러를 던진다", () => {
+  it("throws a clear error when LOYVERSE_RATE_LIMIT_MAX_REQUESTS is invalid", () => {
     process.env["LOYVERSE_API_TOKEN"] = "tok";
     process.env["LOYVERSE_RATE_LIMIT_MAX_REQUESTS"] = "0";
     expect(() => createLoyverseClientFromEnv()).toThrow(/LOYVERSE_RATE_LIMIT_MAX_REQUESTS/);

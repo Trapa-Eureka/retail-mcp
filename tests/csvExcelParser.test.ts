@@ -14,37 +14,37 @@ const FIXTURES_DIR = "tests/fixtures/csvExcel";
 const NOW = new Date("2026-09-03T00:00:00Z");
 
 describe("decodeFileBytes", () => {
-  it("UTF-8 파일을 UTF-8로 인식한다", async () => {
+  it("detects a UTF-8 file as UTF-8", async () => {
     const bytes = await readFile(`${FIXTURES_DIR}/inventory-utf8.csv`);
     const { text, encoding } = decodeFileBytes(bytes);
     expect(encoding).toBe("utf-8");
-    expect(text).toContain("코카콜라");
+    expect(text).toContain("Cola ½L");
   });
 
-  it("EUC-KR/CP949 파일을 euc-kr로 인식하고 올바르게 디코딩한다", async () => {
+  it("detects an EUC-KR/CP949 file as euc-kr and decodes it correctly", async () => {
     const bytes = await readFile(`${FIXTURES_DIR}/inventory-euckr.csv`);
     const { text, encoding } = decodeFileBytes(bytes);
     expect(encoding).toBe("euc-kr");
-    expect(text).toContain("코카콜라");
+    expect(text).toContain("Cola ½L");
   });
 
-  it("둘 다 아니면(깨진 바이트) 명시적 에러를 던진다(무음 mojibake 금지)", () => {
-    // UTF-8로도 EUC-KR로도 유효하지 않은 바이트 시퀀스.
+  it("throws an explicit error when it is neither (garbage bytes) (no silent mojibake)", () => {
+    // A byte sequence that is valid neither as UTF-8 nor as EUC-KR.
     const garbage = new Uint8Array([0xff, 0xfe, 0x00, 0x01, 0x80, 0x81]);
-    expect(() => decodeFileBytes(garbage)).toThrow(/인코딩/);
+    expect(() => decodeFileBytes(garbage)).toThrow(/encoding/);
   });
 });
 
 describe("parseInventoryFile", () => {
-  it("UTF-8 CSV 픽스처를 정상 파싱한다", async () => {
+  it("parses the UTF-8 CSV fixture", async () => {
     const result = await parseInventoryFile(`${FIXTURES_DIR}/inventory-utf8.csv`, NOW);
-    expect(result.stores.map((s) => s.id).sort()).toEqual(["마카티점", "본점"]);
-    expect(result.products.find((p) => p.variantId === "SKU-COLA")?.name).toBe("코카콜라 500ml");
+    expect(result.stores.map((s) => s.id).sort()).toEqual(["Main Store", "North Branch"]);
+    expect(result.products.find((p) => p.variantId === "SKU-COLA")?.name).toBe("Cola ½L");
     expect(result.inventory).toHaveLength(3);
-    // 본점/SKU-COLA는 판매이력 있음 → salesPeriodAgg에 존재.
+    // Main Store/SKU-COLA has sales history → present in salesPeriodAgg.
     expect(result.salesPeriodAgg).toEqual([
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-08-01"),
         periodEnd: new Date("2026-08-29"),
@@ -53,20 +53,22 @@ describe("parseInventoryFile", () => {
     ]);
   });
 
-  it("EUC-KR/CP949 CSV 픽스처를 정상 파싱한다(UTF-8과 동일한 결과)", async () => {
+  it("parses the EUC-KR/CP949 CSV fixture (same result as UTF-8)", async () => {
     const utf8Result = await parseInventoryFile(`${FIXTURES_DIR}/inventory-utf8.csv`, NOW);
     const eucKrResult = await parseInventoryFile(`${FIXTURES_DIR}/inventory-euckr.csv`, NOW);
     expect(eucKrResult).toEqual(utf8Result);
   });
 
-  it("XLSX 픽스처(네이티브 숫자/날짜 셀)를 정상 파싱한다", async () => {
+  it("parses the XLSX fixture (native number/date cells)", async () => {
     const result = await parseInventoryFile(`${FIXTURES_DIR}/inventory.xlsx`, NOW);
-    expect(result.stores.map((s) => s.id).sort()).toEqual(["마카티점", "본점"]);
-    const cola = result.inventory.find((r) => r.storeId === "본점" && r.variantId === "SKU-COLA");
+    expect(result.stores.map((s) => s.id).sort()).toEqual(["Main Store", "North Branch"]);
+    const cola = result.inventory.find(
+      (r) => r.storeId === "Main Store" && r.variantId === "SKU-COLA",
+    );
     expect(cola?.inStock).toBe("40");
     expect(result.salesPeriodAgg).toEqual([
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-08-01"),
         periodEnd: new Date("2026-08-29"),
@@ -75,12 +77,12 @@ describe("parseInventoryFile", () => {
     ]);
   });
 
-  it("지원하지 않는 확장자는 명시적으로 거부한다", async () => {
-    await expect(parseInventoryFile("inventory.txt", NOW)).rejects.toThrow(/지원하지 않는/);
+  it("explicitly rejects an unsupported extension", async () => {
+    await expect(parseInventoryFile("inventory.txt", NOW)).rejects.toThrow(/Unsupported/);
   });
 });
 
-describe("parseInventoryFile — 크기/행 수/셀 길이 상한(SEC-003, TASKS T32)", () => {
+describe("parseInventoryFile — size/row-count/cell-length limits (SEC-003, TASKS T32)", () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -91,57 +93,59 @@ describe("parseInventoryFile — 크기/행 수/셀 길이 상한(SEC-003, TASKS
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("CSV — 행 수가 상한을 넘으면 도메인 검증 전에 거부한다", async () => {
-    const header = "매장명,상품명,SKU,재고수량\n";
-    const rows = Array.from({ length: MAX_ROWS + 1 }, (_, i) => `본점,상품${i},SKU-${i},1`).join(
-      "\n",
-    );
+  it("CSV — rejects a row count over the limit before domain validation", async () => {
+    const header = "store,product,sku,stock_qty\n";
+    const rows = Array.from(
+      { length: MAX_ROWS + 1 },
+      (_, i) => `Main Store,Product ${i},SKU-${i},1`,
+    ).join("\n");
     const p = join(dir, "too-many-rows.csv");
     await writeFile(p, header + rows + "\n", "utf8");
-    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/행.*상한|상한.*행/);
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/rows.*limit|limit.*rows/);
   });
 
-  it("CSV — 셀 값이 상한보다 길면 거부한다", async () => {
+  it("CSV — rejects a cell value longer than the limit", async () => {
     const p = join(dir, "long-cell.csv");
     const longValue = "x".repeat(MAX_CELL_LENGTH + 1);
-    await writeFile(p, `매장명,상품명,SKU,재고수량\n본점,${longValue},SKU-1,1\n`, "utf8");
-    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/셀 값이 너무 깁니다/);
+    await writeFile(p, `store,product,sku,stock_qty\nMain Store,${longValue},SKU-1,1\n`, "utf8");
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/Cell value is too long/);
   });
 
-  it("XLSX — 상한을 넘는 대량 행을 거부한다(buffered 판정 — csvExcelParser.ts 문서의 잔여 위험 참고)", async () => {
+  it("XLSX — rejects a bulk of rows over the limit (buffered check — see the residual risk in the csvExcelParser.ts doc)", async () => {
     const p = join(dir, "too-many-rows.xlsx");
     const writer = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: p });
     const sheet = writer.addWorksheet("Sheet1");
-    sheet.addRow(["매장명", "상품명", "SKU", "재고수량"]).commit();
+    sheet.addRow(["store", "product", "sku", "stock_qty"]).commit();
     for (let i = 0; i < MAX_ROWS + 1; i++) {
-      sheet.addRow(["본점", `상품${i}`, `SKU-${i}`, 1]).commit();
+      sheet.addRow(["Main Store", `Product ${i}`, `SKU-${i}`, 1]).commit();
     }
     sheet.commit();
     await writer.commit();
 
-    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/행.*상한|상한.*행/);
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/rows.*limit|limit.*rows/);
   });
 
-  it("XLSX — 셀 값이 상한보다 길면 거부한다", async () => {
+  it("XLSX — rejects a cell value longer than the limit", async () => {
     const p = join(dir, "long-cell.xlsx");
     const writer = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: p });
     const sheet = writer.addWorksheet("Sheet1");
-    sheet.addRow(["매장명", "상품명", "SKU", "재고수량"]).commit();
-    sheet.addRow(["본점", "x".repeat(MAX_CELL_LENGTH + 1), "SKU-1", 1]).commit();
+    sheet.addRow(["store", "product", "sku", "stock_qty"]).commit();
+    sheet.addRow(["Main Store", "x".repeat(MAX_CELL_LENGTH + 1), "SKU-1", 1]).commit();
     sheet.commit();
     await writer.commit();
 
-    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/셀 값이 너무 깁니다/);
+    await expect(parseInventoryFile(p, NOW)).rejects.toThrow(/Cell value is too long/);
   });
 
-  it("XLSX — 컬럼은 있지만 셀이 빈 경우도 CSV처럼 명시적 clear(null)로 파싱된다(006 DATA-005, TASKS T33)", async () => {
-    // ExcelJS의 eachCell({includeEmpty:false})은 빈 셀을 아예 건너뛴다 — 헤더 프리시드
-    // 없이는 "컬럼이 파일에 없음"과 구분이 안 됐던 부분(parseExcelFile 문서 참고).
+  it("XLSX — a column that is present but has an empty cell is parsed as an explicit clear (null) just like CSV (006 DATA-005, TASKS T33)", async () => {
+    // ExcelJS's eachCell({includeEmpty:false}) skips empty cells entirely — without header
+    // pre-seeding this could not be told apart from "column not in file" (see the
+    // parseExcelFile doc).
     const p = join(dir, "blank-optional-cell.xlsx");
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Sheet1");
-    sheet.addRow(["매장명", "상품명", "SKU", "재고수량", "저재고임계치", "포장수량"]);
-    sheet.addRow(["본점", "코카콜라 500ml", "SKU-COLA", 40, null, null]); // 컬럼은 있지만 빈 셀.
+    sheet.addRow(["store", "product", "sku", "stock_qty", "low_stock_threshold", "pack_size"]);
+    sheet.addRow(["Main Store", "Cola 500ml", "SKU-COLA", 40, null, null]); // Column present but cell empty.
     await workbook.xlsx.writeFile(p);
 
     const result = await parseInventoryFile(p, NOW);
@@ -152,128 +156,135 @@ describe("parseInventoryFile — 크기/행 수/셀 길이 상한(SEC-003, TASKS
 
 describe("mapRowsToDomain", () => {
   const BASE_ROW = {
-    매장명: "본점",
-    상품명: "코카콜라 500ml",
-    SKU: "SKU-COLA",
-    재고수량: "40",
+    store: "Main Store",
+    product: "Cola 500ml",
+    sku: "SKU-COLA",
+    stock_qty: "40",
   };
 
-  it("빈 파일(행 없음)은 명시적으로 거부한다", () => {
-    expect(() => mapRowsToDomain([], NOW)).toThrow(/데이터 행이 없습니다/);
+  it("explicitly rejects an empty file (no rows)", () => {
+    expect(() => mapRowsToDomain([], NOW)).toThrow(/no data rows/);
   });
 
-  it("행 검증 실패를 모아서 하나의 에러로 던진다(부분 처리 없음)", () => {
-    const rows = [{ ...BASE_ROW, 재고수량: "40" }, { 상품명: "누락 매장" }];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/1개 행 오류/);
+  it("collects row validation failures into a single error (no partial processing)", () => {
+    const rows = [{ ...BASE_ROW, stock_qty: "40" }, { product: "missing store" }];
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/1 row error/);
   });
 
-  it("같은 파일 안에서 (매장명,SKU) 중복은 거부한다", () => {
+  it("rejects a duplicate (store, sku) within the same file", () => {
     const rows = [BASE_ROW, BASE_ROW];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/중복/);
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/duplicated/);
   });
 
-  it("같은 SKU가 다른 상품명으로 나오면 거부한다", () => {
-    const rows = [BASE_ROW, { ...BASE_ROW, 매장명: "마카티점", 상품명: "코카콜라 1.5L" }];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/상품명이 이전 행/);
+  it("rejects the same sku appearing with a different product name", () => {
+    const rows = [BASE_ROW, { ...BASE_ROW, store: "North Branch", product: "Cola 1.5L" }];
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(
+      /product name that differs from an earlier row/,
+    );
   });
 
-  it("같은 SKU가 다른 저재고임계치로 나오면 거부한다", () => {
+  it("rejects the same sku appearing with a different low_stock_threshold", () => {
     const rows = [
-      { ...BASE_ROW, 저재고임계치: "10" },
-      { ...BASE_ROW, 매장명: "마카티점", 저재고임계치: "5" },
+      { ...BASE_ROW, low_stock_threshold: "10" },
+      { ...BASE_ROW, store: "North Branch", low_stock_threshold: "5" },
     ];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/저재고임계치가 이전 행/);
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(
+      /low_stock_threshold that differs from an earlier row/,
+    );
   });
 
-  it("저재고임계치가 일관되면 products에 반영된다", () => {
+  it("reflects a consistent low_stock_threshold in products", () => {
     const rows = [
-      { ...BASE_ROW, 저재고임계치: "10" },
-      { ...BASE_ROW, 매장명: "마카티점", 저재고임계치: "10" },
+      { ...BASE_ROW, low_stock_threshold: "10" },
+      { ...BASE_ROW, store: "North Branch", low_stock_threshold: "10" },
     ];
     const result = mapRowsToDomain(rows, NOW);
     expect(result.products).toHaveLength(1);
     expect(result.products[0]?.lowStockThreshold).toBe("10");
   });
 
-  it("같은 SKU가 다른 포장수량(SPEC §14)으로 나오면 거부한다", () => {
+  it("rejects the same sku appearing with a different pack_size (SPEC §14)", () => {
     const rows = [
-      { ...BASE_ROW, 포장수량: "24" },
-      { ...BASE_ROW, 매장명: "마카티점", 포장수량: "12" },
+      { ...BASE_ROW, pack_size: "24" },
+      { ...BASE_ROW, store: "North Branch", pack_size: "12" },
     ];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/포장수량이 이전 행/);
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/pack_size that differs from an earlier row/);
   });
 
-  it("포장수량이 일관되면(또는 둘 다 생략되면) products에 반영된다", () => {
+  it("reflects pack_size in products when consistent (or when omitted in both)", () => {
     const withPackSize = mapRowsToDomain(
       [
-        { ...BASE_ROW, 포장수량: "24" },
-        { ...BASE_ROW, 매장명: "마카티점", 포장수량: "24" },
+        { ...BASE_ROW, pack_size: "24" },
+        { ...BASE_ROW, store: "North Branch", pack_size: "24" },
       ],
       NOW,
     );
     expect(withPackSize.products[0]?.packSize).toBe("24");
 
-    // BASE_ROW엔 포장수량 컬럼 자체가 없다 — "정보 없음"(undefined)이지 "비움"(null)이
-    // 아니다(006 DATA-005, TASKS T33). 컬럼이 있지만 셀만 비어 있는 경우는 아래 describe
-    // 참고.
+    // BASE_ROW has no pack_size column at all — that is "no information" (undefined), not
+    // "cleared" (null) (006 DATA-005, TASKS T33). For the column-present-but-cell-empty case
+    // see the describe below.
     const withoutPackSize = mapRowsToDomain([BASE_ROW], NOW);
     expect(withoutPackSize.products[0]?.packSize).toBeUndefined();
   });
 
-  it("판매이력 없는 행은 salesPeriodAgg에 들어가지 않는다(임계치 폴백 대상)", () => {
+  it("does not put rows without sales history into salesPeriodAgg (threshold fallback candidates)", () => {
     const result = mapRowsToDomain([BASE_ROW], NOW);
     expect(result.salesPeriodAgg).toEqual([]);
     expect(result.inventory).toEqual([
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
     ]);
   });
 
-  it("inventory의 updatedAt은 호출자가 준 now를 그대로 쓴다(Clock 주입)", () => {
+  it("uses the caller-provided now as inventory updatedAt (Clock injection)", () => {
     const customNow = new Date("2020-01-01T00:00:00Z");
     const result = mapRowsToDomain([BASE_ROW], customNow);
     expect(result.inventory[0]?.updatedAt).toBe(customNow);
   });
 });
 
-describe("mapRowsToDomain — nullable 필드 clear 계약(006 DATA-005, TASKS T33)", () => {
+describe("mapRowsToDomain — nullable field clear contract (006 DATA-005, TASKS T33)", () => {
   const BASE_ROW = {
-    매장명: "본점",
-    상품명: "코카콜라 500ml",
-    SKU: "SKU-COLA",
-    재고수량: "40",
+    store: "Main Store",
+    product: "Cola 500ml",
+    sku: "SKU-COLA",
+    stock_qty: "40",
   };
 
-  it("컬럼 자체가 없으면 undefined(정보 없음 — 하위 호환, 기존 값 유지 대상)", () => {
+  it("is undefined when the column itself is absent (no information — backward compatible, existing value kept)", () => {
     const result = mapRowsToDomain([BASE_ROW], NOW);
     expect(result.products[0]?.lowStockThreshold).toBeUndefined();
     expect(result.products[0]?.packSize).toBeUndefined();
   });
 
-  it("컬럼은 있지만 셀이 비어 있으면 null(명시적으로 지움)", () => {
-    const result = mapRowsToDomain([{ ...BASE_ROW, 저재고임계치: "", 포장수량: "" }], NOW);
+  it("is null when the column is present but the cell is empty (explicitly cleared)", () => {
+    const result = mapRowsToDomain([{ ...BASE_ROW, low_stock_threshold: "", pack_size: "" }], NOW);
     expect(result.products[0]?.lowStockThreshold).toBeNull();
     expect(result.products[0]?.packSize).toBeNull();
   });
 
-  it("컬럼이 있고 값이 있으면 그 값", () => {
-    const result = mapRowsToDomain([{ ...BASE_ROW, 저재고임계치: "10", 포장수량: "24" }], NOW);
+  it("is the value when the column is present and has a value", () => {
+    const result = mapRowsToDomain(
+      [{ ...BASE_ROW, low_stock_threshold: "10", pack_size: "24" }],
+      NOW,
+    );
     expect(result.products[0]?.lowStockThreshold).toBe("10");
     expect(result.products[0]?.packSize).toBe("24");
   });
 
-  it("같은 SKU의 두 행 중 하나는 컬럼 없음(undefined), 하나는 값이면 불일치로 거부한다", () => {
+  it("rejects as a mismatch when one of two rows for the same sku has the column absent (undefined) and the other has a value", () => {
     const rows = [
-      { ...BASE_ROW, 저재고임계치: "10" },
-      { ...BASE_ROW, 매장명: "마카티점" }, // 컬럼 없음 — undefined
+      { ...BASE_ROW, low_stock_threshold: "10" },
+      { ...BASE_ROW, store: "North Branch" }, // Column absent — undefined
     ];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/컬럼 없음/);
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/column absent/);
   });
 
-  it("같은 SKU의 두 행 중 하나는 명시적으로 비움(null), 하나는 값이면 불일치로 거부한다", () => {
+  it("rejects as a mismatch when one of two rows for the same sku is explicitly cleared (null) and the other has a value", () => {
     const rows = [
-      { ...BASE_ROW, 저재고임계치: "10" },
-      { ...BASE_ROW, 매장명: "마카티점", 저재고임계치: "" },
+      { ...BASE_ROW, low_stock_threshold: "10" },
+      { ...BASE_ROW, store: "North Branch", low_stock_threshold: "" },
     ];
-    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/비어 있음\(명시적으로 지움\)/);
+    expect(() => mapRowsToDomain(rows, NOW)).toThrow(/empty \(explicitly cleared\)/);
   });
 });

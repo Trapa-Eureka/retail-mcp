@@ -14,7 +14,7 @@ async function readJson(file: string): Promise<unknown> {
   return JSON.parse(await readFile(path.join(FIXTURES_DIR, file), "utf8")) as unknown;
 }
 
-describe("픽스처가 실제 Loyverse 응답 스키마(zod)로 파싱된다", () => {
+describe("fixtures parse with the real Loyverse response schemas (zod)", () => {
   it("stores.json", async () => {
     const parsed = LvStoresResponseSchema.parse(await readJson("stores.json"));
     expect(parsed.stores.length).toBe(2);
@@ -35,7 +35,7 @@ describe("픽스처가 실제 Loyverse 응답 스키마(zod)로 파싱된다", (
     expect(parsed.inventory_levels.length).toBe(16);
   });
 
-  it("스키마에 맞지 않는 응답은 에러를 던진다", () => {
+  it("a response that does not match the schema throws", () => {
     expect(() => LvStoresResponseSchema.parse({ stores: [{ id: "s1" }] })).toThrow();
   });
 });

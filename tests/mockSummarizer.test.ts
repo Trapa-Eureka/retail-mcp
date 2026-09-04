@@ -11,18 +11,18 @@ const REPORT: ReorderReport = {
 };
 
 describe("createMockSummarizer", () => {
-  it("기본적으로 고정 문자열을 반환한다", async () => {
+  it("returns a fixed string by default", async () => {
     const summarizer = createMockSummarizer();
     await expect(summarizer.summarize(REPORT)).resolves.toBeTypeOf("string");
   });
 
-  it("fixedText를 지정하면 그 값을 반환한다", async () => {
-    const summarizer = createMockSummarizer({ fixedText: "커스텀 요약" });
-    await expect(summarizer.summarize(REPORT)).resolves.toBe("커스텀 요약");
+  it("returns fixedText when specified", async () => {
+    const summarizer = createMockSummarizer({ fixedText: "Custom summary" });
+    await expect(summarizer.summarize(REPORT)).resolves.toBe("Custom summary");
   });
 
-  it("fail:true면 LLM 장애처럼 reject된다", async () => {
+  it("rejects like an LLM outage when fail:true", async () => {
     const summarizer = createMockSummarizer({ fail: true });
-    await expect(summarizer.summarize(REPORT)).rejects.toThrow(/장애/);
+    await expect(summarizer.summarize(REPORT)).rejects.toThrow(/outage/);
   });
 });

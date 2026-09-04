@@ -1,15 +1,17 @@
 /**
- * 구조화 로그 한 줄(007 OPS-005, TASKS T34) — 지금까지 CLI 진입점(agent/folderScan.ts,
- * agent/reorder.ts)은 사람이 읽는 문장 하나(`console.log("... run_id=${runId} ...")`)만
- * 남겼다 — 로그 수집기나 알림 스크립트가 실행 결과를 뽑아내려면 정규식으로 그 문장을
- * 파싱해야 했다(007 검수 지적: "구조화 로그 형식이 없다"). 이 모듈은 기존 사람이 읽는 로그를
- * 대체하지 않고, **한 줄 더 JSON으로도** 남긴다 — 최소 변경으로 파싱 가능한 신호를 추가한다.
+ * One structured log line (007 OPS-005, TASKS T34) — until now the CLI entry points
+ * (agent/folderScan.ts, agent/reorder.ts) left only a single human-readable sentence
+ * (`console.log("... run_id=${runId} ...")`) — a log collector or alerting script had to parse
+ * that sentence with a regex to extract the run result (review 007 finding: "no structured log
+ * format"). This module does not replace the existing human-readable log; it emits **one more
+ * line as JSON** — adding a parseable signal with minimal change.
  *
- * stdout에 쓴다 — MCP 서버(server.ts)는 stdout이 프로토콜 전용이라 이 함수를 쓰면 안 된다.
- * CLI 진입점(사람/cron이 실행, stdout이 순수 로그)에서만 쓴다.
+ * Writes to stdout — the MCP server (server.ts) must not use this function because its stdout
+ * is reserved for the protocol. Use it only from CLI entry points (run by a human/cron, stdout
+ * is pure log).
  */
 export interface StructuredLogEvent {
-  /** 이벤트 종류 — 로그를 필터링할 때 쓰는 안정적 문자열(예: "folder_scan_completed"). */
+  /** Event kind — a stable string used to filter logs (e.g. "folder_scan_completed"). */
   event: string;
   runId: string;
   status: string;

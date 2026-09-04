@@ -1,12 +1,13 @@
 /**
- * `DATABASE_URL` 대상 Postgres에 advisory lock으로 감싸 안전하게 마이그레이션을 적용/점검하는
- * 공용 로직 — `scripts/migrate.ts`(저장소 전용, 가드레일 5: "프로덕션 마이그레이션은 사람만")와
- * `src/cli/migrate.ts`(npm 배포 bin `retail-mcp-migrate`, 2차 적대적 검수 SR2-REL-001)가
- * 공유한다.
+ * Shared logic for safely applying/checking migrations against the `DATABASE_URL` Postgres,
+ * wrapped in an advisory lock — shared by `scripts/migrate.ts` (repository-only, guardrail 5:
+ * "production migrations are run by humans only") and `src/cli/migrate.ts` (npm-published bin
+ * `retail-mcp-migrate`, second adversarial review SR2-REL-001).
  *
- * 원래 pool 생성·client 확보·advisory lock 배선·정리는 `scripts/migrate.ts`에만 있었다 — 두
- * 진입점이 같은 lock key(MIGRATION_LOCK_KEY)로 같은 DB를 겨냥할 수 있는데, 그 값이 두 파일에
- * 따로 하드코딩돼 있으면 한쪽만 고치고 다른 쪽을 잊는 사고가 난다. 이 모듈로 한 곳에 모았다.
+ * Originally the pool creation, client acquisition, advisory lock wiring and cleanup lived only
+ * in `scripts/migrate.ts` — the two entry points may target the same DB with the same lock key
+ * (MIGRATION_LOCK_KEY), and if that value were hard-coded separately in two files, someone
+ * would fix one and forget the other. It is consolidated here in one place.
  */
 import { Pool, type PoolClient } from "pg";
 import { withAdvisoryLock } from "./advisoryLock.js";
@@ -19,11 +20,11 @@ import {
   type RunMigrationsResult,
 } from "./migrationRunner.js";
 
-/** 마이그레이션 실행 전용 advisory lock 키. 값 자체엔 의미가 없고 "고정되어 있고 다른 용도와
- * 우연히 겹치지 않을 만큼 임의적"이면 된다. */
+/** Advisory lock key dedicated to migration runs. The value itself has no meaning; it only
+ * needs to be "fixed, and arbitrary enough not to collide with other uses by accident". */
 export const MIGRATION_LOCK_KEY = 727_100_104;
 
-/** advisory lock으로 동시 실행을 막으며 대기 중인 마이그레이션을 전부 적용한다. */
+/** Applies all pending migrations while preventing concurrent runs with an advisory lock. */
 export async function applyMigrationsToDatabaseUrl(
   databaseUrl: string,
 ): Promise<RunMigrationsResult> {
@@ -41,8 +42,8 @@ export async function applyMigrationsToDatabaseUrl(
   }
 }
 
-/** 아무것도 적용하지 않고(읽기 전용) 대기 중인 마이그레이션 id만 확인한다 —
- * `retail-mcp-migrate`의 기본 dry-run 모드가 쓴다. */
+/** Applies nothing (read-only) and only checks the ids of pending migrations —
+ * used by the default dry-run mode of `retail-mcp-migrate`. */
 export async function checkPendingMigrationsForDatabaseUrl(
   databaseUrl: string,
 ): Promise<PendingMigrationsStatus> {

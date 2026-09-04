@@ -26,13 +26,13 @@ import type {
   StockRow,
 } from "../src/core/types.js";
 
-// TESTING.md §3 골든 케이스 — 손계산 값을 그대로 하드코딩한다.
-describe("골든 케이스 (TESTING.md §3)", () => {
-  it("30일 판매 60개, 기말재고 40 → 셀스루 = 0.60", () => {
+// TESTING.md §3 golden cases — hand-calculated values hard-coded as is.
+describe("golden cases (TESTING.md §3)", () => {
+  it("60 sold in 30 days, end stock 40 → sell-through = 0.60", () => {
     expect(sellThroughRatio(60, 40)).toBeCloseTo(0.6, 10);
   });
 
-  it("28일 판매 56개 → 일평균 2.0 / 재고 15 → 커버 7.5일 → 리드7+안전3=10 기준 위험", () => {
+  it("56 sold in 28 days → avg daily 2.0 / stock 15 → 7.5 days of cover → at risk against lead 7 + safety 3 = 10", () => {
     const avg = avgDailySales(56, 28);
     expect(avg).toBe(2.0);
     const cover = daysOfCover(15, avg);
@@ -40,11 +40,11 @@ describe("골든 케이스 (TESTING.md §3)", () => {
     expect(isStockoutRisk(cover, 7, 3)).toBe(true);
   });
 
-  it("목표커버 21일 → 제안량 = ceil(21×2.0 − 15) = 27", () => {
+  it("target cover 21 days → suggested qty = ceil(21×2.0 − 15) = 27", () => {
     expect(reorderQty(2.0, 15, 21)).toBe(27);
   });
 
-  it("판매 0 + 재고 20 → 일평균 0 → 커버 ∞(null) 표기, 위험 아님, 제안 0", () => {
+  it("0 sales + stock 20 → avg daily 0 → cover ∞ (null), not at risk, suggestion 0", () => {
     const avg = avgDailySales(0, 28);
     expect(avg).toBe(0);
     const cover = daysOfCover(20, avg);
@@ -53,18 +53,18 @@ describe("골든 케이스 (TESTING.md §3)", () => {
     expect(reorderQty(avg, 20, 21)).toBe(0);
   });
 
-  it("판매 0 + 재고 0 → 셀스루 null (신규/무재고 구분 표기)", () => {
+  it("0 sales + stock 0 → sell-through null (new item / no stock marker)", () => {
     expect(sellThroughRatio(0, 0)).toBeNull();
   });
 
-  it("환불 포함(판매 10, 환불 −2) → soldQty 8로 집계된다", () => {
-    // querySalesAgg가 이미 10 + (-2) = 8로 합산해 돌려준다(T4에서 검증) — 여기서는 그 값이
-    // 파이프라인을 거쳐 올바르게 쓰이는지 확인한다.
+  it("refunds included (10 sold, −2 refunded) → aggregated as soldQty 8", () => {
+    // querySalesAgg already returns 10 + (-2) = 8 summed (verified in T4) — here we check that the
+    // value is used correctly through the pipeline.
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "8" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "8" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "40", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "40", updatedAt: new Date() },
     ];
     const [row] = computeSellThrough(salesAgg, stock);
     expect(row?.soldQty).toBe(8);
@@ -72,40 +72,40 @@ describe("골든 케이스 (TESTING.md §3)", () => {
   });
 });
 
-describe("음수 정규화와 경고 (SPEC §9)", () => {
-  it("computeSellThrough: 환불 초과로 음수 순판매량이면 0으로 clamp하고 경고를 붙인다", () => {
+describe("negative normalisation and warnings (SPEC §9)", () => {
+  it("computeSellThrough: a negative net sold qty from excess refunds is clamped to 0 with a warning", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "-3" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "-3" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "10", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "10", updatedAt: new Date() },
     ];
     const [row] = computeSellThrough(salesAgg, stock);
     expect(row?.soldQtyRaw).toBe(-3);
     expect(row?.soldQty).toBe(0);
-    expect(row?.warnings.some((w) => w.includes("음수"))).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("negative"))).toBe(true);
   });
 
-  it("computeSellThrough: 음수 현재고는 0으로 clamp하고 경고를 붙이되 원시값은 보존한다", () => {
+  it("computeSellThrough: negative current stock is clamped to 0 with a warning, but the raw value is preserved", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "10" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "10" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "-5", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "-5", updatedAt: new Date() },
     ];
     const [row] = computeSellThrough(salesAgg, stock);
     expect(row?.endStockRaw).toBe(-5);
     expect(row?.endStock).toBe(0);
-    expect(row?.warnings.some((w) => w.includes("음수"))).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("negative"))).toBe(true);
     expect(row?.sellThrough).toBe(1); // soldQty=10, endStock=0 → 10/10
   });
 
-  it("computeReorderMetrics: 음수 재고/판매량 정규화가 daysOfCover·reorderQty에 반영된다", () => {
+  it("computeReorderMetrics: negative stock/sold qty normalisation is reflected in daysOfCover and reorderQty", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "-1" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "-1" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "-2", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "-2", updatedAt: new Date() },
     ];
     const [row] = computeReorderMetrics(salesAgg, stock, { windowDays: 28 });
     expect(row?.soldQty).toBe(0);
@@ -117,20 +117,20 @@ describe("음수 정규화와 경고 (SPEC §9)", () => {
   });
 });
 
-describe("computeSellThrough — 배열 파이프라인", () => {
-  it("(storeId, variantId)로 조인하고, 현재고 없는 품목은 재고 0으로 처리하며 경고를 남긴다", () => {
+describe("computeSellThrough — array pipeline", () => {
+  it("joins on (storeId, variantId); an item without current stock is treated as stock 0 with a warning", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목A", category: "cat", soldQtyRaw: "10" },
+      { storeId: "s1", variantId: "v1", name: "Item A", category: "cat", soldQtyRaw: "10" },
     ];
-    const stock: StockRow[] = []; // 재고 데이터 없음
+    const stock: StockRow[] = []; // no stock data
     const [row] = computeSellThrough(salesAgg, stock);
     expect(row?.endStock).toBe(0);
-    expect(row?.warnings.some((w) => w.includes("현재고 데이터가 없어"))).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("No current stock data"))).toBe(true);
   });
 
-  it("기간 내 판매가 0건이어도 현재고가 있으면 soldQty=0으로 포함된다 (판매0+재고20 골든 케이스)", () => {
+  it("an item with current stock but 0 sales in the period is included with soldQty=0 (0 sales + stock 20 golden case)", () => {
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목A", inStockRaw: "20", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item A", inStockRaw: "20", updatedAt: new Date() },
     ];
     const [row] = computeSellThrough([], stock);
     expect(row?.soldQty).toBe(0);
@@ -138,24 +138,24 @@ describe("computeSellThrough — 배열 파이프라인", () => {
     expect(row?.sellThrough).toBeCloseTo(0 / 20, 10);
   });
 
-  it("판매도 재고도 없으면 결과가 비어 있다", () => {
+  it("with neither sales nor stock the result is empty", () => {
     expect(computeSellThrough([], [])).toEqual([]);
   });
 });
 
-describe("computeReorderMetrics — 배열 파이프라인", () => {
-  it("판매만 있고 재고 데이터가 없는 품목도 포함한다(재고 0으로 처리)", () => {
+describe("computeReorderMetrics — array pipeline", () => {
+  it("includes an item with sales but no stock data (treated as stock 0)", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목A", category: "cat", soldQtyRaw: "28" },
+      { storeId: "s1", variantId: "v1", name: "Item A", category: "cat", soldQtyRaw: "28" },
     ];
     const [row] = computeReorderMetrics(salesAgg, [], { windowDays: 28 });
     expect(row?.avgDailySales).toBe(1);
     expect(row?.inStock).toBe(0);
   });
 
-  it("재고만 있고 판매 데이터가 없는 품목도 포함한다(판매 0으로 처리)", () => {
+  it("includes an item with stock but no sales data (treated as 0 sales)", () => {
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목A", inStockRaw: "20", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item A", inStockRaw: "20", updatedAt: new Date() },
     ];
     const [row] = computeReorderMetrics([], stock, { windowDays: 28 });
     expect(row?.avgDailySales).toBe(0);
@@ -163,12 +163,12 @@ describe("computeReorderMetrics — 배열 파이프라인", () => {
     expect(row?.inStock).toBe(20);
   });
 
-  it("옵션 기본값 — DESIGN §3 그대로(28/7/3/21)", () => {
+  it("option defaults — exactly DESIGN §3 (28/7/3/21)", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "56" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "56" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "15", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "15", updatedAt: new Date() },
     ];
     const [row] = computeReorderMetrics(salesAgg, stock);
     expect(row?.avgDailySales).toBe(2);
@@ -178,13 +178,13 @@ describe("computeReorderMetrics — 배열 파이프라인", () => {
   });
 });
 
-describe("소수·큰 numeric 값의 반올림 정책 (TESTING §7)", () => {
-  it("일평균판매·재고커버일수는 중간에 반올림하지 않고, 재주문량만 최종 ceil을 적용한다", () => {
+describe("rounding policy for fractional and large numeric values (TESTING §7)", () => {
+  it("avg daily sales and days of cover are not rounded midway; only the reorder qty gets the final ceil", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "65.7" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "65.7" },
     ];
     const stock: StockRow[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", inStockRaw: "44.276", updatedAt: new Date() },
+      { storeId: "s1", variantId: "v1", name: "Item", inStockRaw: "44.276", updatedAt: new Date() },
     ];
     const [row] = computeReorderMetrics(salesAgg, stock, { windowDays: 28, targetCoverDays: 21 });
     const expectedAvg = 65.7 / 28; // = 2.346428571...
@@ -195,23 +195,24 @@ describe("소수·큰 numeric 값의 반올림 정책 (TESTING §7)", () => {
     expect(row?.reorderQty).toBe(expectedReorderQty);
     expect(expectedReorderQty).toBe(5);
 
-    // avgDailySales를 중간에 소수 2자리로 반올림했다면(2.35) ceil 경계를 넘어 6이 나왔을
-    // 것이다 — 실제로는 5여야 한다(=중간 반올림이 없다는 증거를 ceil 경계 근처에서 확인).
+    // Had avgDailySales been rounded to 2 decimals midway (2.35), it would have crossed the ceil
+    // boundary and produced 6 — it must actually be 5 (= evidence near the ceil boundary that there
+    // is no intermediate rounding).
     const roundedAvg = Math.round(expectedAvg * 100) / 100;
     const reorderQtyIfRounded = Math.max(0, Math.ceil(21 * roundedAvg - 44.276));
     expect(reorderQtyIfRounded).toBe(6);
     expect(row?.reorderQty).not.toBe(reorderQtyIfRounded);
   });
 
-  it("큰 numeric 값(6자리 이상)도 정밀도 손실 없이 처리한다", () => {
+  it("large numeric values (6+ digits) are handled without precision loss", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "1234567.89" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "1234567.89" },
     ];
     const stock: StockRow[] = [
       {
         storeId: "s1",
         variantId: "v1",
-        name: "품목",
+        name: "Item",
         inStockRaw: "999999.5",
         updatedAt: new Date(),
       },
@@ -223,16 +224,16 @@ describe("소수·큰 numeric 값의 반올림 정책 (TESTING §7)", () => {
   });
 });
 
-describe("calendarWindow — 사업장 타임존 반개방 기간 경계 (Clock 주입, DESIGN §11.3)", () => {
-  it("Asia/Manila(UTC+8, DST 없음): 오늘 자정 경계가 정확하다", () => {
-    const clock = createFixedClock("2026-09-01T03:00:00Z"); // Manila 기준 09-01 11:00
+describe("calendarWindow — half-open period boundaries in the business timezone (Clock injected, DESIGN §11.3)", () => {
+  it("Asia/Manila (UTC+8, no DST): today's midnight boundary is exact", () => {
+    const clock = createFixedClock("2026-09-01T03:00:00Z"); // 09-01 11:00 Manila
     const { periodStart, periodEnd, timeZone } = calendarWindow(clock, 28, "Asia/Manila");
     expect(timeZone).toBe("Asia/Manila");
     expect(periodEnd.toISOString()).toBe("2026-08-31T16:00:00.000Z"); // Manila 09-01 00:00
-    expect(periodStart.toISOString()).toBe("2026-08-03T16:00:00.000Z"); // 28일 전, Manila 08-04 00:00
+    expect(periodStart.toISOString()).toBe("2026-08-03T16:00:00.000Z"); // 28 days earlier, Manila 08-04 00:00
   });
 
-  it("월말 경계: 창이 월을 넘어가도 달력일 수가 정확하다 (Manila, 최근 5일)", () => {
+  it("month boundary: the calendar-day count is exact even when the window crosses a month (Manila, last 5 days)", () => {
     const clock = createFixedClock("2026-09-02T01:00:00Z"); // Manila 09-02 09:00
     const { periodStart, periodEnd } = calendarWindow(clock, 5, "Asia/Manila");
     expect(periodEnd.toISOString()).toBe("2026-09-01T16:00:00.000Z"); // Manila 09-02 00:00
@@ -241,18 +242,18 @@ describe("calendarWindow — 사업장 타임존 반개방 기간 경계 (Clock 
     expect(diffDays).toBe(5);
   });
 
-  it("DST 경계(America/New_York, 2026-03-08 봄철 시간 변경)에도 자정 경계가 정확하다", () => {
-    // DST 시작 다음날 "오늘"을 기준으로 최근 3일 창을 요청 — 창 안에 전환일이 걸린다.
-    const clock = createFixedClock("2026-03-09T12:00:00Z"); // NY 기준 03-09 07:00(EDT, UTC-4)
+  it("midnight boundaries are exact even across a DST boundary (America/New_York, 2026-03-08 spring forward)", () => {
+    // Request a 3-day window with "today" the day after DST starts — the transition day falls inside the window.
+    const clock = createFixedClock("2026-03-09T12:00:00Z"); // NY 03-09 07:00 (EDT, UTC-4)
     const { periodStart, periodEnd } = calendarWindow(clock, 3, "America/New_York");
-    expect(periodEnd.toISOString()).toBe("2026-03-09T04:00:00.000Z"); // NY 03-09 00:00 EDT(UTC-4)
-    expect(periodStart.toISOString()).toBe("2026-03-06T05:00:00.000Z"); // NY 03-06 00:00 EST(UTC-5)
-    // 전환일(03-08)이 있어 실제 경과 시간은 정확히 72시간이 아니라 71시간(시간 변경 1시간 손실)이어야 한다.
+    expect(periodEnd.toISOString()).toBe("2026-03-09T04:00:00.000Z"); // NY 03-09 00:00 EDT (UTC-4)
+    expect(periodStart.toISOString()).toBe("2026-03-06T05:00:00.000Z"); // NY 03-06 00:00 EST (UTC-5)
+    // Because of the transition day (03-08) the actual elapsed time must be 71 hours, not exactly 72 (1 hour lost to the clock change).
     const diffHours = (periodEnd.getTime() - periodStart.getTime()) / 3_600_000;
     expect(diffHours).toBe(71);
   });
 
-  it("머신 로컬 타임존과 무관하게 결과가 같다 (Clock은 절대시각, 계산은 timeZone 인자로만 결정)", () => {
+  it("the result is independent of the machine's local timezone (Clock is an absolute instant; the calculation depends only on the timeZone argument)", () => {
     const clock = createFixedClock("2026-09-01T03:00:00Z");
     const a = calendarWindow(clock, 7, "Asia/Manila");
     const b = calendarWindow(clock, 7, "Asia/Manila");
@@ -260,31 +261,31 @@ describe("calendarWindow — 사업장 타임존 반개방 기간 경계 (Clock 
     expect(a.periodEnd.toISOString()).toBe(b.periodEnd.toISOString());
   });
 
-  it("windowDays가 0 이하면 명확한 에러를 던진다", () => {
+  it("throws a clear error when windowDays is 0 or less", () => {
     const clock = createFixedClock("2026-09-01T00:00:00Z");
     expect(() => calendarWindow(clock, 0, "Asia/Manila")).toThrow(/windowDays/);
   });
 });
 
-describe("경계값 유효성 검증", () => {
-  it("avgDailySales: windowDays<=0이면 명확한 에러를 던진다", () => {
+describe("boundary validation", () => {
+  it("avgDailySales: throws a clear error when windowDays<=0", () => {
     expect(() => avgDailySales(10, 0)).toThrow(/windowDays/);
     expect(() => avgDailySales(10, -1)).toThrow(/windowDays/);
   });
 
-  it("잘못된 numeric 문자열은 원인이 담긴 에러를 던진다", () => {
+  it("an invalid numeric string throws an error stating the cause", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "s1", variantId: "v1", name: "품목", category: null, soldQtyRaw: "not-a-number" },
+      { storeId: "s1", variantId: "v1", name: "Item", category: null, soldQtyRaw: "not-a-number" },
     ];
-    expect(() => computeSellThrough(salesAgg, [])).toThrow(/유효한 숫자/);
+    expect(() => computeSellThrough(salesAgg, [])).toThrow(/valid number/);
   });
 });
 
-describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", () => {
+describe("computeCsvReorderMetrics (CSV/Excel channel, SPEC §12, TASKS T17)", () => {
   const PRODUCT_COLA: ProductRow = {
     variantId: "SKU-COLA",
     itemId: "SKU-COLA",
-    name: "코카콜라 500ml",
+    name: "Cola 500ml",
     sku: "SKU-COLA",
     category: null,
     lowStockThreshold: "10",
@@ -295,20 +296,20 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     name: "Piattos",
     sku: "SKU-CHIPS",
     category: null,
-    // override 없음 — 전역 기본값을 써야 한다.
+    // no override — must use the global default.
   };
   const products = [PRODUCT_COLA, PRODUCT_CHIPS];
 
-  it("판매이력 있는 품목은 기존 §2 근사식 그대로다(28일 골든 케이스 회귀 없음)", () => {
+  it("items with sales history use the existing §2 approximations as is (no regression of the 28-day golden case)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
     ];
     const salesPeriodAgg: SalesPeriodAggRow[] = [
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-08-01T00:00:00Z"),
-        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28일
+        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28 days
         soldQty: "56",
       },
     ];
@@ -319,7 +320,7 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
 
     expect(row?.mode).toBe("history");
     const historyRow = row as CsvHistoryMetricRow;
-    // TESTING §3와 같은 골든 값: 28일 56개 → 일평균 2.0, 재고 15 → 커버 7.5일, 리드7+안전3=10 위험.
+    // Same golden values as TESTING §3: 56 in 28 days → avg daily 2.0, stock 15 → 7.5 days of cover, at risk against lead 7 + safety 3 = 10.
     expect(historyRow.avgDailySales).toBe(2.0);
     expect(historyRow.daysOfCover).toBe(7.5);
     expect(historyRow.stockoutRisk).toBe(true);
@@ -327,16 +328,16 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     expect(historyRow.sellThrough).toBeCloseTo(56 / (56 + 15), 10);
   });
 
-  it("CSV 기간 길이가 28일이 아니어도(35일) 실제 기간으로 avgDailySales가 정확히 나뉜다", () => {
+  it("even when the CSV period length is not 28 days (35), avgDailySales is divided by the actual period", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "50", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "50", updatedAt: new Date() },
     ];
     const salesPeriodAgg: SalesPeriodAggRow[] = [
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-07-01T00:00:00Z"),
-        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35일
+        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35 days
         soldQty: "105",
       },
     ];
@@ -345,28 +346,28 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
       defaultLowStockThreshold: 5,
     });
     const historyRow = row as CsvHistoryMetricRow;
-    // v0.1 기본값(28일)을 그대로 썼다면 105/28=3.75가 나왔을 것 — 실제 기간(35일)로는 3.0이어야 한다.
+    // Using the v0.1 default (28 days) as is would have given 105/28=3.75 — with the actual period (35 days) it must be 3.0.
     expect(historyRow.avgDailySales).toBe(3.0);
   });
 
-  it("한 파일 안에 기간 길이가 다른 품목이 섞여 있어도 각자 맞는 windowDays로 계산된다", () => {
+  it("items with different period lengths mixed in one file are each computed with their own windowDays", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
-      { storeId: "마카티점", variantId: "SKU-CHIPS", inStock: "20", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "15", updatedAt: new Date() },
+      { storeId: "South Branch", variantId: "SKU-CHIPS", inStock: "20", updatedAt: new Date() },
     ];
     const salesPeriodAgg: SalesPeriodAggRow[] = [
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-08-01T00:00:00Z"),
-        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28일
+        periodEnd: new Date("2026-08-29T00:00:00Z"), // 28 days
         soldQty: "56",
       },
       {
-        storeId: "마카티점",
+        storeId: "South Branch",
         variantId: "SKU-CHIPS",
         periodStart: new Date("2026-07-01T00:00:00Z"),
-        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35일
+        periodEnd: new Date("2026-08-05T00:00:00Z"), // 35 days
         soldQty: "105",
       },
     ];
@@ -378,12 +379,12 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     const cola = rows.find((r) => r.variantId === "SKU-COLA");
     const chips = rows.find((r) => r.variantId === "SKU-CHIPS");
     expect(cola?.avgDailySales).toBe(2.0); // 56/28
-    expect(chips?.avgDailySales).toBe(3.0); // 105/35 — 28일로 계산됐으면 3.75가 됐을 것.
+    expect(chips?.avgDailySales).toBe(3.0); // 105/35 — computed over 28 days it would have been 3.75.
   });
 
-  it("판매이력 없는 품목은 셀스루/재주문을 건너뛰고 임계치로만 판정한다(조용히 0 처리 안 함)", () => {
+  it("items without sales history skip sell-through/reorder and are judged by threshold only (no silent 0 treatment)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "2", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-CHIPS", inStock: "2", updatedAt: new Date() },
     ];
     const [row] = computeCsvReorderMetrics(inventory, [], products, {
       defaultLowStockThreshold: 5,
@@ -391,26 +392,26 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
 
     expect(row?.mode).toBe("no_history");
     const thresholdRow = row as CsvThresholdMetricRow;
-    // history 전용 필드(avgDailySales 등)가 아예 없어야 한다 — "조용히 0"이 아니라 다른 모양.
+    // History-only fields (avgDailySales etc.) must be absent entirely — a different shape, not a "silent 0".
     expect(thresholdRow).not.toHaveProperty("avgDailySales");
     expect(thresholdRow).not.toHaveProperty("sellThrough");
   });
 
-  it("임계치 판정: 품목별 override(10)가 전역 기본값(5)보다 우선한다", () => {
+  it("threshold judgement: the per-item override (10) takes precedence over the global default (5)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "8", updatedAt: new Date() }, // 8 < 10(override)
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "8", updatedAt: new Date() }, // 8 < 10 (override)
     ];
     const [row] = computeCsvReorderMetrics(inventory, [], products, {
-      defaultLowStockThreshold: 5, // 8 >= 5 였다면 전역 기본값만으론 안 걸렸을 값
+      defaultLowStockThreshold: 5, // 8 >= 5 — the global default alone would not have flagged it
     });
     const thresholdRow = row as CsvThresholdMetricRow;
     expect(thresholdRow.threshold).toBe(10);
     expect(thresholdRow.belowThreshold).toBe(true);
   });
 
-  it("임계치 판정: override가 없으면 전역 기본값을 쓴다", () => {
+  it("threshold judgement: without an override the global default is used", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "3", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-CHIPS", inStock: "3", updatedAt: new Date() },
     ];
     const [row] = computeCsvReorderMetrics(inventory, [], products, {
       defaultLowStockThreshold: 5,
@@ -420,9 +421,9 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     expect(thresholdRow.belowThreshold).toBe(true); // 3 < 5
   });
 
-  it("재고가 임계치 이상이면 belowThreshold=false다", () => {
+  it("belowThreshold=false when stock is at or above the threshold", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "9", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-CHIPS", inStock: "9", updatedAt: new Date() },
     ];
     const [row] = computeCsvReorderMetrics(inventory, [], products, {
       defaultLowStockThreshold: 5,
@@ -430,31 +431,38 @@ describe("computeCsvReorderMetrics (CSV/Excel 채널, SPEC §12, TASKS T17)", ()
     expect((row as CsvThresholdMetricRow).belowThreshold).toBe(false);
   });
 
-  it("음수 재고는 0으로 clamp하고 경고를 남긴다(임계치 폴백 경로에서도)", () => {
+  it("negative stock is clamped to 0 with a warning (also on the threshold fallback path)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "-3", updatedAt: new Date() },
+      { storeId: "Main Store", variantId: "SKU-CHIPS", inStock: "-3", updatedAt: new Date() },
     ];
     const [row] = computeCsvReorderMetrics(inventory, [], products, {
       defaultLowStockThreshold: 5,
     });
     const thresholdRow = row as CsvThresholdMetricRow;
     expect(thresholdRow.inStock).toBe(0);
-    expect(thresholdRow.warnings.some((w) => w.includes("음수"))).toBe(true);
+    expect(thresholdRow.warnings.some((w) => w.includes("negative"))).toBe(true);
   });
 });
 
-// SCM 시트 연동 재고 정합성/정통 셀스루 (SPEC §13) — P001 골든 숫자는 사용자가 제공한 실제
-// 샘플 구글시트("입출고내역"·"재고현황" 탭, 2026-09-03 확인)에서 그대로 가져왔다: 7월 입고
-// 30, 출고(판매) 21(=8+13), 재고현황 탭의 현재재고 9. 기초재고는 그 시트의 원장이 2026-07-01
-// 부터 시작하므로 0으로 둔다.
-describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케이스)", () => {
-  it("P001: 정통 셀스루 = 21/(0+30) = 0.7, 원장 예상재고와 실사재고가 일치(불일치 없음)", () => {
+// SCM sheet integration stock reconciliation / traditional sell-through (SPEC §13) — the P001 golden
+// numbers are taken as is from the real sample Google Sheet the user provided ("inbound/outbound"
+// and "stock status" tabs, checked 2026-09-03): July receipts 30, outbound (sales) 21 (=8+13),
+// current stock 9 on the stock status tab. Opening stock is 0 because that sheet's ledger starts on
+// 2026-07-01.
+describe("computeStockReconciliation (SPEC §13, real sample sheet golden cases)", () => {
+  it("P001: traditional sell-through = 21/(0+30) = 0.7; ledger expected stock matches the counted stock (no discrepancy)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P001", inStock: "9", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P001", inStock: "9", updatedAt: new Date() },
     ];
-    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P001", receivedQtyRaw: "30" }];
+    const purchases: PurchaseAgg[] = [{ storeId: "HQ", variantId: "P001", receivedQtyRaw: "30" }];
     const sales: SalesAgg[] = [
-      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "21" },
+      {
+        storeId: "HQ",
+        variantId: "P001",
+        name: "Wireless Mouse",
+        category: null,
+        soldQtyRaw: "21",
+      },
     ];
 
     const [row] = computeStockReconciliation(inventory, purchases, sales);
@@ -467,20 +475,21 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.warnings).toEqual([]);
   });
 
-  it("실사 재고가 원장 예상치와 다르면 discrepancy·hasDiscrepancy·경고로 드러난다(기초재고·기간이 확인된 경우)", () => {
-    // 원장상 예상재고는 9여야 하지만, 실사는 7 — 도난/파손/오차 등 2개 불일치. 기초재고를
-    // 알고(openingStock에 키 존재) 기간도 겹친다고 명시해야 이 경고가 나온다(006 DATA-006,
-    // TASKS T33) — 아래 "기초재고·기간을 모르면" 테스트가 그 반대 경우를 검증한다.
+  it("when the counted stock differs from the ledger expectation it shows up as discrepancy, hasDiscrepancy and a warning (opening stock and period confirmed)", () => {
+    // The ledger expects 9 but the count is 7 — a discrepancy of 2 (theft/damage/error etc.). The
+    // warning appears only when the opening stock is known (key present in openingStock) and the
+    // periods are stated to overlap (006 DATA-006, TASKS T33) — the "opening stock / period
+    // unknown" tests below verify the opposite case.
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P999", inStock: "7", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P999", inStock: "7", updatedAt: new Date() },
     ];
-    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P999", receivedQtyRaw: "30" }];
+    const purchases: PurchaseAgg[] = [{ storeId: "HQ", variantId: "P999", receivedQtyRaw: "30" }];
     const sales: SalesAgg[] = [
-      { storeId: "본사", variantId: "P999", name: "테스트 상품", category: null, soldQtyRaw: "21" },
+      { storeId: "HQ", variantId: "P999", name: "Test Product", category: null, soldQtyRaw: "21" },
     ];
 
     const [row] = computeStockReconciliation(inventory, purchases, sales, {
-      openingStock: { "본사:P999": 0 },
+      openingStock: { "HQ:P999": 0 },
       periodsOverlap: true,
     });
 
@@ -489,57 +498,57 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.discrepancy).toBe(-2);
     expect(row?.hasDiscrepancy).toBe(true);
     expect(row?.insufficientData).toBe(false);
-    expect(row?.warnings.some((w) => w.includes("다릅니다"))).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("differs"))).toBe(true);
   });
 
-  describe("insufficientData — 기초재고·기간 미확인 시 확정 경고를 내보내지 않는다(006 DATA-006, TASKS T33)", () => {
+  describe("insufficientData — no definitive warning when opening stock or period is unconfirmed (006 DATA-006, TASKS T33)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P999", inStock: "7", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P999", inStock: "7", updatedAt: new Date() },
     ];
-    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P999", receivedQtyRaw: "30" }];
+    const purchases: PurchaseAgg[] = [{ storeId: "HQ", variantId: "P999", receivedQtyRaw: "30" }];
     const sales: SalesAgg[] = [
-      { storeId: "본사", variantId: "P999", name: "테스트 상품", category: null, soldQtyRaw: "21" },
+      { storeId: "HQ", variantId: "P999", name: "Test Product", category: null, soldQtyRaw: "21" },
     ];
 
-    it("openingStock을 아예 안 주면(기본값) 모든 행이 insufficientData다", () => {
+    it("without any openingStock (default) every row is insufficientData", () => {
       const [row] = computeStockReconciliation(inventory, purchases, sales);
       expect(row?.insufficientData).toBe(true);
-      expect(row?.insufficientDataReasons.some((r) => r.includes("기초재고"))).toBe(true);
-      // discrepancy 숫자 자체는 참고용으로 여전히 계산돼 있다 — 완전히 숨기지 않는다.
+      expect(row?.insufficientDataReasons.some((r) => r.includes("opening stock"))).toBe(true);
+      // The discrepancy number itself is still computed for reference — not hidden completely.
       expect(row?.discrepancy).toBe(-2);
-      // 단, "도난·파손·실사오차"처럼 확정 원인을 단정하는 경고는 내보내지 않는다.
-      expect(row?.warnings.some((w) => w.includes("다릅니다"))).toBe(false);
+      // But no warning asserting a definitive cause such as "theft, damage or count error" is emitted.
+      expect(row?.warnings.some((w) => w.includes("differs"))).toBe(false);
     });
 
-    it("openingStock 키는 있지만 periodsOverlap이 false면 insufficientData다", () => {
+    it("with the openingStock key present but periodsOverlap false it is insufficientData", () => {
       const [row] = computeStockReconciliation(inventory, purchases, sales, {
-        openingStock: { "본사:P999": 0 },
+        openingStock: { "HQ:P999": 0 },
         periodsOverlap: false,
       });
       expect(row?.insufficientData).toBe(true);
-      expect(row?.insufficientDataReasons.some((r) => r.includes("기간"))).toBe(true);
-      expect(row?.insufficientDataReasons.some((r) => r.includes("기초재고"))).toBe(false);
+      expect(row?.insufficientDataReasons.some((r) => r.includes("period"))).toBe(true);
+      expect(row?.insufficientDataReasons.some((r) => r.includes("opening stock"))).toBe(false);
     });
 
-    it("openingStock 키가 있고 periodsOverlap이 true면 insufficientData가 아니다", () => {
+    it("with the openingStock key present and periodsOverlap true it is not insufficientData", () => {
       const [row] = computeStockReconciliation(inventory, purchases, sales, {
-        openingStock: { "본사:P999": 0 },
+        openingStock: { "HQ:P999": 0 },
         periodsOverlap: true,
       });
       expect(row?.insufficientData).toBe(false);
       expect(row?.insufficientDataReasons).toEqual([]);
     });
 
-    it("periodsOverlap을 생략하면(undefined) 그 이유만으로는 insufficientData가 되지 않는다", () => {
+    it("omitting periodsOverlap (undefined) does not by itself make it insufficientData", () => {
       const [row] = computeStockReconciliation(inventory, purchases, sales, {
-        openingStock: { "본사:P999": 0 },
+        openingStock: { "HQ:P999": 0 },
       });
       expect(row?.insufficientData).toBe(false);
     });
   });
 
-  describe("periodsOverlap (순수 함수, 006 DATA-006)", () => {
-    it("겹치는 구간은 true", () => {
+  describe("periodsOverlap (pure function, 006 DATA-006)", () => {
+    it("overlapping ranges are true", () => {
       expect(
         periodsOverlap(
           { start: new Date("2026-08-01"), end: new Date("2026-08-31") },
@@ -548,7 +557,7 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
       ).toBe(true);
     });
 
-    it("경계가 정확히 맞닿아도 겹침으로 본다(포함 경계)", () => {
+    it("ranges that exactly touch at the boundary count as overlapping (inclusive boundaries)", () => {
       expect(
         periodsOverlap(
           { start: new Date("2026-08-01"), end: new Date("2026-08-31") },
@@ -557,7 +566,7 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
       ).toBe(true);
     });
 
-    it("완전히 분리된 구간은 false", () => {
+    it("completely separate ranges are false", () => {
       expect(
         periodsOverlap(
           { start: new Date("2026-07-01"), end: new Date("2026-07-31") },
@@ -567,23 +576,23 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     });
   });
 
-  it("기초재고를 명시하면(openingStock) 정통 셀스루·예상재고 계산에 반영된다", () => {
+  it("an explicit opening stock (openingStock) is reflected in the traditional sell-through and expected stock", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P002", inStock: "35", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P002", inStock: "35", updatedAt: new Date() },
     ];
-    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P002", receivedQtyRaw: "20" }];
+    const purchases: PurchaseAgg[] = [{ storeId: "HQ", variantId: "P002", receivedQtyRaw: "20" }];
     const sales: SalesAgg[] = [
       {
-        storeId: "본사",
+        storeId: "HQ",
         variantId: "P002",
-        name: "저소음 키보드",
+        name: "Silent Keyboard",
         category: null,
         soldQtyRaw: "5",
       },
     ];
 
     const [row] = computeStockReconciliation(inventory, purchases, sales, {
-      openingStock: { "본사:P002": 20 },
+      openingStock: { "HQ:P002": 20 },
     });
 
     expect(row?.openingStock).toBe(20);
@@ -592,9 +601,9 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.discrepancy).toBe(0);
   });
 
-  it("입고·판매 둘 다 0이면(분모 0) 정통 셀스루는 null이다", () => {
+  it("with both receipts and sales 0 (denominator 0) the traditional sell-through is null", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P005", inStock: "0", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P005", inStock: "0", updatedAt: new Date() },
     ];
     const [row] = computeStockReconciliation(inventory, [], []);
     expect(row?.sellThroughTraditional).toBeNull();
@@ -602,46 +611,53 @@ describe("computeStockReconciliation (SPEC §13, 실제 샘플 시트 골든 케
     expect(row?.discrepancy).toBe(0);
   });
 
-  it("실사 재고 데이터가 없으면 actualStock/discrepancy는 null이고 경고를 남긴다", () => {
-    const purchases: PurchaseAgg[] = [{ storeId: "본사", variantId: "P003", receivedQtyRaw: "15" }];
+  it("without counted stock data, actualStock/discrepancy are null and a warning is left", () => {
+    const purchases: PurchaseAgg[] = [{ storeId: "HQ", variantId: "P003", receivedQtyRaw: "15" }];
     const [row] = computeStockReconciliation([], purchases, []);
     expect(row?.actualStock).toBeNull();
     expect(row?.discrepancy).toBeNull();
-    expect(row?.hasDiscrepancy).toBe(false); // null은 불일치로 표시하지 않는다(대사 불가와 구분).
-    expect(row?.warnings.some((w) => w.includes("대사할 수 없습니다"))).toBe(true);
+    expect(row?.hasDiscrepancy).toBe(false); // null is not flagged as a discrepancy (distinct from "cannot reconcile").
+    expect(row?.warnings.some((w) => w.includes("cannot reconcile"))).toBe(true);
   });
 
-  it("환불이 판매를 초과해 순판매량이 음수면 0으로 계산하고 경고를 남긴다", () => {
+  it("when refunds exceed sales and net sold qty is negative, 0 is used with a warning", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본사", variantId: "P001", inStock: "5", updatedAt: new Date() },
+      { storeId: "HQ", variantId: "P001", inStock: "5", updatedAt: new Date() },
     ];
     const sales: SalesAgg[] = [
-      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "-3" },
+      {
+        storeId: "HQ",
+        variantId: "P001",
+        name: "Wireless Mouse",
+        category: null,
+        soldQtyRaw: "-3",
+      },
     ];
     const [row] = computeStockReconciliation(inventory, [], sales);
     expect(row?.soldQtyRaw).toBe(-3);
     expect(row?.soldQty).toBe(0);
-    expect(row?.warnings.some((w) => w.includes("환불"))).toBe(true);
+    expect(row?.warnings.some((w) => w.includes("Refunds"))).toBe(true);
   });
 });
 
-// 팩 단위 반올림(SPEC §14) — 사용자가 제공한 실제 샘플 시트("상품목록"의 포장수량(팩사이즈)
-// 컬럼 + "재고현황"의 계산 제안량/최종 발주량/발주 팩수 컬럼, 2026-09-03 확인)의 값을 그대로
-// 가져왔다. 시트가 이미 `최종 발주량 = ⌈계산 제안량÷포장수량⌉×포장수량`을 미리 계산해뒀으므로,
-// (계산 제안량, 포장수량) → (최종 발주량, 발주 팩수) 그대로를 golden case로 쓴다.
-describe("roundToPackMultiple (SPEC §14, 실제 샘플 시트 골든 케이스)", () => {
+// Pack-multiple rounding (SPEC §14) — values taken as is from the real sample sheet the user provided
+// (the pack size column of "product list" + the computed suggestion / final order qty / packs to
+// order columns of "stock status", checked 2026-09-03). The sheet already pre-computes
+// `final order qty = ⌈computed suggestion ÷ pack size⌉ × pack size`, so
+// (computed suggestion, pack size) → (final order qty, packs) is used directly as the golden case.
+describe("roundToPackMultiple (SPEC §14, real sample sheet golden cases)", () => {
   it.each([
-    // [상품코드, 계산 제안량, 포장수량, 최종 발주량, 발주 팩수]
+    // [product code, computed suggestion, pack size, final order qty, packs to order]
     ["P001", 27, 24, 48, 2],
     ["P002", 3, 12, 12, 1],
     ["P003", 19, 10, 20, 2],
     ["P004", 11, 6, 12, 2],
     ["P005", 11, 4, 12, 3],
     ["P006", 3, 12, 12, 1],
-    ["P007", 20, 20, 20, 1], // 포장수량의 정확한 배수 — 올림해도 그대로.
+    ["P007", 20, 20, 20, 1], // an exact multiple of the pack size — unchanged by rounding up.
     ["P008", 14, 10, 20, 2],
   ] as const)(
-    "%s: 제안량 %d개, 포장수량 %d → 최종 발주량 %d(%d팩)",
+    "%s: suggested %d, pack size %d → final order qty %d (%d packs)",
     (_code, calcQty, packSize, expectedFinalQty, expectedPackCount) => {
       const result = roundToPackMultiple(calcQty, packSize);
       expect(result.finalOrderQty).toBe(expectedFinalQty);
@@ -649,64 +665,70 @@ describe("roundToPackMultiple (SPEC §14, 실제 샘플 시트 골든 케이스)
     },
   );
 
-  it("packSize가 없으면(낱개 매입 가능) 반올림하지 않고 packCount는 null이다", () => {
+  it("without packSize (single units can be purchased) nothing is rounded and packCount is null", () => {
     expect(roundToPackMultiple(27, null)).toEqual({ finalOrderQty: 27, packCount: null });
     expect(roundToPackMultiple(27, undefined)).toEqual({ finalOrderQty: 27, packCount: null });
   });
 
-  it("제안량이 0이면 팩도 0개 — packSize가 있어도 1팩으로 반올림하지 않는다", () => {
+  it("a suggestion of 0 means 0 packs — not rounded up to 1 pack even with a packSize", () => {
     expect(roundToPackMultiple(0, 24)).toEqual({ finalOrderQty: 0, packCount: 0 });
   });
 
-  it("packSize가 0 이하면 명확한 에러를 던진다", () => {
+  it("throws a clear error when packSize is 0 or less", () => {
     expect(() => roundToPackMultiple(10, 0)).toThrow(/packSize/);
     expect(() => roundToPackMultiple(10, -5)).toThrow(/packSize/);
   });
 });
 
-describe("applyPackRounding — computeReorderMetrics 결과에 포장수량을 조인해 감싼다", () => {
-  it("ProductRow.packSize가 있으면 반올림하고, 없으면 원래 reorderQty를 그대로 둔다", () => {
+describe("applyPackRounding — wraps computeReorderMetrics results by joining the pack size", () => {
+  it("rounds when ProductRow.packSize exists, otherwise leaves the original reorderQty as is", () => {
     const salesAgg: SalesAgg[] = [
-      { storeId: "본사", variantId: "P001", name: "무선 마우스", category: null, soldQtyRaw: "36" },
       {
-        storeId: "본사",
+        storeId: "HQ",
+        variantId: "P001",
+        name: "Wireless Mouse",
+        category: null,
+        soldQtyRaw: "36",
+      },
+      {
+        storeId: "HQ",
         variantId: "P002",
-        name: "저소음 키보드",
+        name: "Silent Keyboard",
         category: null,
         soldQtyRaw: "0",
       },
     ];
     const stock: StockRow[] = [
       {
-        storeId: "본사",
+        storeId: "HQ",
         variantId: "P001",
-        name: "무선 마우스",
+        name: "Wireless Mouse",
         inStockRaw: "9",
         updatedAt: new Date(),
       },
       {
-        storeId: "본사",
+        storeId: "HQ",
         variantId: "P002",
-        name: "저소음 키보드",
+        name: "Silent Keyboard",
         inStockRaw: "5",
         updatedAt: new Date(),
       },
     ];
-    // windowDays=1로 두면 avgDailySales=soldQtyRaw 그대로라, targetCoverDays=1일 때
-    // reorderQty = max(0, ceil(1*36 - 9)) = 27 — 시트의 P001 계산 제안량과 정확히 같다.
+    // With windowDays=1, avgDailySales equals soldQtyRaw, so with targetCoverDays=1
+    // reorderQty = max(0, ceil(1*36 - 9)) = 27 — exactly the sheet's computed suggestion for P001.
     const rows = computeReorderMetrics(salesAgg, stock, { windowDays: 1, targetCoverDays: 1 });
 
     const products: ProductRow[] = [
       {
         variantId: "P001",
         itemId: "P001",
-        name: "무선 마우스",
+        name: "Wireless Mouse",
         sku: "P001",
         category: null,
         packSize: "24",
       },
-      // P002는 packSize 없음 — 낱개 매입.
-      { variantId: "P002", itemId: "P002", name: "저소음 키보드", sku: "P002", category: null },
+      // P002 has no packSize — single-unit purchase.
+      { variantId: "P002", itemId: "P002", name: "Silent Keyboard", sku: "P002", category: null },
     ];
 
     const rounded = applyPackRounding(rows, products);
@@ -719,19 +741,19 @@ describe("applyPackRounding — computeReorderMetrics 결과에 포장수량을 
 
     expect(p002?.packSize).toBeNull();
     expect(p002?.packCount).toBeNull();
-    expect(p002?.finalOrderQty).toBe(p002?.reorderQty); // packSize 없으니 그대로.
+    expect(p002?.finalOrderQty).toBe(p002?.reorderQty); // no packSize, so unchanged.
 
-    // ReorderMetricRow의 기존 필드도 그대로 보존된다(감싸기만 했지 원본을 바꾸지 않았다).
+    // The existing ReorderMetricRow fields are preserved as is (only wrapped, the original untouched).
     expect(p001?.avgDailySales).toBe(36);
     expect(p001?.stockoutRisk).toBe(rows.find((r) => r.variantId === "P001")?.stockoutRisk);
   });
 
-  it("Warehouse에 없는(products 목록에 없는) variantId는 packSize null로 처리한다", () => {
+  it("a variantId not in the Warehouse (absent from the products list) is treated as packSize null", () => {
     const salesAgg: SalesAgg[] = [
       {
-        storeId: "본사",
+        storeId: "HQ",
         variantId: "UNKNOWN",
-        name: "미등록 상품",
+        name: "Unregistered Product",
         category: null,
         soldQtyRaw: "10",
       },

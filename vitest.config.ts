@@ -1,7 +1,7 @@
 import { defaultExclude, defineConfig } from "vitest/config";
 
-// vitest.config.ts는 실행마다 새로 평가되는 일반 JS라 --coverage 여부를 process.argv로
-// 직접 판정할 수 있다(별도 env var/스크립트 변경 불필요).
+// vitest.config.ts is plain JS re-evaluated on every run, so whether --coverage is on can be
+// determined directly from process.argv (no separate env var or script change needed).
 const coverageEnabled = process.argv.includes("--coverage");
 
 export default defineConfig({
@@ -9,38 +9,41 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     exclude: [
       ...defaultExclude,
-      // tests/component/**는 실 Postgres가 필요한 별도 스위트다(QA-004, TASKS T35,
-      // vitest.component.config.ts + `npm run test:pg-component` 전용) — 기본 게이트(가드레일
-      // 2: 테스트 네트워크 호출 0건)에서 명시적으로 제외한다. skipIf로도 안전하지만(실행은
-      // 되되 스킵됨), exclude로 애초에 이 파일 자체를 보지 않게 하는 게 "기본 게이트는 이
-      // 디렉터리를 아예 모른다"는 의도를 정확히 반영한다.
+      // tests/component/** is a separate suite that needs a real Postgres (QA-004, TASKS T35,
+      // vitest.component.config.ts + `npm run test:pg-component` only) — explicitly excluded from
+      // the default gate (guardrail 2: zero network calls in tests). skipIf would also be safe (the
+      // file runs but is skipped), but excluding it so the file is never even looked at reflects the
+      // intent "the default gate does not know this directory exists at all" exactly.
       "tests/component/**",
-      // performance.test.ts의 wall-clock 예산은 v8 coverage 계측 오버헤드와 근본적으로 안
-      // 맞는다 — CI(coverage job)에서 실측 반복 실패(6567ms/5463ms 등, TASKS T36)를 보고
-      // 확정. 성능 가드 자체는 계측 없는 `test` job(plain `vitest run`)이 매 PR 여전히
-      // 강제한다 — 여기서 빼는 건 "가드를 느슨하게 한다"가 아니라 "가드를 재는 도구에서
-      // 잰다"는 뜻이다(계측된 실행 시간으로 wall-clock 예산을 재는 게 애초에 잘못된 측정).
-      // (예산 값 자체(BUDGET_MS)도 coverage와 무관하게 5초→10초로 올렸다 — 2차 적대적 검수
-      // 대응, tests/performance.test.ts 주석 참고. 계측 제외는 그것과 별개로 여전히 유효하다.)
+      // The wall-clock budget in performance.test.ts is fundamentally incompatible with the v8
+      // coverage instrumentation overhead — confirmed after repeated real failures in CI (coverage
+      // job) (6567ms/5463ms etc., TASKS T36). The performance guard itself is still enforced on
+      // every PR by the uninstrumented `test` job (plain `vitest run`) — removing it here is not
+      // "loosening the guard" but "measuring the guard with the right tool" (measuring a wall-clock
+      // budget on an instrumented run was a wrong measurement to begin with).
+      // (The budget value itself (BUDGET_MS) was also raised from 5s to 10s independently of
+      // coverage — second adversarial review response, see the comment in tests/performance.test.ts.
+      // The instrumentation exclusion remains valid separately from that.)
       ...(coverageEnabled ? ["tests/performance.test.ts"] : []),
     ],
-    // PGlite(인프로세스 Postgres) 기동이 CI/공유 CPU 환경에서 기본 5000ms를 넘기는 경우가
-    // 실측됐다(특히 --coverage의 v8 계측 오버헤드와 겹칠 때) — 여유 있게 20초로 늘린다.
-    // 50k행 성능 가드 자체는 이 값과 별개로 테스트 안에서 자체 BUDGET_MS(10초)를 직접
-    // assert한다.
+    // PGlite (in-process Postgres) startup has been observed to exceed the default 5000ms in
+    // CI/shared-CPU environments (especially when overlapping with --coverage's v8 instrumentation
+    // overhead) — raised to a generous 20 seconds. The 50k-row performance guard itself asserts its
+    // own BUDGET_MS (10 seconds) directly inside the test, independent of this value.
     testTimeout: 20_000,
-    // hookTimeout도 같은 값으로 맞춘다 — PGlite 기동(`createTestWarehouse()`)은 대부분의
-    // 스위트에서 `beforeEach` **hook** 안에서 일어나므로 testTimeout이 아니라 hookTimeout
-    // (기본 10초)이 적용된다. 위에서 testTimeout만 올렸을 때 같은 원인의 플레이크가 hook 쪽에
-    // 그대로 남아 있었다 — 로컬 병렬 부하 중 무관한 스위트 3개가 "Hook timed out in 10000ms"
-    // (reorderAgent/mcpTools 등, 전부 createTestWarehouse 줄)로 실패했고 격리 재실행은 통과
-    // (2차 적대적 검수 SR2-MAIL-002 작업 중 관측, 2026-09-04).
+    // hookTimeout is set to the same value — PGlite startup (`createTestWarehouse()`) happens inside
+    // a `beforeEach` **hook** in most suites, so hookTimeout (default 10 seconds) applies rather than
+    // testTimeout. When only testTimeout was raised above, the same flake remained on the hook side
+    // — under local parallel load three unrelated suites failed with "Hook timed out in 10000ms"
+    // (reorderAgent/mcpTools etc., all on the createTestWarehouse line) and passed when re-run in
+    // isolation (observed during second adversarial review SR2-MAIL-002 work, 2026-09-04).
     hookTimeout: 20_000,
     coverage: {
       provider: "v8",
-      // core 전용이던 범위를 QA-003(008 검수, TASKS T35)에 맞춰 확장한다 — publish/보안상
-      // 중요한 IO 경계(explore_sql, warehouseFactory, provider, CLI 진입점)에도 강제 기준을
-      // 둔다. src/etl·src/mocks는 core 순수 로직이 아니라 오케스트레이션/테스트 헬퍼라 제외.
+      // The scope, previously core only, is widened per QA-003 (008 review, TASKS T35) — enforced
+      // thresholds also on the IO boundaries that matter for publish/security (explore_sql,
+      // warehouseFactory, provider, CLI entry points). src/etl and src/mocks are excluded because
+      // they are orchestration/test helpers, not core pure logic.
       include: [
         "src/core/**/*.ts",
         "src/adapters/**/*.ts",
@@ -49,11 +52,12 @@ export default defineConfig({
         "src/cli/**/*.ts",
       ],
       reporter: ["text", "html", "json-summary"],
-      // 전역 기준(plain key)은 include 전체를 합산한 바닥선이고, glob 키는 그 하위집합에
-      // 개별로 적용된다(둘 다 동시에 만족해야 함) — Vitest coverage.thresholds 문서의
-      // "Thresholds for utilities" 패턴. 숫자는 현재 실측치(TASKS T35 측정, 2026-09-03)에서
-      // 약간의 여유만 두고 잡았다 — "지금 수준 아래로 못 내려간다"는 회귀 방지가 목적이지
-      // 이상적인 목표치가 아니다. core는 기존 기준(90/90/90/85)을 그대로 유지한다.
+      // The global thresholds (plain keys) are the floor over the whole include set, and the glob
+      // keys apply individually to their subsets (both must be satisfied at the same time) — the
+      // "Thresholds for utilities" pattern from the Vitest coverage.thresholds docs. The numbers are
+      // the current measured values (measured in TASKS T35, 2026-09-03) with only a little slack —
+      // the goal is regression prevention ("cannot drop below the current level"), not an ideal
+      // target. core keeps its existing thresholds (90/90/90/85) unchanged.
       thresholds: {
         statements: 80,
         branches: 65,
@@ -61,23 +65,23 @@ export default defineConfig({
         lines: 80,
         "src/core/**/*.ts": { statements: 90, branches: 85, functions: 90, lines: 90 },
         "src/adapters/**/*.ts": { statements: 80, branches: 65, functions: 80, lines: 85 },
-        // explore_sql은 가드레일 4가 사전 승인한 유일한 임의 SQL 실행 경로라 별도로 더 높게
-        // 잡는다(SEC-001/002 회귀 방지, docs/005).
+        // explore_sql is the only arbitrary-SQL execution path pre-approved by guardrail 4, so it
+        // gets a separate, higher bar (SEC-001/002 regression prevention, docs/005).
         "src/adapters/exploreSqlExecutor.ts": {
           statements: 90,
           branches: 80,
           functions: 95,
           lines: 90,
         },
-        // db.close()/lock.release() 이중 실패 처리(OPS-001)가 있는 파일 — 회귀 시 소리 없이
-        // 락이 안 풀리는 사고로 이어진다.
+        // The file with the db.close()/lock.release() double-failure handling (OPS-001) — a
+        // regression leads to the lock silently never being released.
         "src/adapters/warehouseFactory.ts": {
           statements: 80,
           branches: 70,
           functions: 95,
           lines: 80,
         },
-        // Idempotency-Key/AmbiguousSendError(OPS-004) 분기가 있는 유일한 발송 어댑터.
+        // The only send adapter with the Idempotency-Key/AmbiguousSendError (OPS-004) branches.
         "src/adapters/resendProvider.ts": {
           statements: 90,
           branches: 85,

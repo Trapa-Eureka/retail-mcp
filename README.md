@@ -48,11 +48,12 @@ The questions come in this order.
 
 1. **Mode** — enter `branch` (a single branch). For `consolidated`, which combines multiple branches, see "Consolidating Multiple Branches" below.
 2. **DB connection string** — just press Enter (leave empty). The embedded DB on your own computer is then used.
-3. **Folder to watch** — the folder where you will put inventory files. Example: `~/retail-mcp/watch`. It is created if it does not exist.
-4. **Snapshot folder** — the folder where the tool writes its result files. It must be a **different** folder from the watch folder. Example: `~/retail-mcp/snapshot`.
-5. **Default low-stock threshold** — products with no sales history are flagged when their stock is at or below this quantity. If unsure, press Enter (default 5).
-6. **Email to receive alerts** — your own address.
-7. **Resend API key (optional)** — you can skip this with Enter for now (preview only). You fill it in at step 5.
+3. **Store or branch name** — how this store should appear in alerts, e.g. `Downtown Store`. It is written into the `store` column of the example file. Store and product names are never fixed in the tool: every row of your inventory file carries its own `store` and `product` values, so a single file can hold several stores.
+4. **Folder to watch** — the folder where you will put inventory files. Example: `~/retail-mcp/watch`. It is created if it does not exist.
+5. **Snapshot folder** — the folder where the tool writes its result files. It must be a **different** folder from the watch folder. Example: `~/retail-mcp/snapshot`.
+6. **Default low-stock threshold** — products with no sales history are flagged when their stock is at or below this quantity. If unsure, press Enter (default 5).
+7. **Email to receive alerts** — your own address.
+8. **Resend API key (optional)** — you can skip this with Enter for now (preview only). You fill it in at step 5.
 
 When finished, `.env` (settings, readable only by you) is created in the current folder and `template-example.csv` (an example inventory file) in the watch folder.
 
@@ -62,12 +63,13 @@ Open `template-example.csv` in the watch folder and you will see these columns.
 
 | Column | Required | Meaning |
 |---|---|---|
-| `매장명` (store name) | Required | Example: `본점` (main store) |
-| `상품명` (product name) | Required | Human-readable name |
-| `SKU` | Required | Unique product code (always the same value for the same product) |
-| `재고수량` (stock quantity) | Required | Current stock |
-| `판매수량` · `판매기간시작일` · `판매기간종료일` (sales quantity · sales period start date · sales period end date) | Optional | If all three are given, "average daily sales" is calculated and the decision is made on **how many days the stock lasts** |
-| `저재고임계치` (low-stock threshold) | Optional | Per-product threshold (falls back to the default from step 2 if absent) |
+| `store` | Required | Store name, exactly as you want it shown in alerts. The example file uses the name you gave in onboarding |
+| `product` | Required | Human-readable product name |
+| `sku` | Required | Unique product code (always the same value for the same product) |
+| `stock_qty` | Required | Current stock |
+| `sales_qty` · `period_start` · `period_end` | Optional | If all three are given, "average daily sales" is calculated and the decision is made on **how many days the stock lasts** |
+| `low_stock_threshold` | Optional | Per-product threshold (falls back to the default from step 2 if absent) |
+| `pack_size` | Optional | Units per pack/box; when given, the suggested order quantity is rounded up to a whole number of packs |
 
 Fill in your actual inventory in this format (open in Excel, edit, and save as CSV/XLSX), or take a file exported from your POS or ERP, match the column names, and put it in the watch folder. If the folder contains several files, the **most recently modified file** is read.
 
@@ -78,7 +80,7 @@ cd ~/retail-mcp
 retail-mcp-scan
 ```
 
-It reads the file and shows the list of low-stock products and the reason (e.g. "재고커버 2.5일, 제안수량 40" — 2.5 days of cover, suggested quantity 40) on screen. **No email is sent at this step** (default `SEND_MODE=dry_run`). If the file format is wrong, it tells you which column is the problem, so fix it and run again.
+It reads the file and shows the list of low-stock products and the reason (e.g. "stockout risk — days of cover 2.5, suggested 40") on screen. **No email is sent at this step** (default `SEND_MODE=dry_run`). If the file format is wrong, it tells you which column is the problem, so fix it and run again.
 
 ### 5. Turn On Email Sending
 
@@ -87,7 +89,7 @@ Emails go out through a sending service called Resend. Steps:
 1. Sign up at https://resend.com → issue a key under **API Keys** (starts with `re_`). Treat this key like a password.
 2. Decide the **sender address**. Resend requires you to verify a domain you own (by adding DNS records) before you can send from an address on that domain to anyone. If you have no domain, you can use the test sender address Resend provides to send **only to the email you signed up with** (see "Send test emails" in the Resend docs). For a single branch where you receive the emails yourself, this is enough.
 3. Put it into the settings — either:
-   - Run `retail-mcp-onboard` again, enter the key at question 7, then enter the sender address (existing settings are preserved). Or
+   - Run `retail-mcp-onboard` again, enter the key at question 8, then enter the sender address (existing settings are preserved). Or
    - Open `.env` in a text editor and fill in the `RESEND_API_KEY=` and `MAIL_FROM=` lines.
 4. Change `SEND_MODE=dry_run` in `.env` to **`SEND_MODE=live`**.
 5. **Run it manually the first time** to confirm the email actually arrives:
@@ -120,9 +122,9 @@ Register one line in cron on macOS/Linux (`crontab -e` opens an editor). An exam
 
 ### Troubleshooting
 
-- **"이미 사용 중입니다 … .lock"** (already in use) — two instances of the tool are running at the same time in the same folder. Wait for one to finish. If it keeps appearing even though the process has clearly died, confirm that retail-mcp is not running on any computer, then **only delete** the `.lock` file named in the message (do not edit or replace its contents).
-- **"재고 파일이 없습니다"** (no inventory file) — check that there is a `.csv`/`.xlsx` file in the watch folder and that the folder path matches `CSV_WATCH_DIR` in `.env`.
-- **The email ends as "발송됐는지 알 수 없음(unknown)"** (unknown whether it was sent) — the network dropped mid-response. Check in the Resend dashboard whether it actually went out; if not, re-run with the `run_id` value from the log passed as-is: `retail-mcp-scan --confirm --run-id=<that value>`. Resend prevents duplicate sends for the same run_id, but only **within 23 hours**. After that, the tool refuses and tells you to start a new run.
+- **"… .lock is already in use by process …"** — two instances of the tool are running at the same time in the same folder. Wait for one to finish. If it keeps appearing even though the process has clearly died, confirm that retail-mcp is not running on any computer, then **only delete** the `.lock` file named in the message (do not edit or replace its contents).
+- **"no inventory file found (.csv/.xlsx)"** — check that there is a `.csv`/`.xlsx` file in the watch folder and that the folder path matches `CSV_WATCH_DIR` in `.env`.
+- **The email ends as "unknown whether it was sent (unknown)"** — the network dropped mid-response. Check in the Resend dashboard whether it actually went out; if not, re-run with the `run_id` value from the log passed as-is: `retail-mcp-scan --confirm --run-id=<that value>`. Resend prevents duplicate sends for the same run_id, but only **within 23 hours**. After that, the tool refuses and tells you to start a new run.
 - **Upgrade**: `npm install -g @shiz_son/retail-mcp@latest`. Your data is kept as-is.
 - **Uninstall**: `npm uninstall -g @shiz_son/retail-mcp`. Settings (`.env`) and data (`.retail-mcp/`) remain, so delete the folder yourself if you no longer need them.
 

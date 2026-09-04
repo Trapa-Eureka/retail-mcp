@@ -132,14 +132,15 @@ Instead of "free mapping" that takes the user's file as-is and infers columns, r
 
 | Column | Required | Description |
 |---|---|---|
-| `매장명` | Required | Branch identifier |
-| `상품명` | Required | Item name |
-| `SKU` | Required | Must be unique per store+SKU |
-| `재고수량` | Required | Current stock |
-| `판매수량` | Optional | If present, sell-through / average daily sales can be computed (§2 approximation). If absent, threshold fallback (below) |
-| `판매기간시작일`/`판매기간종료일` | Optional (required if `판매수량` is present) | Because this is a period total rather than receipt-level history, the period over which `판매수량` was summed must be stated for average daily sales to be computable |
-| `단가`/`통화` | Optional | For displaying revenue. Amounts are not summed without a currency code (same principle as §9) |
-| `저재고임계치` | Optional | Per-product override. If absent, the global default is used |
+| `store` | Required | Branch identifier |
+| `product` | Required | Item name |
+| `sku` | Required | Must be unique per store+SKU |
+| `stock_qty` | Required | Current stock |
+| `sales_qty` | Optional | If present, sell-through / average daily sales can be computed (§2 approximation). If absent, threshold fallback (below) |
+| `period_start`/`period_end` | Optional (required if `sales_qty` is present) | Because this is a period total rather than receipt-level history, the period over which `sales_qty` was summed must be stated for average daily sales to be computable |
+| `unit_price`/`currency` | Optional | For displaying revenue. Amounts are not summed without a currency code (same principle as §9) |
+| `low_stock_threshold` | Optional | Per-product override. If absent, the global default is used |
+| `pack_size` | Optional (§14) | Units per pack/box, greater than 0. When present, the suggested reorder quantity is rounded up to a whole number of packs |
 
 ### Encoding: auto-detect + fallback
 
@@ -147,10 +148,10 @@ UTF-8 is not assumed by default. Korean Windows Excel saves are commonly CP949/E
 
 ### When there is no sales history: threshold fallback
 
-A file without the `판매수량` (and period) columns cannot compute sell-through, average daily sales, or days of cover (§2) — without sales history, an inventory snapshot alone gives no "sales velocity". In this case:
+A file without the `sales_qty` (and period) columns cannot compute sell-through, average daily sales, or days of cover (§2) — without sales history, an inventory snapshot alone gives no "sales velocity". In this case:
 
 - **Skip the sell-through calculation** (display the metric as "no sales history"; do not silently treat it as 0).
-- **Send a low-stock alert only when `재고수량 < threshold`** (global default or per-item `저재고임계치`) — a simple rule separate from the §2 approximate sell-through logic.
+- **Send a low-stock alert only when `stock_qty < threshold`** (global default or per-item `low_stock_threshold`) — a simple rule separate from the §2 approximate sell-through logic.
 - Files with sales history apply the existing §2 approximation as-is. This means that within the same v0.2 deployment the two modes can be mixed per branch, or even per point in time for the same branch — MCP responses and reports must indicate which mode the calculation used.
 
 ### Execution model: periodic scan (cron)
@@ -173,7 +174,7 @@ The original "DB is Neon" decision (before §11) assumed Loyverse adoption. CSV/
 If each branch loads into a local PGlite, data is separated per branch. For HQ to see multiple branches at once the results must be gathered, and rather than requiring branches to upload to a shared Neon, the decision is **HQ collects per-branch output files** — consistent with the warehouse section's principle of "do not require non-developer branch users to be issued DB accounts".
 
 - **Branch instances** operate as designed so far — process their own inventory file via folder watch, load into local PGlite, and send that branch's own low-stock alerts.
-- A branch instance also exports its processing results as a **snapshot file in the same fixed template format as the §12 column layout**. Since `매장명` is already a required column, it is reused as-is with no schema change — this snapshot is not a human-readable summary but a machine-readable output that can be read back in.
+- A branch instance also exports its processing results as a **snapshot file in the same fixed template format as the §12 column layout**. Since `store` is already a required column, it is reused as-is with no schema change — this snapshot is not a human-readable summary but a machine-readable output that can be read back in.
 - The **HQ instance** is a separate installation of the same retail-mcp in "consolidated view" mode, observing a "collection folder" where each branch's snapshot files gather, via the identical folder watch channel. The transport by which branch snapshots reach that folder (shared-drive sync the business already uses, manually saving email attachments, USB, manual copy, etc.) is not prescribed by this design — no new sync service is built; it rides on means already in use.
 - Because the HQ instance loads multiple branches' snapshots into the same schema (store name is already the discriminator), the branch filtering the existing MCP tools and agent already support (§5 "main store only" example) serves multi-branch comparison and consolidated queries as-is with no schema change.
 - Loading is an upsert per (store, SKU) as of the snapshot time. A branch file is not a transaction log but a full inventory/sales summary at that point in time, so the HQ ETL commits that branch's watermark only after the branch's snapshot file has been fully and successfully parsed — the principle of not advancing the watermark in a partially parsed state (CLAUDE.md implementation interpretation supplement) is upheld at the branch level as well.
@@ -201,35 +202,35 @@ The entire design above has been implemented — this section is not a new decis
 
 ## 13. SCM Sheet Integration + Stock Reconciliation Check (2026-09-03, v0.2 queue started)
 
-The "SCM sheet integration" and "canonical sell-through" items from the "v0.2 queue" in `docs/TASKS.md` are designed and started based on the actual sample Google Sheet the user provided (purchase order / receipt data, 5 tabs: "상품목록", "입출고내역", "재고현황", "판매요약", "대시보드").
+The "SCM sheet integration" and "canonical sell-through" items from the "v0.2 queue" in `docs/TASKS.md` are designed and started based on the actual sample Google Sheet the user provided (purchase order / receipt data, 5 tabs: "Product List", "In/Out History", "Stock Status", "Sales Summary", "Dashboard").
 
 ### Scope decision — what is done now / what is deferred
 
-- **Done**: a schema and warehouse layer that loads **only rows with 구분=입고** from the sheet's "입출고내역" tab into a new table (`purchase_receipts`), plus a pure function (`computeStockReconciliation`) that computes "canonical sell-through" and "stock reconciliation check" from those receipt actuals.
-- **Rows with 구분=출고 are not loaded.** retail-mcp's sales source is the Loyverse/CSV channel — loading the SCM sheet's outbound rows through a separate pipeline would double-count the same sales.
+- **Done**: a schema and warehouse layer that loads **only rows with `type=inbound`** from the sheet's "In/Out History" tab into a new table (`purchase_receipts`), plus a pure function (`computeStockReconciliation`) that computes "canonical sell-through" and "stock reconciliation check" from those receipt actuals.
+- **Rows with `type=outbound` are not loaded.** retail-mcp's sales source is the Loyverse/CSV channel — loading the SCM sheet's outbound rows through a separate pipeline would double-count the same sales.
 - **The "purchase order" state (ordered but not yet received) is not handled.** The sample sheet examined has no purchase order status column at all — all it has is "receipt actuals" that have already arrived. The feature that "SCM sheet integration" originally targeted, "subtract outstanding orders from reorder suggestions", becomes possible as follow-up work only once that column is added to the sheet.
 - **Actual Google Sheets API integration is deferred.** For the app to read the sheet directly it would need new credentials and dependencies such as a service account/OAuth (`googleapis`), which is a new decision not in the CLAUDE.md secrets list, so it was excluded from this scope. For now the sheet snapshot is used only as a test fixture (`tests/fixtures/scm/sample-receipts.csv`, the actual sample sheet values verbatim). The real integration method (service account vs public-link CSV export) is decided in a later separate task.
-- **Store mapping**: The sheet itself has no store discriminator (single-business assumption). `mapScmRowsToPurchaseReceipts(rawRows, storeId)` takes `storeId` explicitly from the caller — unlike the CSV channel's required `매장명` column, this sheet has no such concept to begin with, so it is filled in at the adapter boundary.
+- **Store mapping**: The sheet itself has no store discriminator (single-business assumption). `mapScmRowsToPurchaseReceipts(rawRows, storeId)` takes `storeId` explicitly from the caller — unlike the CSV channel's required `store` column, this sheet has no such concept to begin with, so it is filled in at the adapter boundary.
 - **MCP tool and agent wiring is out of this scope.** What ships now is only the `core/` (schema + metric calculation) and `Warehouse` (load + query) layers — exposing it in an MCP tool such as `sell_through` or having the reorder agent reference it is a task that follows once actual Google Sheets integration is decided.
 
 ### Finding — "canonical sell-through" is algebraically identical to the approximation
 
 `sales ÷ (opening stock + receipts)` (canonical) and `sales ÷ (sales + ending stock)` (§2 approximation) yield **the same value**, because as long as inventory is conserved (`opening stock + receipts − sales = ending stock`) the two denominators are always equal. v0.1 used the approximation not because the formula was inaccurate but simply because receipt data itself was unavailable, so it computed from the observable ending stock instead.
 
-Therefore the real value of this feature is not "a more accurate sell-through number" but **stock reconciliation checking** — the "재고현황" tab of the sample sheet examined **computes** `현재재고` as `입고합계−출고합계` rather than from a physical count (stated in the sheet's notes). By contrast, retail-mcp's stock quantity (Loyverse/CSV `재고수량`) is a **count-based** value reported by the POS. Reconciling the two values (the ledger's computed expected stock vs the actual stock reported by POS/CSV) can catch inventory losses not captured in the ledger, such as theft, damage, or count errors — `computeStockReconciliation` surfaces this via `discrepancy`/`hasDiscrepancy`.
+Therefore the real value of this feature is not "a more accurate sell-through number" but **stock reconciliation checking** — the "Stock Status" tab of the sample sheet examined **computes** `current_stock` as `total inbound − total outbound` rather than from a physical count (stated in the sheet's notes). By contrast, retail-mcp's stock quantity (Loyverse/CSV `stock_qty`) is a **count-based** value reported by the POS. Reconciling the two values (the ledger's computed expected stock vs the actual stock reported by POS/CSV) can catch inventory losses not captured in the ledger, such as theft, damage, or count errors — `computeStockReconciliation` surfaces this via `discrepancy`/`hasDiscrepancy`.
 
 ### Implementation
 
 - `migrations/004_purchase_receipts.sql` — `purchase_receipts(store_id, variant_id, received_at, received_qty, unit_cost, currency, vendor)`, PK `(store_id, variant_id, received_at)`. If there are multiple receipts for the same store, SKU, and date, the last value overwrites (not summed) — documented as a v0.1 limitation arising from the source sheet having no event sequence number (add a sequence column if needed).
 - `src/core/types.ts` — `PurchaseReceiptRow`, `PurchaseAgg`, `Warehouse.upsertPurchaseReceipts`/`queryPurchaseAgg` (reuses `SalesAggQuery`, symmetric with `querySalesAgg`).
 - `src/adapters/pgWarehouse.ts` — implements the two methods above. `received_at` is a `date` column, so period boundaries are compared with `::date` (business-timezone-aware boundary conversion is out of this scope — documented as a known simplification).
-- `src/core/scmSchema.ts` — `scmReceiptRowSchema`, which validates with zod the headers of the sample sheet's "입출고내역" tab verbatim (일자/구분/상품코드/상품명/수량/단가/거래처), and `mapScmRowsToPurchaseReceipts`, which filters to 구분=입고 rows only and converts them to `PurchaseReceiptRow[]`.
+- `src/core/scmSchema.ts` — `scmReceiptRowSchema`, which validates with zod the English headers of the sample sheet's "In/Out History" tab (`date`/`type`/`sku`/`product`/`qty`/`unit_price`/`vendor`; `type` is `inbound` or `outbound`), and `mapScmRowsToPurchaseReceipts`, which filters to `type=inbound` rows only and converts them to `PurchaseReceiptRow[]`.
 - `src/core/metrics.ts` — `computeStockReconciliation(inventory, purchases, sales, opts)`. Opening stock can be given explicitly via `opts.openingStock` (key `${storeId}:${variantId}`); if absent, 0 (treated as starting the ledger fresh from that point — the flow of entering a one-time count value during onboarding is a later task).
 - Tests: `tests/scmSchema.test.ts`, `tests/metrics.test.ts` (`computeStockReconciliation` describe), `tests/pgWarehouse.test.ts` (`purchase_receipts`/`queryPurchaseAgg`) — the golden case numbers (P001: receipts 30 · sales 21 · counted stock 9) are the actual sample sheet values verbatim.
 
 ## 14. Pack Size Rounding (2026-09-03, v0.2 queue started)
 
-The "pack size rounding" item from the "v0.2 queue" in `docs/TASKS.md` is started based on a new version of the §13 sample sheet the user uploaded, filled in with a `포장수량(팩사이즈)` column and verification calculations (계산 제안량/최종 발주량/발주 팩수).
+The "pack size rounding" item from the "v0.2 queue" in `docs/TASKS.md` is started based on a new version of the §13 sample sheet the user uploaded, filled in with a pack-size column and verification calculations (computed suggested qty / final order qty / order pack count).
 
 ### Background
 
@@ -243,8 +244,8 @@ The reorder suggestion quantity computed by `reorderQty()` (§2) is in units. Ac
 - `core/metrics.ts` — **`reorderQty()` itself is untouched.** Instead:
   - `roundToPackMultiple(reorderQtyValue, packSize)` — a pure function alongside the 5 pure formulas of §2. If `packSize` is absent, returns the value unchanged without rounding (`packCount: null` — distinguishing "no pack size" from "0 packs needed"). If the suggestion quantity is 0, it is not rounded up to 1 pack even if `packSize` is present (0 packs).
   - `applyPackRounding(rows, products)` — applies `ProductRow.packSize`, joined on `(storeId,variantId)`, to the array produced by `computeReorderMetrics` (or the history rows of `computeCsvReorderMetrics`). Same pattern as TASKS T17 wrapping `computeReorderMetrics` with `computeCsvReorderMetrics` — the original function is unchanged.
-- **Also added as an optional column to the CSV/Excel template** — `포장수량` (optional, greater than 0) added to `core/csvSchema.ts`, and `adapters/csvExcelParser.ts` validates value consistency for the same SKU in the same way as `저재고임계치` and converts it to `ProductRow.packSize`. Existing templates (files without this column) pass unchanged — backward compatible. **Actually wiring it into T18 folder scan, agent, and MCP tools carried over to T25** — see §15 below (out of scope when this section was written, but started afterwards).
-- Tests: `tests/metrics.test.ts` (`roundToPackMultiple`/`applyPackRounding` describes — the golden cases use verbatim the `계산 제안량→최종 발주량/발주 팩수` values for the 8 items the §13 sheet had already computed itself), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts` (`pack_size` upsert / coalesce).
+- **Also added as an optional column to the CSV/Excel template** — `pack_size` (optional, greater than 0) added to `core/csvSchema.ts`, and `adapters/csvExcelParser.ts` validates value consistency for the same SKU in the same way as `low_stock_threshold` and converts it to `ProductRow.packSize`. Existing templates (files without this column) pass unchanged — backward compatible. **Actually wiring it into T18 folder scan, agent, and MCP tools carried over to T25** — see §15 below (out of scope when this section was written, but started afterwards).
+- Tests: `tests/metrics.test.ts` (`roundToPackMultiple`/`applyPackRounding` describes — the golden cases use verbatim the "computed suggested qty → final order qty / order pack count" values for the 8 items the §13 sheet had already computed itself), `tests/csvSchema.test.ts`, `tests/csvExcelParser.test.ts`, `tests/pgWarehouse.test.ts` (`pack_size` upsert / coalesce).
 
 ## 15. MCP Tool and Agent Wiring (2026-09-03, T23/T24 follow-up)
 
@@ -253,7 +254,7 @@ Starts the **pack size rounding (§14) portion** of the "MCP tool and agent wiri
 ### Wiring targets
 
 - **`buildReorderReport()` in `agent/reorder.ts` (Loyverse path)** — joins the `computeReorderMetrics` result with `ProductRow.packSize` fetched via the newly added `Warehouse.queryProducts(variantIds)` using `applyPackRounding()`, and fills `packSize`/`finalOrderQty`/`packCount` on `ReorderLineItem`. Since the `reorder_suggestions` MCP tool reuses `buildReorderReport()` as-is (T9 decision), **it is wired automatically with no separate tool code change** — the "tool result = agent report" regression guard is preserved intact.
-- **CSV channel alerts in `agent/folderScan.ts`** — applies `applyPackRounding()` to the history-mode rows of `computeCsvReorderMetrics` (the CSV parse result already carries `ProductRow.packSize`, T24) and shows "제안수량 → 최종 발주량(N팩)" in the low-stock alert. no_history mode has no sales history and thus no reorder suggestion quantity at all (T17 design), so it is not a target.
+- **CSV channel alerts in `agent/folderScan.ts`** — applies `applyPackRounding()` to the history-mode rows of `computeCsvReorderMetrics` (the CSV parse result already carries `ProductRow.packSize`, T24) and shows "suggested N → final order qty M (K packs)" in the low-stock alert. no_history mode has no sales history and thus no reorder suggestion quantity at all (T17 design), so it is not a target.
 - **New `Warehouse.queryProducts(variantIds?)`** — discovered mid-task that the Loyverse path does not hold `ProductRow` in memory (products are upserted to the DB at sync time and that is it) and `queryStock`/`querySalesAgg` select only `name`/`category` — there was simply no way to read `packSize` back. It is a read-only query, so it does not conflict with guardrail 4 ("warehouse writes only via the ETL path").
 
 ### Not done this time
@@ -265,7 +266,7 @@ Starts the **pack size rounding (§14) portion** of the "MCP tool and agent wiri
 
 - `core/types.ts` — `Warehouse.queryProducts(variantIds?: string[])` (queries all `ProductRow[]`; omitting variantIds returns all, an empty array returns an empty result), `packSize`/`finalOrderQty`/`packCount` fields added to `ReorderLineItem` (required, not optional — `buildReorderReport()` now always fills them).
 - `adapters/pgWarehouse.ts` — `queryProductsOn` implemented.
-- `agent/reorder.ts` — `buildReorderReport()` calls `queryProducts` + `applyPackRounding`; `renderReportText`/`renderReportHtml` show pack size rounding via a `formatOrderQty()` helper ("42 → 최종 발주량 48(2팩, 팩당 24개)").
+- `agent/reorder.ts` — `buildReorderReport()` calls `queryProducts` + `applyPackRounding`; `renderReportText`/`renderReportHtml` show pack size rounding via a `formatOrderQty()` helper ("42 → final order qty 48 (2 packs, 24 per pack)").
 - `agent/folderScan.ts` — `alertsFrom()` additionally receives `products: ProductRow[]` and applies pack size rounding to history-mode rows; `reorderQty`/`finalOrderQty`/`packCount` added to `FolderScanAlertItem` (optional fields — absent in no_history mode).
 - Tests: `tests/pgWarehouse.test.ts` (`queryProducts`), `tests/reorderAgent.test.ts` (golden case with packSize), `tests/claudeSummarizer.test.ts` (report type update), `tests/folderScan.test.ts` (CSV alerts with and without pack size rounding applied). The existing "tool = agent exactly identical" regression guards in `tests/mcpTools.test.ts`/`tests/e2e.test.ts` pass unchanged with no code change because both paths reuse the same function.
 

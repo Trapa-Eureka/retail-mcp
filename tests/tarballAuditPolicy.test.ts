@@ -16,27 +16,27 @@ const report = (urls: string[]): string =>
     vulnerabilities: Object.fromEntries(urls.map((url, i) => [`pkg${i}`, { via: [{ url }] }])),
     metadata: {},
   });
-/** 2026-09-04 CI에서 실제로 관측된 무효 응답 형태. */
+/** The invalid response shape actually observed in CI on 2026-09-04. */
 const REGISTRY_ERROR = JSON.stringify({
   error: { code: "E503", summary: "audit endpoint returned an error" },
 });
 
-describe("evaluateTarballAudit — 게시 tarball audit 판정(순수)", () => {
-  it("유효한 리포트 + 취약점 0건 → pass(noneFound)", () => {
+describe("evaluateTarballAudit — published tarball audit verdict (pure)", () => {
+  it("valid report + 0 vulnerabilities → pass (noneFound)", () => {
     expect(evaluateTarballAudit(report([]), NOW, APPROVED)).toEqual({
       kind: "pass",
       noneFound: true,
     });
   });
 
-  it("승인된 예외만 → pass(noneFound=false)", () => {
+  it("only approved exceptions → pass (noneFound=false)", () => {
     expect(evaluateTarballAudit(report([APPROVED[0]!.url]), NOW, APPROVED)).toEqual({
       kind: "pass",
       noneFound: false,
     });
   });
 
-  it("실행 실패(null)·비JSON·오류 JSON은 각각 이유가 다른 unavailable", () => {
+  it("execution failure (null), non-JSON and error JSON are each unavailable with a different reason", () => {
     expect(evaluateTarballAudit(null, NOW, APPROVED)).toMatchObject({
       kind: "unavailable",
       reason: "no_output",
@@ -51,7 +51,7 @@ describe("evaluateTarballAudit — 게시 tarball audit 판정(순수)", () => {
     });
   });
 
-  it("승인되지 않은 취약점 → unexpected(URL 포함)", () => {
+  it("unapproved vulnerability → unexpected (with URL)", () => {
     expect(
       evaluateTarballAudit(
         report([APPROVED[0]!.url, "https://github.com/advisories/GHSA-new"]),
@@ -61,7 +61,7 @@ describe("evaluateTarballAudit — 게시 tarball audit 판정(순수)", () => {
     ).toEqual({ kind: "unexpected", urls: ["https://github.com/advisories/GHSA-new"] });
   });
 
-  it("승인 예외의 기한이 지났으면 → expired(SR2-AUD-003)", () => {
+  it("approved exception past its deadline → expired (SR2-AUD-003)", () => {
     const later = new Date("2027-03-03T00:00:00Z");
     expect(evaluateTarballAudit(report([APPROVED[0]!.url]), later, APPROVED)).toEqual({
       kind: "expired",
@@ -70,7 +70,7 @@ describe("evaluateTarballAudit — 게시 tarball audit 판정(순수)", () => {
   });
 });
 
-describe("shouldBlock — 정책은 unavailable에만 영향(PR gate warn / 게시 경로 fail)", () => {
+describe("shouldBlock — policy affects only unavailable (PR gate warn / publish path fail)", () => {
   const unavailable = evaluateTarballAudit(null, NOW, APPROVED);
   const unexpected = evaluateTarballAudit(
     report(["https://github.com/advisories/GHSA-x"]),
@@ -84,30 +84,30 @@ describe("shouldBlock — 정책은 unavailable에만 영향(PR gate warn / 게�
   );
   const pass = evaluateTarballAudit(report([]), NOW, APPROVED);
 
-  it("fail 정책(게시 경로): unavailable도 막는다", () => {
+  it("fail policy (publish path): blocks unavailable too", () => {
     expect(shouldBlock(unavailable, "fail")).toBe(true);
   });
 
-  it("warn 정책(PR gate): unavailable은 통과시키지만 취약점 발견·기한 경과는 여전히 막는다", () => {
+  it("warn policy (PR gate): lets unavailable through but still blocks found vulnerabilities and expired exceptions", () => {
     expect(shouldBlock(unavailable, "warn")).toBe(false);
     expect(shouldBlock(unexpected, "warn")).toBe(true);
     expect(shouldBlock(expired, "warn")).toBe(true);
   });
 
-  it("pass는 어느 정책에서도 막지 않는다", () => {
+  it("pass is never blocked under any policy", () => {
     expect(shouldBlock(pass, "fail")).toBe(false);
     expect(shouldBlock(pass, "warn")).toBe(false);
   });
 });
 
-describe("parseAuditUnavailablePolicy — 기본은 fail, 모르는 값은 조용히 완화하지 않는다", () => {
-  it("없으면 fail, 'fail'/'warn'은 그대로", () => {
+describe("parseAuditUnavailablePolicy — default is fail, unknown values are not silently relaxed", () => {
+  it("absent means fail; 'fail'/'warn' as-is", () => {
     expect(parseAuditUnavailablePolicy(undefined)).toBe("fail");
     expect(parseAuditUnavailablePolicy("fail")).toBe("fail");
     expect(parseAuditUnavailablePolicy("warn")).toBe("warn");
   });
 
-  it("알 수 없는 값은 원인+허용값이 담긴 에러", () => {
-    expect(() => parseAuditUnavailablePolicy("skip")).toThrow(/올바르지 않습니다.*"fail".*"warn"/);
+  it("an unknown value is an error containing the cause and the allowed values", () => {
+    expect(() => parseAuditUnavailablePolicy("skip")).toThrow(/Invalid value.*"fail".*"warn"/);
   });
 });

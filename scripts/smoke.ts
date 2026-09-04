@@ -1,15 +1,16 @@
 /**
- * 수동 스모크 스크립트 (TESTING.md §5) — 사람 전용, 실 Loyverse 토큰 + 실 DB 대상.
+ * Manual smoke script (TESTING.md §5) — humans only, targets a real Loyverse token + a real DB.
  *
- * ① sync(etl/sync.ts의 syncAll) → ② 조회 도구 3종(sell_through/inventory_status/
- * stockout_risk) 호출 출력 → ③ 재주문 에이전트 dry-run.
+ * ① sync (syncAll from etl/sync.ts) → ② print the output of the 3 query tools
+ * (sell_through/inventory_status/stockout_risk) → ③ reorder agent dry-run.
  *
- * live 발송은 여기 포함하지 않는다 — `.env`의 SEND_MODE 값과 무관하게 이 스크립트는 항상
- * sendMode="dry_run", confirm=false로 강제한다(TESTING §5, CLAUDE.md 가드레일 1). 최초
- * 실발송은 사람이 `npm run agent:reorder -- --confirm`을 직접 1회 실행한다(README 참고).
+ * Live sends are not included here — regardless of the SEND_MODE value in `.env`, this script
+ * always forces sendMode="dry_run", confirm=false (TESTING §5, CLAUDE.md guardrail 1). The first
+ * live send is done once by a human running `npm run agent:reorder -- --confirm` directly (see README).
  *
- * 프로덕션 DATABASE_URL을 실수로 조회 이상으로 건드리지 않도록, 여기서는 warehouse의
- * upsert/setCursor류를 직접 호출하지 않고(syncAll 내부에서만 씀) 나머지는 조회 도구만 쓴다.
+ * To avoid accidentally touching a production DATABASE_URL beyond reads, this script never calls
+ * the warehouse's upsert/setCursor family directly (only used inside syncAll) and otherwise uses
+ * only the query tools.
  */
 import { Pool } from "pg";
 import { createClaudeSummarizer } from "../src/adapters/claudeSummarizer.js";
@@ -29,7 +30,7 @@ import {
 function requireEnv(name: string, hint: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name}이 없습니다. ${hint}`);
+    throw new Error(`${name} is not set. ${hint}`);
   }
   return value;
 }
@@ -41,52 +42,52 @@ function heading(title: string): void {
 async function main(): Promise<void> {
   const databaseUrl = requireEnv(
     "DATABASE_URL",
-    "Neon/Supabase Postgres 연결 문자열을 .env에 추가하세요.",
+    "Add the Neon/Supabase Postgres connection string to .env.",
   );
   const businessTimezone = requireEnv(
     "BUSINESS_TIMEZONE",
-    "예: Asia/Manila. .env의 BUSINESS_TIMEZONE에 추가하세요.",
+    "e.g. Asia/Manila. Add it to BUSINESS_TIMEZONE in .env.",
   );
-  // LOYVERSE_API_TOKEN/ANTHROPIC_API_KEY는 각 어댑터의 createXFromEnv()가 자체 검증한다.
+  // LOYVERSE_API_TOKEN/ANTHROPIC_API_KEY are validated by each adapter's createXFromEnv() itself.
 
   const pool = new Pool({ connectionString: databaseUrl });
   const warehouse = createPgWarehouse(createPgConnectionProvider(pool));
   const clock = createSystemClock();
 
   try {
-    heading("① sync — Loyverse → Postgres 증분 동기화");
+    heading("① sync — Loyverse → Postgres incremental sync");
     const loyverseClient = createLoyverseClientFromEnv();
     const syncResult = await syncAll({ loyverseClient, warehouse, clock }, {});
     for (const r of syncResult.resources) {
       console.log(
-        `  ${r.resource}: ${r.status} (${r.itemCount}건)` + (r.error ? ` — ${r.error}` : ""),
+        `  ${r.resource}: ${r.status} (${r.itemCount} rows)` + (r.error ? ` — ${r.error}` : ""),
       );
     }
     if (!syncResult.ok) {
-      throw new Error("동기화가 일부 실패/건너뜀 처리됐습니다 — 위 출력에서 원인을 확인하세요.");
+      throw new Error("Sync partially failed/skipped — check the cause in the output above.");
     }
 
-    heading("② 조회 도구 3종 — sell_through / inventory_status / stockout_risk");
+    heading("② 3 query tools — sell_through / inventory_status / stockout_risk");
     const queryDeps: QueryToolDeps = { warehouse, clock, businessTimezone };
 
     const sellThrough = await sellThroughTool(queryDeps, { periodDays: 30, order: "desc", top: 5 });
-    console.log(`sell_through 상위 ${sellThrough.rows.length}건 (근사식: ${sellThrough.note})`);
+    console.log(`sell_through top ${sellThrough.rows.length} (approximation: ${sellThrough.note})`);
     console.log(JSON.stringify(sellThrough.rows, null, 2));
 
     const inventoryStatus = await inventoryStatusTool(queryDeps, {});
-    console.log(`inventory_status: ${inventoryStatus.rows.length}개 품목`);
+    console.log(`inventory_status: ${inventoryStatus.rows.length} items`);
 
     const stockoutRisk = await stockoutRiskTool(queryDeps, { leadTimeDays: 7, safetyDays: 3 });
-    console.log(`stockout_risk: 위험 품목 ${stockoutRisk.rows.length}건`);
+    console.log(`stockout_risk: ${stockoutRisk.rows.length} at-risk items`);
     console.log(JSON.stringify(stockoutRisk.rows.slice(0, 5), null, 2));
 
     for (const meta of [sellThrough.meta, inventoryStatus.meta, stockoutRisk.meta]) {
       if (meta.warnings.length > 0) {
-        console.log(`  경고: ${meta.warnings.join(" / ")}`);
+        console.log(`  warning: ${meta.warnings.join(" / ")}`);
       }
     }
 
-    heading("③ 재주문 에이전트 dry-run (live 발송 없음 — 스모크는 항상 dry_run 강제)");
+    heading("③ reorder agent dry-run (no live send — the smoke script always forces dry_run)");
     const agentResult = await runReorderAgent(
       {
         warehouse,
@@ -96,20 +97,20 @@ async function main(): Promise<void> {
       },
       {
         businessTimezone,
-        sendMode: "dry_run", // .env SEND_MODE와 무관하게 강제(TESTING §5) — live 발송은 스모크 범위 밖.
+        sendMode: "dry_run", // Forced regardless of .env SEND_MODE (TESTING §5) — live sends are out of smoke scope.
         confirm: false,
         ...(process.env["REPORT_RECIPIENT"] ? { recipient: process.env["REPORT_RECIPIENT"] } : {}),
       },
     );
-    console.log(`상태: ${agentResult.status}, 제안 ${agentResult.suggestionCount}건`);
+    console.log(`status: ${agentResult.status}, ${agentResult.suggestionCount} suggestions`);
     if (agentResult.summary) {
-      console.log(`요약: ${agentResult.summary}`);
+      console.log(`summary: ${agentResult.summary}`);
     }
 
-    heading("스모크 완료");
+    heading("Smoke complete");
     console.log(
-      "모든 단계가 오류 없이 끝났습니다. live 발송 전 체크리스트는 README.md의 " +
-        "'최초 live 발송 전 사람 체크리스트'를 확인하세요.",
+      "All steps finished without errors. For the checklist before a live send, see " +
+        "'Human checklist before the first live send' in README.md.",
     );
   } finally {
     await pool.end();

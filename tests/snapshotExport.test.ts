@@ -8,15 +8,15 @@ import type { InventoryRow, ProductRow, SalesPeriodAggRow } from "../src/core/ty
 const NOW = new Date("2026-09-03T00:00:00Z");
 
 describe("exportSnapshotCsv", () => {
-  it("고정 템플릿 헤더·열 순서로 직렬화한다", () => {
+  it("serializes with the fixed template header and column order", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
     ];
     const products: ProductRow[] = [
       {
         variantId: "SKU-COLA",
         itemId: "SKU-COLA",
-        name: "코카콜라 500ml",
+        name: "Cola 500ml",
         sku: "SKU-COLA",
         category: null,
         lowStockThreshold: "10",
@@ -25,7 +25,7 @@ describe("exportSnapshotCsv", () => {
     ];
     const salesPeriodAgg: SalesPeriodAggRow[] = [
       {
-        storeId: "본점",
+        storeId: "Main Store",
         variantId: "SKU-COLA",
         periodStart: new Date("2026-08-01T00:00:00Z"),
         periodEnd: new Date("2026-08-29T00:00:00Z"),
@@ -36,14 +36,14 @@ describe("exportSnapshotCsv", () => {
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg });
     const [header, dataLine] = csv.trim().split("\n");
     expect(header).toBe(
-      "매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일,저재고임계치,포장수량",
+      "store,product,sku,stock_qty,sales_qty,period_start,period_end,low_stock_threshold,pack_size",
     );
-    expect(dataLine).toBe("본점,코카콜라 500ml,SKU-COLA,40,56,2026-08-01,2026-08-29,10,24");
+    expect(dataLine).toBe("Main Store,Cola 500ml,SKU-COLA,40,56,2026-08-01,2026-08-29,10,24");
   });
 
-  it("판매이력 없는 품목은 판매 관련 컬럼이 빈칸이다(조용히 0을 쓰지 않는다)", () => {
+  it("leaves the sales-related columns blank for items without sales history (does not silently write 0)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-CHIPS", inStock: "2", updatedAt: NOW },
+      { storeId: "Main Store", variantId: "SKU-CHIPS", inStock: "2", updatedAt: NOW },
     ];
     const products: ProductRow[] = [
       {
@@ -57,18 +57,18 @@ describe("exportSnapshotCsv", () => {
 
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
     const [, dataLine] = csv.trim().split("\n");
-    expect(dataLine).toBe("본점,Piattos,SKU-CHIPS,2,,,,,");
+    expect(dataLine).toBe("Main Store,Piattos,SKU-CHIPS,2,,,,,");
   });
 
-  it("포장수량(팩사이즈)이 exported CSV에 포함된다(006 DATA-001 대응, TASKS T31)", () => {
+  it("includes pack_size in the exported CSV (006 DATA-001 response, TASKS T31)", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "본점", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
+      { storeId: "Main Store", variantId: "SKU-COLA", inStock: "40", updatedAt: NOW },
     ];
     const products: ProductRow[] = [
       {
         variantId: "SKU-COLA",
         itemId: "SKU-COLA",
-        name: "코카콜라 500ml",
+        name: "Cola 500ml",
         sku: "SKU-COLA",
         category: null,
         packSize: "24",
@@ -78,24 +78,24 @@ describe("exportSnapshotCsv", () => {
     expect(csv).toContain("24");
   });
 
-  it("매장명이 exported CSV에 포함된다", () => {
+  it("includes the store name in the exported CSV", () => {
     const inventory: InventoryRow[] = [
-      { storeId: "마카티점", variantId: "SKU-COLA", inStock: "8", updatedAt: NOW },
+      { storeId: "North Branch", variantId: "SKU-COLA", inStock: "8", updatedAt: NOW },
     ];
     const products: ProductRow[] = [
       {
         variantId: "SKU-COLA",
         itemId: "SKU-COLA",
-        name: "코카콜라 500ml",
+        name: "Cola 500ml",
         sku: "SKU-COLA",
         category: null,
       },
     ];
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
-    expect(csv).toContain("마카티점");
+    expect(csv).toContain("North Branch");
   });
 
-  it("매장명·상품명·SKU가 수식 접두사(=/+/-/@)로 시작하면 escape한다(005 SEC-004, TASKS T32)", () => {
+  it("escapes store, product and sku that start with a formula prefix (=/+/-/@) (005 SEC-004, TASKS T32)", () => {
     const inventory: InventoryRow[] = [
       { storeId: "=SUM(A1)", variantId: "+SKU-EVIL", inStock: "1", updatedAt: NOW },
     ];
@@ -110,49 +110,50 @@ describe("exportSnapshotCsv", () => {
     ];
     const csv = exportSnapshotCsv({ inventory, products, salesPeriodAgg: [] });
     const [, dataLine] = csv.trim().split("\n");
-    // csv-stringify는 값에 콤마·큰따옴표·개행이 있을 때만 큰따옴표로 감싼다 — escape된 값
-    // 자체("'=..." 등)엔 그런 문자가 없어 quoting 없이 그대로 나온다.
+    // csv-stringify only wraps a value in double quotes when it contains a comma, double quote
+    // or newline — the escaped values themselves ("'=..." etc.) contain none, so they come out
+    // unquoted.
     expect(dataLine).toBe("'=SUM(A1),'@HYPERLINK(A1),'+SKU-EVIL,1,,,,,");
   });
 });
 
-describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데이터와 일치", () => {
-  it("판매이력 있는 행과 없는 행이 섞여 있어도 왕복 후 동일한 도메인 데이터가 나온다", () => {
+describe("round trip — export → re-parse with T15/T16 matches the original data", () => {
+  it("yields identical domain data after the round trip even with a mix of rows with and without sales history", () => {
     const rawRows = [
       {
-        매장명: "본점",
-        상품명: "코카콜라 500ml",
-        SKU: "SKU-COLA",
-        재고수량: "40",
-        판매수량: "56",
-        판매기간시작일: "2026-08-01",
-        판매기간종료일: "2026-08-29",
-        저재고임계치: "10",
-        포장수량: "24",
+        store: "Main Store",
+        product: "Cola 500ml",
+        sku: "SKU-COLA",
+        stock_qty: "40",
+        sales_qty: "56",
+        period_start: "2026-08-01",
+        period_end: "2026-08-29",
+        low_stock_threshold: "10",
+        pack_size: "24",
       },
       {
-        매장명: "본점",
-        상품명: "Piattos",
-        SKU: "SKU-CHIPS",
-        재고수량: "2",
+        store: "Main Store",
+        product: "Piattos",
+        sku: "SKU-CHIPS",
+        stock_qty: "2",
       },
       {
-        매장명: "마카티점",
-        상품명: "코카콜라 500ml",
-        SKU: "SKU-COLA",
-        재고수량: "8",
-        저재고임계치: "10", // 같은 SKU-COLA는 같은 임계치여야 한다(T16 일관성 검증).
-        포장수량: "24", // 같은 이유로 포장수량도 SKU-COLA는 모든 행에서 동일해야 한다.
+        store: "North Branch",
+        product: "Cola 500ml",
+        sku: "SKU-COLA",
+        stock_qty: "8",
+        low_stock_threshold: "10", // The same SKU-COLA must have the same threshold (T16 consistency check).
+        pack_size: "24", // For the same reason pack_size must be identical for SKU-COLA in every row.
       },
     ];
 
-    // 1) T15로 검증 → 2) T16으로 도메인 변환(= "처리된 재고 데이터").
+    // 1) validate with T15 → 2) convert to domain with T16 (= "processed inventory data").
     const original = mapRowsToDomain(rawRows, NOW);
 
-    // 3) T19로 스냅샷 CSV 직렬화.
+    // 3) serialize the snapshot CSV with T19.
     const csv = exportSnapshotCsv(original);
 
-    // 4) 다시 CSV 텍스트로 파싱(T16이 실제 파일을 읽을 때와 동일한 csv-parse 경로) → 5) T16으로 재변환.
+    // 4) parse back into CSV text (the same csv-parse path T16 uses when reading a real file) → 5) reconvert with T16.
     const reparsedRawRows = parseCsvText(csv, {
       columns: true,
       skip_empty_lines: true,
@@ -160,11 +161,13 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     }) as unknown[];
     const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
 
-    // SEC-004/DATA-005 상호작용: 스냅샷 고정 템플릿(T31 COLUMNS)은 저재고임계치·포장수량
-    // 컬럼을 항상 포함한다 — 원본에 컬럼 자체가 없던(undefined, "정보 없음") 값은 재수입 시
-    // "컬럼은 있지만 셀이 비어 있음"(null, 명시적으로 지움)으로 정규화된다. 스냅샷은 항상
-    // 완전한 시점 이미지이므로 이 재해석은 의도된 동작이다(006 DATA-005, TASKS T33) — 그래서
-    // products만 이 정규화를 반영해 비교하고 나머지는 완전 일치를 그대로 요구한다.
+    // SEC-004/DATA-005 interaction: the snapshot fixed template (T31 COLUMNS) always includes
+    // the low_stock_threshold and pack_size columns — values whose column was absent in the
+    // original (undefined, "no information") are normalized on re-import to "column present
+    // but cell empty" (null, explicitly cleared). A snapshot is always a complete point-in-time
+    // image, so this reinterpretation is intended (006 DATA-005, TASKS T33) — hence only
+    // products is compared with that normalization applied and everything else must match
+    // exactly.
     expect(roundTripped.stores).toEqual(original.stores);
     expect(roundTripped.inventory).toEqual(original.inventory);
     expect(roundTripped.salesPeriodAgg).toEqual(original.salesPeriodAgg);
@@ -177,18 +180,18 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     );
   });
 
-  it("수식 접두사로 시작하는 매장명·상품명·SKU도 왕복 후 원래 값 그대로 복원된다(SEC-004, TASKS T32)", () => {
+  it("restores store, product and sku starting with a formula prefix to their original values after the round trip (SEC-004, TASKS T32)", () => {
     const rawRows = [
       {
-        매장명: "=SUM(A1)",
-        상품명: "+HYPERLINK(evil.com)",
-        SKU: "@cmd|'/c calc'",
-        재고수량: "5",
+        store: "=SUM(A1)",
+        product: "+HYPERLINK(evil.com)",
+        sku: "@cmd|'/c calc'",
+        stock_qty: "5",
       },
     ];
 
     const original = mapRowsToDomain(rawRows, NOW);
-    // export가 escape하므로 사람이 이 CSV를 Excel/Sheets로 직접 열어도 수식으로 실행되지 않는다.
+    // The export escapes, so even when a person opens this CSV directly in Excel/Sheets it is not executed as a formula.
     const csv = exportSnapshotCsv(original);
     expect(csv).toContain("'=SUM(A1)");
     expect(csv).toContain("'+HYPERLINK(evil.com)");
@@ -201,10 +204,11 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     }) as unknown[];
     const roundTripped = mapRowsToDomain(reparsedRawRows, NOW);
 
-    // 왕복 후 escape 접두사 없이 원래 도메인 데이터와 완전히 일치해야 한다(machine 재수입 경로).
-    // lowStockThreshold/packSize는 원본에 컬럼이 없어 undefined였지만, 고정 템플릿 export는
-    // 그 컬럼을 항상 포함하므로 재수입 시 null(명시적으로 지움)로 정규화된다 — 006 DATA-005,
-    // TASKS T33, 위 다른 왕복 테스트와 동일한 이유.
+    // After the round trip it must match the original domain data exactly, without the escape prefix (machine re-import path).
+    // lowStockThreshold/packSize were undefined because the original had no such column, but
+    // the fixed-template export always includes those columns, so on re-import they are
+    // normalized to null (explicitly cleared) — 006 DATA-005, TASKS T33, same reason as the
+    // other round-trip test above.
     expect(roundTripped).toEqual({
       ...original,
       products: original.products.map((p) => ({
@@ -217,15 +221,15 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
     expect(roundTripped.products[0]?.name).toBe("+HYPERLINK(evil.com)");
   });
 
-  it("행 하나만 있어도 T15 스키마로 재파싱 가능하다(csvRowSchema와 정확히 호환)", () => {
+  it("can be re-parsed with the T15 schema even with a single row (exactly compatible with csvRowSchema)", () => {
     const raw = {
-      매장명: "본점",
-      상품명: "코카콜라 500ml",
-      SKU: "SKU-COLA",
-      재고수량: "40",
-      판매수량: "56",
-      판매기간시작일: "2026-08-01",
-      판매기간종료일: "2026-08-29",
+      store: "Main Store",
+      product: "Cola 500ml",
+      sku: "SKU-COLA",
+      stock_qty: "40",
+      sales_qty: "56",
+      period_start: "2026-08-01",
+      period_end: "2026-08-29",
     };
     const original = mapRowsToDomain([raw], NOW);
     const csv = exportSnapshotCsv(original);
@@ -235,11 +239,11 @@ describe("왕복 테스트 — export → T15/T16으로 재파싱하면 원 데�
       trim: true,
     }) as unknown[];
 
-    // T15의 parseCsvRow가 export 결과를 그대로 받아들이는지 직접 확인.
+    // Check directly that T15's parseCsvRow accepts the export output as is.
     const row = parseCsvRow(reparsedRaw);
-    expect(row.매장명).toBe("본점");
-    expect(row.판매수량).toBe(56);
-    expect(row.판매기간시작일).toEqual(new Date("2026-08-01"));
-    expect(row.판매기간종료일).toEqual(new Date("2026-08-29"));
+    expect(row.store).toBe("Main Store");
+    expect(row.sales_qty).toBe(56);
+    expect(row.period_start).toEqual(new Date("2026-08-01"));
+    expect(row.period_end).toEqual(new Date("2026-08-29"));
   });
 });

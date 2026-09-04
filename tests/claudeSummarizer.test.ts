@@ -9,11 +9,11 @@ const REPORT: ReorderReport = {
   stores: [
     {
       storeId: "store_main",
-      storeName: "본점",
+      storeName: "Main Store",
       items: [
         {
           variantId: "var_cola",
-          name: "코카콜라 500ml",
+          name: "Coca-Cola 500ml",
           inStock: 5,
           avgDailySales: 2,
           daysOfCover: 2.5,
@@ -25,7 +25,7 @@ const REPORT: ReorderReport = {
       ],
     },
   ],
-  warnings: ["stale: 마지막 동기화가 24시간을 넘었습니다."],
+  warnings: ["stale: the last sync is more than 24 hours old."],
 };
 
 function anthropicSuccessResponse(text: string): Response {
@@ -46,16 +46,16 @@ function anthropicSuccessResponse(text: string): Response {
   );
 }
 
-describe("createClaudeSummarizer — 요청 형태", () => {
-  it("모델·system 프롬프트·표 데이터를 담아 Messages API를 호출한다", async () => {
+describe("createClaudeSummarizer — request shape", () => {
+  it("calls the Messages API with the model, system prompt and table data", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(anthropicSuccessResponse("본점에서 코카콜라 재주문이 필요합니다."));
+      .mockResolvedValue(anthropicSuccessResponse("Main Store needs a Coca-Cola reorder."));
 
     const summarizer = createClaudeSummarizer({ apiKey: "sk-ant-test", fetchImpl });
     const text = await summarizer.summarize(REPORT);
 
-    expect(text).toBe("본점에서 코카콜라 재주문이 필요합니다.");
+    expect(text).toBe("Main Store needs a Coca-Cola reorder.");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
@@ -67,47 +67,47 @@ describe("createClaudeSummarizer — 요청 형태", () => {
       messages: { role: string; content: string }[];
     };
     expect(body.model).toBe("claude-opus-5");
-    // 표의 사실(매장명·품목명·수치)이 실제로 프롬프트에 실린다
-    expect(body.messages[0]?.content).toContain("본점");
-    expect(body.messages[0]?.content).toContain("코카콜라 500ml");
+    // The facts in the table (store name, item name, numbers) actually appear in the prompt
+    expect(body.messages[0]?.content).toContain("Main Store");
+    expect(body.messages[0]?.content).toContain("Coca-Cola 500ml");
     expect(body.messages[0]?.content).toContain("37");
   });
 
-  it("요청 본문에 API 키·이메일·원시 영수증 필드가 없다 (TESTING §7)", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
-    const apiKey = "sk-ant-super-secret-key-should-never-leak"; // secretscan-allow: 테스트 픽스처, 실제 키 아님
+  it("the request body contains no API key, email or raw receipt fields (TESTING §7)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("Summary."));
+    const apiKey = "sk-ant-super-secret-key-should-never-leak"; // secretscan-allow: test fixture, not a real key
     const summarizer = createClaudeSummarizer({ apiKey, fetchImpl });
     await summarizer.summarize(REPORT);
 
     const init = (fetchImpl.mock.calls[0] as [string, RequestInit])[1];
     const bodyText = init.body as string;
 
-    // ReorderReport(LLM 경계 타입)에는 애초에 recipient/email/token/원시 영수증 필드가 없다
-    // — 이 테스트는 그 구조적 보장이 실제 HTTP 요청 본문에서도 깨지지 않는지 확인한다.
+    // ReorderReport (the LLM boundary type) has no recipient/email/token/raw receipt fields to
+    // begin with — this test checks that structural guarantee also holds in the actual HTTP request body.
     expect(bodyText).not.toContain(apiKey);
-    expect(bodyText).not.toMatch(/@/); // 이메일 주소 패턴
-    expect(bodyText).not.toMatch(/receipt_number|line_items|gross_total_money/); // Lv* 원시 필드명
+    expect(bodyText).not.toMatch(/@/); // email address pattern
+    expect(bodyText).not.toMatch(/receipt_number|line_items|gross_total_money/); // Lv* raw field names
 
-    // x-api-key 헤더로만 전달되고 본문에는 없어야 한다(Anthropic SDK는 Headers 인스턴스를 쓴다).
+    // Must be passed only via the x-api-key header and not in the body (the Anthropic SDK uses a Headers instance).
     const headers = init.headers as Headers;
     expect(headers.get("x-api-key")).toBe(apiKey);
   });
 
-  it("system 프롬프트에 '수치 생성 금지'와 '표의 사실만'이 명시되어 있다", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
+  it("the system prompt explicitly states 'do not invent numbers' and 'only the facts in the table'", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("Summary."));
     const summarizer = createClaudeSummarizer({ apiKey: "sk-ant-test", fetchImpl });
     await summarizer.summarize(REPORT);
 
     const init = (fetchImpl.mock.calls[0] as [string, RequestInit])[1];
     const body = JSON.parse(init.body as string) as { system: string };
 
-    expect(body.system).toMatch(/수치.*(만들어내지 않|생성하지 않)/);
-    expect(body.system).toMatch(/표에 있는 사실.*만 언급/);
-    expect(body.system).toMatch(/2~3문장/);
+    expect(body.system).toMatch(/Do not (calculate or invent|invent) numbers/);
+    expect(body.system).toMatch(/Mention only the facts in the table/);
+    expect(body.system).toMatch(/2-3 sentences/);
   });
 
-  it("커스텀 model 옵션을 그대로 요청에 반영한다", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("요약."));
+  it("reflects a custom model option in the request as-is", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(anthropicSuccessResponse("Summary."));
     const summarizer = createClaudeSummarizer({
       apiKey: "sk-ant-test",
       fetchImpl,
@@ -120,8 +120,8 @@ describe("createClaudeSummarizer — 요청 형태", () => {
   });
 });
 
-describe("createClaudeSummarizer — 오류 처리", () => {
-  it("응답에 text 블록이 없으면 명확한 에러를 던진다", async () => {
+describe("createClaudeSummarizer — error handling", () => {
+  it("throws a clear error when the response has no text block", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -140,17 +140,17 @@ describe("createClaudeSummarizer — 오류 처리", () => {
       ),
     );
     const summarizer = createClaudeSummarizer({ apiKey: "sk-ant-test", fetchImpl });
-    await expect(summarizer.summarize(REPORT)).rejects.toThrow(/텍스트 블록/);
+    await expect(summarizer.summarize(REPORT)).rejects.toThrow(/text block/);
   });
 
-  describe("ANTHROPIC_API_KEY 누락", () => {
+  describe("missing ANTHROPIC_API_KEY", () => {
     const ORIGINAL_ENV = { ...process.env };
 
     afterEach(() => {
       process.env = { ...ORIGINAL_ENV };
     });
 
-    it("원인과 해결법이 담긴 에러를 생성 시점에 던진다", () => {
+    it("throws an error with the cause and the fix at creation time", () => {
       delete process.env["ANTHROPIC_API_KEY"];
       expect(() => createClaudeSummarizer({})).toThrow(/ANTHROPIC_API_KEY/);
     });

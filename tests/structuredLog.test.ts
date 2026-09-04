@@ -6,7 +6,7 @@ describe("logStructured (007 OPS-005, TASKS T34)", () => {
     vi.restoreAllMocks();
   });
 
-  it("console.log에 JSON 파싱 가능한 한 줄을 남긴다 — runId/status/이벤트별 필드 포함", () => {
+  it("emits one JSON-parseable line via console.log — including runId/status/event-specific fields", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     logStructured({
@@ -18,7 +18,7 @@ describe("logStructured (007 OPS-005, TASKS T34)", () => {
 
     expect(logSpy).toHaveBeenCalledTimes(1);
     const line = logSpy.mock.calls[0]?.[0] as string;
-    const parsed: unknown = JSON.parse(line); // 파싱 자체가 성공해야 한다(구조화 로그 계약).
+    const parsed: unknown = JSON.parse(line); // Parsing itself must succeed (structured log contract).
     expect(parsed).toMatchObject({
       event: "folder_scan_completed",
       runId: "run-123",

@@ -2,19 +2,19 @@ import { describe, expect, it } from "vitest";
 import { createFixtureLoyverseClient } from "../src/mocks/fixtureLoyverseClient.js";
 import type { LvItem, LvReceipt } from "../src/core/types.js";
 
-// TESTING.md §2 시나리오 창: today=2026-09-01T00:00:00Z, 최근 35일 = [2026-07-28, 2026-09-01)
+// TESTING.md §2 scenario window: today=2026-09-01T00:00:00Z, last 35 days = [2026-07-28, 2026-09-01)
 const WINDOW_START_ISO = "2026-07-28T00:00:00.000Z";
 const LAST_5_DAYS = ["2026-08-27", "2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31"];
 
 describe("FixtureLoyverseClient", () => {
-  it("listStores — 매장 2곳, 페이지네이션 없음", async () => {
+  it("listStores — 2 stores, no pagination", async () => {
     const client = await createFixtureLoyverseClient();
     const stores = await client.listStores();
     expect(stores).toHaveLength(2);
-    expect(stores.map((s) => s.name)).toEqual(["본점", "마카티점"]);
+    expect(stores.map((s) => s.name)).toEqual(["Main Store", "Makati Branch"]);
   });
 
-  it("listItems — 커서 페이지 2개 이상 재현 (기본 페이지 크기 5, 품목 8종)", async () => {
+  it("listItems — reproduces 2 or more cursor pages (default page size 5, 8 items)", async () => {
     const client = await createFixtureLoyverseClient();
 
     const page1 = await client.listItems();
@@ -26,12 +26,12 @@ describe("FixtureLoyverseClient", () => {
     expect(page2.cursor).toBeNull();
 
     const allNames = [...page1.items, ...page2.items].map((i: LvItem) => i.item_name);
-    expect(allNames).toContain("코카콜라 500ml"); // 한글 유니코드
-    expect(allNames).toContain("미린다 오렌지"); // 한글 유니코드
-    expect(allNames).toContain("Datu Puti Suka 1L"); // 타갈로그 브랜드명
+    expect(allNames).toContain("Coca-Cola 500ml");
+    expect(allNames).toContain("Mirinda Orange");
+    expect(allNames).toContain("Datu Puti Suka 1L"); // Tagalog brand name
   });
 
-  it("listReceipts — 커서 페이지 2개 이상 재현 (전체 창 조회 시 84건, 기본 페이지 40)", async () => {
+  it("listReceipts — reproduces 2 or more cursor pages (84 receipts over the full window, default page 40)", async () => {
     const client = await createFixtureLoyverseClient();
 
     const page1 = await client.listReceipts(WINDOW_START_ISO);
@@ -51,17 +51,17 @@ describe("FixtureLoyverseClient", () => {
     expect(all.length).toBe(84);
   });
 
-  it("listReceipts cursor는 최초 호출과 다른 sinceISO로 재사용할 수 없다", async () => {
+  it("a listReceipts cursor cannot be reused with a sinceISO different from the initial call", async () => {
     const client = await createFixtureLoyverseClient();
     const page1 = await client.listReceipts(WINDOW_START_ISO);
     expect(page1.cursor).not.toBeNull();
 
     await expect(
       client.listReceipts("2026-08-01T00:00:00.000Z", page1.cursor ?? undefined),
-    ).rejects.toThrow(/조회 조건/);
+    ).rejects.toThrow(/query condition/);
   });
 
-  it("listReceipts — 환불 영수증은 receipt_type/refund_for를 보존하고 quantity는 양수다 (실제 API 계약)", async () => {
+  it("listReceipts — refund receipts preserve receipt_type/refund_for and quantity is positive (real API contract)", async () => {
     const client = await createFixtureLoyverseClient();
     const page1 = await client.listReceipts(WINDOW_START_ISO);
     const page2 = await client.listReceipts(WINDOW_START_ISO, page1.cursor ?? undefined);
@@ -73,14 +73,14 @@ describe("FixtureLoyverseClient", () => {
     for (const r of refunds) {
       expect(r.refund_for).not.toBeNull();
       for (const li of r.line_items) {
-        expect(li.quantity).toBeGreaterThan(0); // 실제 API: 환불도 quantity는 양수, 부호 반전은 ETL 몫
+        expect(li.quantity).toBeGreaterThan(0); // real API: quantity is positive even for refunds; the ETL flips the sign
       }
     }
     const sales = all.filter((r) => r.receipt_type === "SALE");
     expect(sales.every((r) => r.refund_for === null)).toBe(true);
   });
 
-  it("listReceipts — 취소된 영수증의 cancelled_at을 보존한다", async () => {
+  it("listReceipts — preserves cancelled_at of cancelled receipts", async () => {
     const client = await createFixtureLoyverseClient();
     const page1 = await client.listReceipts(WINDOW_START_ISO);
     const page2 = await client.listReceipts(WINDOW_START_ISO, page1.cursor ?? undefined);
@@ -91,19 +91,19 @@ describe("FixtureLoyverseClient", () => {
     expect(cancelled[0]?.receipt_number).toBe("R-STORE_MAIN-00013");
   });
 
-  it("listReceipts — updated_at(watermark) 기준 필터링은 receipt_date만으로는 못 잡는 사후 수정 영수증을 잡아낸다", async () => {
+  it("listReceipts — filtering by updated_at (watermark) catches later-edited receipts that receipt_date alone would miss", async () => {
     const client = await createFixtureLoyverseClient();
-    // 이 영수증은 receipt_date=2026-08-02 지만 updated_at=2026-08-05로 사후 갱신됐다.
-    // sinceISO를 08-04로 주면 receipt_date 기준 필터는 놓치지만 updated_at 기준 필터는 잡아야 한다.
+    // This receipt has receipt_date=2026-08-02 but was updated afterwards with updated_at=2026-08-05.
+    // With sinceISO set to 08-04, a receipt_date filter misses it but an updated_at filter must catch it.
     const sinceISO = "2026-08-04T00:00:00.000Z";
     const result = await client.listReceipts(sinceISO);
     const found = result.items.find((r) => r.receipt_number === "R-STORE_MAKATI-00049");
-    if (!found) throw new Error("fixture에 R-STORE_MAKATI-00049가 있어야 한다");
-    expect(found.receipt_date < sinceISO).toBe(true); // receipt_date만 보면 창 밖
-    expect(found.updated_at >= sinceISO).toBe(true); // updated_at 기준으로는 창 안
+    if (!found) throw new Error("the fixture must contain R-STORE_MAKATI-00049");
+    expect(found.receipt_date < sinceISO).toBe(true); // outside the window by receipt_date alone
+    expect(found.updated_at >= sinceISO).toBe(true); // inside the window by updated_at
   });
 
-  it("listReceipts — 신규 품목(bearbrand)은 정확히 마지막 5일, 매장당 1건씩만 등장한다", async () => {
+  it("listReceipts — the new item (bearbrand) appears exactly in the last 5 days, once per store per day", async () => {
     const client = await createFixtureLoyverseClient();
     const page1 = await client.listReceipts(WINDOW_START_ISO);
     const page2 = await client.listReceipts(WINDOW_START_ISO, page1.cursor ?? undefined);
@@ -113,7 +113,7 @@ describe("FixtureLoyverseClient", () => {
     const bearbrandReceipts = all.filter((r) =>
       r.line_items.some((li) => li.variant_id === "var_bearbrand300"),
     );
-    expect(bearbrandReceipts).toHaveLength(10); // 5일 × 2매장
+    expect(bearbrandReceipts).toHaveLength(10); // 5 days × 2 stores
 
     const daysByStore: Record<string, Set<string>> = {
       store_main: new Set(),
@@ -125,7 +125,7 @@ describe("FixtureLoyverseClient", () => {
     expect([...(daysByStore["store_main"] ?? [])].sort()).toEqual(LAST_5_DAYS);
     expect([...(daysByStore["store_makati"] ?? [])].sort()).toEqual(LAST_5_DAYS);
 
-    // 창 밖(마지막 5일 이전)에는 0건이어야 한다
+    // Outside the window (before the last 5 days) there must be 0
     const beforeLast5Days = all.filter(
       (r) =>
         r.line_items.some((li) => li.variant_id === "var_bearbrand300") &&
@@ -134,7 +134,7 @@ describe("FixtureLoyverseClient", () => {
     expect(beforeLast5Days).toHaveLength(0);
   });
 
-  it("listInventory — 커서 페이지 2개 이상 재현 (2매장×8품목=16행, 기본 페이지 10), updated_at 보존", async () => {
+  it("listInventory — reproduces 2 or more cursor pages (2 stores × 8 items = 16 rows, default page 10), preserves updated_at", async () => {
     const client = await createFixtureLoyverseClient();
 
     const page1 = await client.listInventory();
@@ -155,23 +155,23 @@ describe("FixtureLoyverseClient", () => {
     expect(zeroStock.every((i) => i.in_stock === 0)).toBe(true);
   });
 
-  it("유효하지 않은 cursor는 원인이 담긴 에러를 던진다", async () => {
+  it("an invalid cursor throws an error with the cause", async () => {
     const client = await createFixtureLoyverseClient();
     await expect(client.listItems("not-a-valid-cursor")).rejects.toThrow(/cursor/);
   });
 
-  it("페이지 크기는 1 이상의 정수만 허용한다", async () => {
+  it("page sizes only accept integers of 1 or more", async () => {
     await expect(createFixtureLoyverseClient({ itemsPageSize: 0 })).rejects.toThrow(
-      /1 이상의 정수/,
+      /integer of 1 or more/,
     );
     await expect(createFixtureLoyverseClient({ itemsPageSize: -1 })).rejects.toThrow(
-      /1 이상의 정수/,
+      /integer of 1 or more/,
     );
     await expect(createFixtureLoyverseClient({ itemsPageSize: 1.5 })).rejects.toThrow(
-      /1 이상의 정수/,
+      /integer of 1 or more/,
     );
     await expect(createFixtureLoyverseClient({ itemsPageSize: Number.NaN })).rejects.toThrow(
-      /1 이상의 정수/,
+      /integer of 1 or more/,
     );
   });
 });

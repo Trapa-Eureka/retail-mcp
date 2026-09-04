@@ -6,7 +6,14 @@ For the implementation/test evidence behind each entry, see the corresponding ta
 
 ## [Unreleased]
 
-(Changes for the next release accumulate here.)
+### Changed
+
+- All documentation, code comments, log/error messages, CLI prompts, email templates and test data are now English.
+- **Breaking**: the CSV/Excel inventory template and the SCM receipts CSV use English column names. Files with the previous Korean headers are no longer accepted — regenerate the template with `retail-mcp-onboard` (or rename the header row) and re-export SCM receipts with the new headers.
+  - Inventory template: `매장명` → `store`, `상품명` → `product`, `SKU` → `sku`, `재고수량` → `stock_qty`, `판매수량` → `sales_qty`, `판매기간시작일` → `period_start`, `판매기간종료일` → `period_end`, `단가` → `unit_price`, `통화` → `currency`, `저재고임계치` → `low_stock_threshold`, `포장수량` → `pack_size`.
+  - SCM receipts CSV: `일자` → `date`, `구분` → `type`, `상품코드` → `sku`, `상품명` → `product`, `수량` → `qty`, `단가` → `unit_price`, `거래처` → `vendor`; the `type` values `입고`/`출고` → `inbound`/`outbound`.
+- Snapshot export header row is now English (`store,product,sku,stock_qty,sales_qty,period_start,period_end,low_stock_threshold,pack_size`).
+- Migration runner: checksums are now computed over the SQL with full-line `--` comments and blank lines removed, and the recorded checksums of the eight 0.1.0 migrations are re-baselined automatically on first run (the SQL files changed only in their comments, which were translated) — no user action needed.
 
 ## [0.1.0] - 2026-09-04
 

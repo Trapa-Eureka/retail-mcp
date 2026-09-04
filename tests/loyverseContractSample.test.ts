@@ -1,9 +1,9 @@
 /**
- * 우리 픽스처가 아니라 Loyverse 공식 문서(https://developer.loyverse.com/docs/, Receipts/
- * Inventory 태그, 2026-09-02 확인)에 실린 응답 예시를 그대로 옮겨 적어 검증한다.
- * loyverseSchemas.test.ts가 "우리 픽스처를 우리 스키마로" 검증하는 자기참조 테스트라면,
- * 이 파일은 "공식 예시를 우리 스키마로" 검증해 스키마가 실제 계약과 맞는지 독립적으로 확인한다
- * (docs/003_T2_ADVERSARIAL_REVIEW.md 003-08).
+ * Validates response examples copied verbatim from the official Loyverse docs
+ * (https://developer.loyverse.com/docs/, Receipts/Inventory tags, verified 2026-09-02) rather than
+ * our own fixtures. Where loyverseSchemas.test.ts is a self-referential test ("our fixtures against
+ * our schemas"), this file validates "official examples against our schemas" to independently
+ * confirm the schemas match the real contract (docs/003_T2_ADVERSARIAL_REVIEW.md 003-08).
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -12,7 +12,7 @@ import {
   LvReceiptsResponseSchema,
 } from "../src/adapters/loyverseSchemas.js";
 
-// GET /receipts/{receipt_number} 응답 예시 (공식 문서 원문 그대로, 스키마에 없는 필드는 남겨둔다)
+// GET /receipts/{receipt_number} response example (verbatim from the official docs; fields not in the schema are kept)
 const OFFICIAL_SALE_RECEIPT_SAMPLE = {
   receipt_number: "2-1008",
   note: null,
@@ -68,9 +68,9 @@ const OFFICIAL_SALE_RECEIPT_SAMPLE = {
   ],
 };
 
-// POST /receipts/{receipt_number}/refund 응답 예시 (공식 문서 원문의 확인된 필드).
-// line_items는 공식 문서가 SALE/REFUND에 동일한 line_item 스키마를 쓰므로 그 형태를 따르되,
-// quantity는 공식 문서의 refund 생성 REQUEST 예시("quantity": 2, 양수)와 동일한 부호를 쓴다.
+// POST /receipts/{receipt_number}/refund response example (confirmed fields from the official docs).
+// line_items follow the same line_item schema the official docs use for both SALE/REFUND, and
+// quantity uses the same sign as the official refund creation REQUEST example ("quantity": 2, positive).
 const OFFICIAL_REFUND_RECEIPT_SAMPLE = {
   receipt_number: "2-1009",
   note: null,
@@ -97,7 +97,7 @@ const OFFICIAL_REFUND_RECEIPT_SAMPLE = {
   ],
 };
 
-// inventory_levels.update 웹훅 payload의 inventory_levels 원소 예시 (공식 문서 원문 그대로)
+// Example of an inventory_levels element of the inventory_levels.update webhook payload (verbatim from the official docs)
 const OFFICIAL_INVENTORY_LEVEL_SAMPLE = {
   variant_id: "5fk4f446-01d2-8787-4fd5-7b7b1995df85",
   store_id: "5fk4f446-01d2-8787-4fd5-7b7b1995df85",
@@ -105,8 +105,8 @@ const OFFICIAL_INVENTORY_LEVEL_SAMPLE = {
   updated_at: "2019-08-24T14:15:22Z",
 };
 
-describe("공식 Loyverse 응답 예시로 스키마를 독립 검증한다", () => {
-  it("공식 SALE 영수증 예시가 파싱된다", () => {
+describe("independently validates the schemas against official Loyverse response examples", () => {
+  it("the official SALE receipt example parses", () => {
     const parsed = LvReceiptSchema.parse(OFFICIAL_SALE_RECEIPT_SAMPLE);
     expect(parsed.receipt_type).toBe("SALE");
     expect(parsed.refund_for).toBeNull();
@@ -115,21 +115,21 @@ describe("공식 Loyverse 응답 예시로 스키마를 독립 검증한다", ()
     expect(parsed.updated_at).toBe("2020-06-23T08:35:47.047Z");
   });
 
-  it("공식 REFUND 영수증 예시가 파싱되고 quantity는 양수로 보존된다", () => {
+  it("the official REFUND receipt example parses and quantity is preserved as positive", () => {
     const parsed = LvReceiptSchema.parse(OFFICIAL_REFUND_RECEIPT_SAMPLE);
     expect(parsed.receipt_type).toBe("REFUND");
     expect(parsed.refund_for).toBe("2-1005");
     expect(parsed.line_items[0]?.quantity).toBe(2);
   });
 
-  it("공식 inventory_levels 예시가 파싱되고 updated_at이 보존된다", () => {
+  it("the official inventory_levels example parses and updated_at is preserved", () => {
     const parsed = LvInventoryResponseSchema.parse({
       inventory_levels: [OFFICIAL_INVENTORY_LEVEL_SAMPLE],
     });
     expect(parsed.inventory_levels[0]?.updated_at).toBe("2019-08-24T14:15:22Z");
   });
 
-  it("receipts 목록 응답 봉투(envelope)로도 파싱된다", () => {
+  it("also parses as a receipts list response envelope", () => {
     const parsed = LvReceiptsResponseSchema.parse({
       receipts: [OFFICIAL_SALE_RECEIPT_SAMPLE, OFFICIAL_REFUND_RECEIPT_SAMPLE],
       cursor: null,
@@ -137,7 +137,7 @@ describe("공식 Loyverse 응답 예시로 스키마를 독립 검증한다", ()
     expect(parsed.receipts).toHaveLength(2);
   });
 
-  it("passthrough는 미지정 필드를 허용할 뿐, 우리가 의존하는 필드가 빠지면 여전히 거부한다", () => {
+  it("passthrough only allows unspecified fields; a missing field we depend on is still rejected", () => {
     const { updated_at: _updatedAt, ...withoutUpdatedAt } = OFFICIAL_SALE_RECEIPT_SAMPLE;
     expect(() => LvReceiptSchema.parse(withoutUpdatedAt)).toThrow();
 
@@ -148,7 +148,7 @@ describe("공식 Loyverse 응답 예시로 스키마를 독립 검증한다", ()
     expect(() => LvReceiptSchema.parse(withoutCancelledAt)).toThrow();
   });
 
-  it("날짜가 ISO 8601 형식이 아니면 거부한다", () => {
+  it("rejects dates that are not in ISO 8601 format", () => {
     expect(() =>
       LvReceiptSchema.parse({ ...OFFICIAL_SALE_RECEIPT_SAMPLE, updated_at: "not-a-date" }),
     ).toThrow();

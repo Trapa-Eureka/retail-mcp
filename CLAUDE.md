@@ -56,7 +56,7 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(real P
 - All external IO (POS, DB, send, clock, LLM) goes behind interfaces. `core/` contains only interfaces and pure computation.
 - No `any`. External input (API responses, tool arguments) is parsed with `zod` at the boundary.
 - SQL in MCP query tools is **parameterized fixed queries only**. `explore_sql` (arbitrary SELECT queries, disabled by default in production) is the only exception, pre-approved by guardrail 4 — see `docs/SPEC.md` §17·§18, `docs/DESIGN.md` §12.4. When adding a new query tool, do not widen this exception; build it as a fixed query.
-- Error messages include the cause plus how to fix it (e.g. `LOYVERSE_API_TOKEN이 없습니다. Loyverse 백오피스 > 액세스 토큰에서 발급해 .env에 추가하세요.` — "LOYVERSE_API_TOKEN is missing. Issue one in Loyverse back office > Access tokens and add it to .env.").
+- Error messages include the cause plus how to fix it (e.g. `LOYVERSE_API_TOKEN is not set. Create one in Loyverse Back Office > Access tokens and add it to .env.`).
 - Commit messages: `T{n}: summary` (written in English. Convention since 2026-09-02 — earlier commits were written in Korean and later rewritten in English).
 
 ## Guardrails (must not be violated)

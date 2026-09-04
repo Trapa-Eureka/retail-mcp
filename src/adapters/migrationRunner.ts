@@ -1,12 +1,13 @@
 /**
- * 마이그레이션 러너 핵심 로직 — pg(Postgres)와 PGlite 양쪽에서 재사용한다.
+ * Migration runner core logic — reused by both pg (Postgres) and PGlite.
  *
- * 원래 `scripts/migrate.ts`에만 있었으나, T14(임베디드 PGlite 웨어하우스 기본값)가 프로덕션
- * 코드(`server.ts`/`agent/reorder.ts`)에서도 이 로직이 필요해지며 여기로 옮겼다 —
- * `src`가 `scripts`에 의존하는 잘못된 방향을 피하기 위해서다(advisoryLock.ts와 같은 이유로
- * 같은 전례를 따른 것: scripts는 src에 의존해도 되지만 반대는 안 된다). `scripts/migrate.ts`는
- * 이제 이 모듈을 가져다 쓰는 CLI 진입점(사람이 프로덕션 DATABASE_URL에 실행, 가드레일 5)이고,
- * `src/mocks/pglite.ts`(테스트 전용 PGlite 웨어하우스)도 여기서 가져온다.
+ * Originally lived only in `scripts/migrate.ts`, but T14 (embedded PGlite warehouse as the
+ * default) made production code (`server.ts`/`agent/reorder.ts`) need it too, so it moved
+ * here — to avoid the wrong dependency direction of `src` depending on `scripts` (same
+ * precedent as advisoryLock.ts: scripts may depend on src, but not the other way round).
+ * `scripts/migrate.ts` is now a CLI entry point that consumes this module (a human runs it
+ * against the production DATABASE_URL, guardrail 5), and `src/mocks/pglite.ts` (test-only
+ * PGlite warehouse) imports from here as well.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
@@ -16,7 +17,7 @@ import type { Pool as PoolType } from "pg";
 
 export const MIGRATIONS_DIR = path.resolve(fileURLToPath(import.meta.url), "../../../migrations");
 
-/** 마이그레이션 파일명 규칙: `{순번3자리}_{설명}.sql` (예: 001_init.sql). id는 확장자 제외 파일명. */
+/** Migration file naming rule: `{3-digit sequence}_{description}.sql` (e.g. 001_init.sql). The id is the file name without extension. */
 const MIGRATION_ID_PATTERN = /^[0-9]{3}_[a-z0-9_]+$/;
 
 export interface Migration {
@@ -25,15 +26,15 @@ export interface Migration {
   checksum: string;
 }
 
-/** SQL 실행기 — pg(Pool/PoolClient)와 PGlite를 동일한 형태로 다루기 위한 최소 인터페이스. */
+/** SQL executor — minimal interface so that pg (Pool/PoolClient) and PGlite can be handled the same way. */
 export interface SqlExecutor {
-  /** 파라미터 없는 SQL(여러 statement 가능)을 실행한다. 결과 행은 사용하지 않는다. */
+  /** Executes parameterless SQL (multiple statements allowed). Result rows are not used. */
   exec(sql: string): Promise<void>;
-  /** 결과 행이 필요한 단일 조회를 실행한다. */
+  /** Executes a single query whose result rows are needed. */
   query<T extends Record<string, unknown>>(sql: string): Promise<{ rows: T[] }>;
 }
 
-/** pg의 Pool과 PoolClient는 동일한 query() 시그니처를 공유한다. */
+/** pg's Pool and PoolClient share the same query() signature. */
 type PgQueryable = Pick<PoolType, "query">;
 
 export function createPgExecutor(client: PgQueryable): SqlExecutor {
@@ -48,7 +49,7 @@ export function createPgExecutor(client: PgQueryable): SqlExecutor {
   };
 }
 
-/** PGlite 인스턴스를 SqlExecutor로 감싼다. 인터페이스만 맞으면 되므로 구체 타입은 unknown으로 받는다. */
+/** Wraps a PGlite instance as a SqlExecutor. Only the interface matters, so the concrete type is taken as unknown. */
 export function createPgliteExecutor(db: {
   exec(sql: string): Promise<unknown>;
   query(sql: string): Promise<{ rows: unknown[] }>;
@@ -64,9 +65,48 @@ export function createPgliteExecutor(db: {
   };
 }
 
-export function computeChecksum(sql: string): string {
-  return createHash("sha256").update(sql, "utf8").digest("hex");
+/**
+ * Checksum input normalisation (2026-09-04, English translation of the repository): full-line
+ * `--` comments and blank lines are dropped and trailing whitespace is trimmed before hashing,
+ * so that editing a comment in an applied migration file no longer counts as "content changed".
+ * Anything that can affect the database — statements, identifiers, inline trailing comments'
+ * code part, string literals — is still hashed byte-for-byte. Both sides (file and recorded
+ * value) go through the same function, so the guard stays deterministic.
+ */
+export function normalizeMigrationSql(sql: string): string {
+  return sql
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/, ""))
+    .filter((line) => line.length > 0 && !line.trimStart().startsWith("--"))
+    .join("\n");
 }
+
+export function computeChecksum(sql: string): string {
+  return createHash("sha256").update(normalizeMigrationSql(sql), "utf8").digest("hex");
+}
+
+/**
+ * Checksums that 0.1.0 (the first npm publish, 2026-09-04) recorded in `schema_migrations` —
+ * sha256 over the *raw* file contents, which at that time carried Korean comments. The
+ * repository was translated to English afterwards (comments only; `normalizeMigrationSql` of
+ * every file is unchanged), and the hashing itself moved to the normalised form above. A DB
+ * migrated by 0.1.0 therefore holds one of these values for each id; `runMigrations` accepts
+ * exactly this recorded value once, rewrites it to the current checksum and moves on. Any other
+ * mismatch still aborts. Never add a migration here that was actually changed in substance.
+ */
+export const LEGACY_RAW_CHECKSUMS: Readonly<Record<string, string>> = {
+  "001_init": "49effa177222ba43c0dccd8ee13d1cac4a9488b6d567dc8db24740ffcb732bbd",
+  "002_sales_period_agg": "68514f835799c9c327c760e47584adc71e168013810627a60945809f0bc8979b",
+  "003_product_low_stock_threshold":
+    "7da18e493353c4e787e965404fe8b41a7451f17aefb7c61af58abe6641f98d52",
+  "004_purchase_receipts": "ac44f4516552ef6dc68568dcd3d02e02e9b1fb3bad45982f8a4fab0e7b205485",
+  "005_product_pack_size": "81927c335b176229d14a5fb63b310369e59a1b22a3f71c76483ce138823c48b5",
+  "006_tombstone_active_flag": "452e4a6d58aaae3f65d10ddbc283907c56b47b65e5c5449ea520226304ced730",
+  "007_agent_send_log_unchanged_status":
+    "ac6c7ebc70cc7ff9b2c42eae40b45136ec77095a71307433307de25ecac9cd7f",
+  "008_agent_send_log_unknown_status":
+    "137203ab0b4ae9fc0aa306dd00fa6c6d2f955f1e7414c6ed397845d7732dc9d1",
+};
 
 export async function loadMigrations(dir: string = MIGRATIONS_DIR): Promise<Migration[]> {
   const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
@@ -75,8 +115,8 @@ export async function loadMigrations(dir: string = MIGRATIONS_DIR): Promise<Migr
     const id = file.replace(/\.sql$/, "");
     if (!MIGRATION_ID_PATTERN.test(id)) {
       throw new Error(
-        `마이그레이션 파일명이 규칙에 맞지 않습니다: ${file}. ` +
-          `{순번3자리}_{설명}.sql 형식(예: 001_init.sql)으로 이름을 바꾸세요.`,
+        `Migration file name does not follow the naming rule: ${file}. ` +
+          `Rename it to the {3-digit sequence}_{description}.sql format (e.g. 001_init.sql).`,
       );
     }
     const sql = await readFile(path.join(dir, file), "utf8");
@@ -88,10 +128,13 @@ export async function loadMigrations(dir: string = MIGRATIONS_DIR): Promise<Migr
 export interface RunMigrationsResult {
   applied: string[];
   skipped: string[];
+  /** Ids whose recorded 0.1.0 raw checksum was replaced by the current normalised checksum
+   * (see `LEGACY_RAW_CHECKSUMS`). Always a subset of `skipped`. */
+  rebaselined: string[];
 }
 
-/** Postgres SQLSTATE — 조회하려는 테이블 자체가 없음. pg와 PGlite 둘 다 같은 코드를 던진다
- * (직접 재현 확인). */
+/** Postgres SQLSTATE — the table being queried does not exist. Both pg and PGlite throw the
+ * same code (verified by direct reproduction). */
 const UNDEFINED_TABLE_SQLSTATE = "42P01";
 
 function isUndefinedTableError(err: unknown): boolean {
@@ -103,24 +146,25 @@ function isUndefinedTableError(err: unknown): boolean {
 }
 
 export interface PendingMigrationsStatus {
-  /** 아직 적용되지 않은 마이그레이션 id 목록(파일 순서대로). */
+  /** Ids of migrations not yet applied (in file order). */
   pending: string[];
 }
 
-/** 조회만 하는 최소 인터페이스 — `checkPendingMigrations`는 아무것도 쓰지 않으므로 `exec()`가
- * 있는 전체 `SqlExecutor`를 요구하지 않는다(그래도 `SqlExecutor`는 이 타입을 그대로 만족해
- * 기존 호출자를 바꿀 필요는 없다). */
+/** Minimal read-only interface — `checkPendingMigrations` writes nothing, so it does not
+ * require the full `SqlExecutor` with `exec()` (a `SqlExecutor` still satisfies this type
+ * as-is, so existing callers need no change). */
 export type QueryOnlyExecutor = Pick<SqlExecutor, "query">;
 
 /**
- * 2차 적대적 검수 SR2-REL-001 — 아무것도 적용하지 않고(읽기 전용) 대기 중인 마이그레이션이
- * 있는지만 확인한다. `warehouseFactory.ts`의 network Postgres 시작 시 사전 점검과
- * `retail-mcp-migrate`의 dry-run 모드가 함께 쓴다 — 목적은 raw Postgres 에러("relation ...
- * does not exist")를 "무엇을 해야 하는지"까지 담은 메시지로 바꾸는 것이다.
+ * Second adversarial review SR2-REL-001 — applies nothing (read-only) and only checks
+ * whether pending migrations exist. Shared by the network Postgres startup pre-check in
+ * `warehouseFactory.ts` and the dry-run mode of `retail-mcp-migrate` — the goal is to turn a
+ * raw Postgres error ("relation ... does not exist") into a message that says what to do.
  *
- * `schema_migrations` 테이블 자체가 없으면(완전히 빈 DB) 전체를 pending으로 본다. 그 외의
- * 조회 실패(연결 끊김·권한 없음 등)는 "마이그레이션이 필요하다"는 뜻이 전혀 아니므로 그대로
- * 다시 던진다 — 실제 장애를 "migrate를 실행하세요"로 오인시키면 안 된다.
+ * If the `schema_migrations` table itself does not exist (a completely empty DB), everything
+ * is considered pending. Any other query failure (connection lost, no permission, etc.) does
+ * not mean "migrations are needed" at all, so it is rethrown as-is — a real outage must not be
+ * mistaken for "run migrate".
  */
 export async function checkPendingMigrations(
   executor: QueryOnlyExecutor,
@@ -139,12 +183,12 @@ export async function checkPendingMigrations(
 }
 
 /**
- * 마이그레이션을 순서대로 적용한다. 이미 schema_migrations에 기록된 id는 checksum이
- * 일치할 때만 건너뛴다 — 적용 후 파일 내용이 바뀌면 명확한 에러로 중단한다.
- * 각 마이그레이션은 BEGIN → SQL 적용 → 이력 기록 → COMMIT을 별도 문으로 실행하고,
- * 실패 시 명시적으로 ROLLBACK한다. 호출자는 이 함수 전체를 하나의 커넥션(client)에서
- * 실행해야 한다 — pool에서 매번 다른 커넥션을 받으면 BEGIN과 COMMIT/ROLLBACK이 서로 다른
- * 세션에 걸릴 수 있다.
+ * Applies migrations in order. An id already recorded in schema_migrations is skipped only
+ * when its checksum matches — if the file content changed after being applied, it aborts
+ * with a clear error. Each migration runs BEGIN → apply SQL → record history → COMMIT as
+ * separate statements, and explicitly ROLLBACKs on failure. The caller must run this whole
+ * function on a single connection (client) — taking a different connection from a pool for
+ * each call could put BEGIN and COMMIT/ROLLBACK on different sessions.
  */
 export async function runMigrations(
   executor: SqlExecutor,
@@ -165,15 +209,26 @@ export async function runMigrations(
 
   const applied: string[] = [];
   const skipped: string[] = [];
+  const rebaselined: string[] = [];
 
   for (const migration of migrations) {
     const existingChecksum = appliedChecksumById.get(migration.id);
     if (existingChecksum !== undefined) {
       if (existingChecksum !== migration.checksum) {
+        if (LEGACY_RAW_CHECKSUMS[migration.id] === existingChecksum) {
+          // Recorded by 0.1.0 over the raw (Korean-commented) file — same statements, so
+          // rewrite the record to the current checksum instead of aborting.
+          await executor.exec(
+            `update schema_migrations set checksum = '${migration.checksum}' where id = '${migration.id}'`,
+          );
+          rebaselined.push(migration.id);
+          skipped.push(migration.id);
+          continue;
+        }
         throw new Error(
-          `이미 적용된 마이그레이션 "${migration.id}"의 내용이 변경되었습니다 ` +
-            `(기록된 checksum과 현재 파일의 checksum이 다릅니다). ` +
-            `적용된 마이그레이션 파일은 수정하지 말고, 변경 사항은 새 번호의 마이그레이션 파일로 추가하세요.`,
+          `The content of the already applied migration "${migration.id}" has changed ` +
+            `(the recorded checksum differs from the current file's checksum). ` +
+            `Do not modify applied migration files; add the change as a new migration file with the next number instead.`,
         );
       }
       skipped.push(migration.id);
@@ -192,11 +247,11 @@ export async function runMigrations(
       try {
         await executor.exec("rollback");
       } catch {
-        // rollback 자체의 실패는 무시한다 — 아래에서 원본 에러를 던져 원인을 보존한다.
+        // A failure of the rollback itself is ignored — the original error is thrown below to preserve the cause.
       }
       throw err;
     }
   }
 
-  return { applied, skipped };
+  return { applied, skipped, rebaselined };
 }

@@ -13,23 +13,23 @@ describe("resolveServerConfig", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("DATABASE_URL이 없어도 에러 없이 통과한다(T14 — 임베디드 PGlite로 기본 동작)", () => {
+  it("passes without error even when DATABASE_URL is missing (T14 — defaults to embedded PGlite)", () => {
     expect(() => resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila" })).not.toThrow();
   });
 
-  it("SYNC_TOOL_ENABLED=true인데 DATABASE_URL이 없으면 원인이 담긴 에러를 던진다", () => {
+  it("throws an error carrying the cause when SYNC_TOOL_ENABLED=true but DATABASE_URL is missing", () => {
     expect(() =>
       resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila", SYNC_TOOL_ENABLED: "true" }),
     ).toThrow(/DATABASE_URL/);
   });
 
-  it("BUSINESS_TIMEZONE이 없으면 원인이 담긴 에러를 던진다", () => {
+  it("throws an error carrying the cause when BUSINESS_TIMEZONE is missing", () => {
     expect(() => resolveServerConfig({ DATABASE_URL: "postgres://x" })).toThrow(
       /BUSINESS_TIMEZONE/,
     );
   });
 
-  it("STALE_THRESHOLD_HOURS/SYNC_TOOL_ENABLED 기본값을 적용한다", () => {
+  it("applies the STALE_THRESHOLD_HOURS/SYNC_TOOL_ENABLED defaults", () => {
     const config = resolveServerConfig({
       DATABASE_URL: "postgres://x",
       BUSINESS_TIMEZONE: "Asia/Manila",
@@ -38,7 +38,7 @@ describe("resolveServerConfig", () => {
     expect(config.syncToolEnabled).toBe(false);
   });
 
-  it("SYNC_TOOL_ENABLED=true와 STALE_THRESHOLD_HOURS를 반영한다", () => {
+  it("reflects SYNC_TOOL_ENABLED=true and STALE_THRESHOLD_HOURS", () => {
     const config = resolveServerConfig({
       DATABASE_URL: "postgres://x",
       BUSINESS_TIMEZONE: "Asia/Manila",
@@ -49,7 +49,7 @@ describe("resolveServerConfig", () => {
     expect(config.staleThresholdHours).toBe(6);
   });
 
-  it("STALE_THRESHOLD_HOURS가 숫자가 아니면 원인이 담긴 에러를 던진다", () => {
+  it("throws an error carrying the cause when STALE_THRESHOLD_HOURS is not a number", () => {
     expect(() =>
       resolveServerConfig({
         DATABASE_URL: "postgres://x",
@@ -59,12 +59,12 @@ describe("resolveServerConfig", () => {
     ).toThrow(/STALE_THRESHOLD_HOURS/);
   });
 
-  it("EXPLORE_SQL_ENABLED 기본값은 false다(TASKS T27, 운영 기본값 비활성)", () => {
+  it("EXPLORE_SQL_ENABLED defaults to false (TASKS T27, disabled by default in production)", () => {
     const config = resolveServerConfig({ BUSINESS_TIMEZONE: "Asia/Manila" });
     expect(config.exploreSqlEnabled).toBe(false);
   });
 
-  it("EXPLORE_SQL_ENABLED=true + DATABASE_URL 있으면(실 Postgres) 별도 확인 없이 반영한다", () => {
+  it("reflects EXPLORE_SQL_ENABLED=true without further confirmation when DATABASE_URL is set (real Postgres)", () => {
     const config = resolveServerConfig({
       BUSINESS_TIMEZONE: "Asia/Manila",
       DATABASE_URL: "postgres://x",
@@ -73,7 +73,7 @@ describe("resolveServerConfig", () => {
     expect(config.exploreSqlEnabled).toBe(true);
   });
 
-  it("EXPLORE_SQL_ENABLED=true인데 DATABASE_URL이 없으면(임베디드 PGlite) 원인이 담긴 에러로 거부한다(TASKS T30, SEC-001/002)", () => {
+  it("refuses with an error carrying the cause when EXPLORE_SQL_ENABLED=true but DATABASE_URL is missing (embedded PGlite) (TASKS T30, SEC-001/002)", () => {
     expect(() =>
       resolveServerConfig({
         BUSINESS_TIMEZONE: "Asia/Manila",
@@ -82,7 +82,7 @@ describe("resolveServerConfig", () => {
     ).toThrow(/EXPLORE_SQL_ALLOW_PGLITE/);
   });
 
-  it("EXPLORE_SQL_ENABLED=true + EXPLORE_SQL_ALLOW_PGLITE=true면 DATABASE_URL 없이도 위험을 감수하고 반영한다", () => {
+  it("reflects EXPLORE_SQL_ENABLED=true + EXPLORE_SQL_ALLOW_PGLITE=true even without DATABASE_URL, accepting the risk", () => {
     const config = resolveServerConfig({
       BUSINESS_TIMEZONE: "Asia/Manila",
       EXPLORE_SQL_ENABLED: "true",
@@ -92,7 +92,7 @@ describe("resolveServerConfig", () => {
   });
 });
 
-describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => {
+describe("registerTools — SYNC_TOOL_ENABLED gating (DESIGN §11.4)", () => {
   async function makeDeps(syncToolEnabled: boolean): Promise<RegisterToolsDeps> {
     const db = await createTestWarehouse();
     const warehouse = createPgWarehouse(createPgliteConnectionProvider(db));
@@ -119,7 +119,7 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
     };
   }
 
-  it("SYNC_TOOL_ENABLED=false면 sync_now를 등록하지 않는다(운영 기본값)", async () => {
+  it("does not register sync_now when SYNC_TOOL_ENABLED=false (production default)", async () => {
     const deps = await makeDeps(false);
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
     const registered = registerTools(server, deps);
@@ -133,7 +133,7 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
     expect(registered).not.toContain("sync_now");
   });
 
-  it("SYNC_TOOL_ENABLED=true면 sync_now를 포함한 6종을 등록한다", async () => {
+  it("registers all 6 tools including sync_now when SYNC_TOOL_ENABLED=true", async () => {
     const deps = await makeDeps(true);
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
     const registered = registerTools(server, deps);
@@ -141,18 +141,18 @@ describe("registerTools — SYNC_TOOL_ENABLED 게이팅 (DESIGN §11.4)", () => 
     expect(registered).toHaveLength(6);
   });
 
-  it("SYNC_TOOL_ENABLED=true인데 loyverseClient/runExclusively가 없으면 조립 오류를 던진다", async () => {
+  it("throws an assembly error when SYNC_TOOL_ENABLED=true but loyverseClient/runExclusively are missing", async () => {
     const base = await makeDeps(false);
     const deps: RegisterToolsDeps = {
       ...base,
       config: { ...base.config, syncToolEnabled: true },
     };
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
-    expect(() => registerTools(server, deps)).toThrow(/조립/);
+    expect(() => registerTools(server, deps)).toThrow(/assembl/);
   });
 });
 
-describe("registerTools — EXPLORE_SQL_ENABLED 게이팅 (TASKS T27, 가드레일 4 예외)", () => {
+describe("registerTools — EXPLORE_SQL_ENABLED gating (TASKS T27, guardrail 4 exception)", () => {
   async function makeDeps(exploreSqlEnabled: boolean): Promise<RegisterToolsDeps> {
     const db = await createTestWarehouse();
     const warehouse = createPgWarehouse(createPgliteConnectionProvider(db));
@@ -173,14 +173,14 @@ describe("registerTools — EXPLORE_SQL_ENABLED 게이팅 (TASKS T27, 가드레�
     };
   }
 
-  it("EXPLORE_SQL_ENABLED=false면 explore_sql을 등록하지 않는다(운영 기본값)", async () => {
+  it("does not register explore_sql when EXPLORE_SQL_ENABLED=false (production default)", async () => {
     const deps = await makeDeps(false);
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
     const registered = registerTools(server, deps);
     expect(registered).not.toContain("explore_sql");
   });
 
-  it("EXPLORE_SQL_ENABLED=true면 explore_sql을 포함한 6종을 등록한다", async () => {
+  it("registers all 6 tools including explore_sql when EXPLORE_SQL_ENABLED=true", async () => {
     const deps = await makeDeps(true);
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
     const registered = registerTools(server, deps);
@@ -188,13 +188,13 @@ describe("registerTools — EXPLORE_SQL_ENABLED 게이팅 (TASKS T27, 가드레�
     expect(registered).toHaveLength(6);
   });
 
-  it("EXPLORE_SQL_ENABLED=true인데 exploreSqlExecutor가 없으면 조립 오류를 던진다", async () => {
+  it("throws an assembly error when EXPLORE_SQL_ENABLED=true but exploreSqlExecutor is missing", async () => {
     const base = await makeDeps(false);
     const deps: RegisterToolsDeps = {
       ...base,
       config: { ...base.config, exploreSqlEnabled: true },
     };
     const server = new McpServer({ name: "retail-mcp-test", version: "0.0.0" });
-    expect(() => registerTools(server, deps)).toThrow(/조립/);
+    expect(() => registerTools(server, deps)).toThrow(/assembl/);
   });
 });

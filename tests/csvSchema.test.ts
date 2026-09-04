@@ -2,21 +2,21 @@ import { describe, expect, it } from "vitest";
 import { parseCsvRow, salesHistoryModeOf, csvRowSchema } from "../src/core/csvSchema.js";
 
 const BASE = {
-  매장명: "본점",
-  상품명: "코카콜라 500ml",
-  SKU: "SKU-COLA",
-  재고수량: "40",
+  store: "Main Store",
+  product: "Cola 500ml",
+  sku: "SKU-COLA",
+  stock_qty: "40",
 };
 
 describe("csvRowSchema / parseCsvRow", () => {
-  describe("필수 컬럼", () => {
-    it("매장명/상품명/SKU/재고수량이 모두 있으면 통과한다", () => {
+  describe("required columns", () => {
+    it("passes when store/product/sku/stock_qty are all present", () => {
       const row = parseCsvRow(BASE);
-      expect(row).toEqual({ ...BASE, 재고수량: 40 });
+      expect(row).toEqual({ ...BASE, stock_qty: 40 });
     });
 
-    it.each(["매장명", "상품명", "SKU", "재고수량"] as const)(
-      "%s가 없으면 원인이 담긴 에러를 던진다",
+    it.each(["store", "product", "sku", "stock_qty"] as const)(
+      "throws an error naming the cause when %s is missing",
       (key) => {
         const rest = { ...BASE };
         delete rest[key];
@@ -24,150 +24,152 @@ describe("csvRowSchema / parseCsvRow", () => {
       },
     );
 
-    it.each(["매장명", "상품명", "SKU", "재고수량"])(
-      "%s가 빈 문자열이어도(칸만 비움) 누락으로 취급해 거부한다",
+    it.each(["store", "product", "sku", "stock_qty"])(
+      "rejects %s as missing even when it is an empty string (cell left blank)",
       (key) => {
         expect(() => parseCsvRow({ ...BASE, [key]: "" })).toThrow();
       },
     );
 
-    it("재고수량이 숫자가 아니면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 재고수량: "많음" })).toThrow(/재고수량/);
+    it("rejects a non-numeric stock_qty", () => {
+      expect(() => parseCsvRow({ ...BASE, stock_qty: "lots" })).toThrow(/stock_qty/);
     });
 
-    it("재고수량이 음수면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 재고수량: "-1" })).toThrow(/재고수량/);
+    it("rejects a negative stock_qty", () => {
+      expect(() => parseCsvRow({ ...BASE, stock_qty: "-1" })).toThrow(/stock_qty/);
     });
 
-    it("재고수량 0은 유효하다(빈 값과 구분)", () => {
-      const row = parseCsvRow({ ...BASE, 재고수량: "0" });
-      expect(row.재고수량).toBe(0);
+    it("accepts stock_qty 0 (distinct from a blank value)", () => {
+      const row = parseCsvRow({ ...BASE, stock_qty: "0" });
+      expect(row.stock_qty).toBe(0);
     });
   });
 
-  describe("판매수량·기간 불일치", () => {
-    it("판매수량만 있고 기간이 없으면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 판매수량: "10" })).toThrow(/판매기간/);
+  describe("sales_qty / period mismatch", () => {
+    it("rejects sales_qty without a period", () => {
+      expect(() => parseCsvRow({ ...BASE, sales_qty: "10" })).toThrow(/period_/);
     });
 
-    it("판매수량과 시작일만 있고 종료일이 없으면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 판매수량: "10", 판매기간시작일: "2026-08-01" })).toThrow(
-        /판매기간/,
+    it("rejects sales_qty with only period_start and no period_end", () => {
+      expect(() => parseCsvRow({ ...BASE, sales_qty: "10", period_start: "2026-08-01" })).toThrow(
+        /period_/,
       );
     });
 
-    it("기간만 있고 판매수량이 없으면 거부한다", () => {
+    it("rejects a period without sales_qty", () => {
       expect(() =>
         parseCsvRow({
           ...BASE,
-          판매기간시작일: "2026-08-01",
-          판매기간종료일: "2026-08-29",
+          period_start: "2026-08-01",
+          period_end: "2026-08-29",
         }),
-      ).toThrow(/판매수량/);
+      ).toThrow(/sales_qty/);
     });
 
-    it("시작일이 종료일보다 늦으면 거부한다", () => {
+    it("rejects period_start later than period_end", () => {
       expect(() =>
         parseCsvRow({
           ...BASE,
-          판매수량: "10",
-          판매기간시작일: "2026-08-29",
-          판매기간종료일: "2026-08-01",
+          sales_qty: "10",
+          period_start: "2026-08-29",
+          period_end: "2026-08-01",
         }),
-      ).toThrow(/판매기간종료일/);
+      ).toThrow(/period_end/);
     });
 
-    it("판매수량+유효한 기간이 모두 있으면 통과한다", () => {
+    it("passes when sales_qty and a valid period are all present", () => {
       const row = parseCsvRow({
         ...BASE,
-        판매수량: "56",
-        판매기간시작일: "2026-08-01",
-        판매기간종료일: "2026-08-29",
+        sales_qty: "56",
+        period_start: "2026-08-01",
+        period_end: "2026-08-29",
       });
-      expect(row.판매수량).toBe(56);
-      expect(row.판매기간시작일).toBeInstanceOf(Date);
-      expect(row.판매기간종료일).toBeInstanceOf(Date);
+      expect(row.sales_qty).toBe(56);
+      expect(row.period_start).toBeInstanceOf(Date);
+      expect(row.period_end).toBeInstanceOf(Date);
     });
   });
 
-  describe("단가/통화", () => {
-    it("단가만 있고 통화가 없으면 거부한다(SPEC §9)", () => {
-      expect(() => parseCsvRow({ ...BASE, 단가: "50" })).toThrow(/통화/);
+  describe("unit_price/currency", () => {
+    it("rejects unit_price without currency (SPEC §9)", () => {
+      expect(() => parseCsvRow({ ...BASE, unit_price: "50" })).toThrow(/currency/);
     });
 
-    it("통화 코드가 3글자가 아니면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 단가: "50", 통화: "필리핀페소" })).toThrow(/통화/);
+    it("rejects a currency code that is not 3 letters", () => {
+      expect(() => parseCsvRow({ ...BASE, unit_price: "50", currency: "Philippine peso" })).toThrow(
+        /currency/,
+      );
     });
 
-    it("단가+통화가 모두 있으면 통과하고 통화는 대문자로 정규화된다", () => {
-      const row = parseCsvRow({ ...BASE, 단가: "50", 통화: "php" });
-      expect(row.단가).toBe(50);
-      expect(row.통화).toBe("PHP");
+    it("passes when unit_price and currency are both present and normalizes currency to upper case", () => {
+      const row = parseCsvRow({ ...BASE, unit_price: "50", currency: "php" });
+      expect(row.unit_price).toBe(50);
+      expect(row.currency).toBe("PHP");
     });
   });
 
-  describe("저재고임계치", () => {
-    it("생략하면 undefined다(전역 기본값은 T17에서 적용)", () => {
+  describe("low_stock_threshold", () => {
+    it("is undefined when omitted (the global default is applied in T17)", () => {
       const row = parseCsvRow(BASE);
-      expect(row.저재고임계치).toBeUndefined();
+      expect(row.low_stock_threshold).toBeUndefined();
     });
 
-    it("있으면 숫자로 파싱된다", () => {
-      const row = parseCsvRow({ ...BASE, 저재고임계치: "5" });
-      expect(row.저재고임계치).toBe(5);
+    it("is parsed as a number when present", () => {
+      const row = parseCsvRow({ ...BASE, low_stock_threshold: "5" });
+      expect(row.low_stock_threshold).toBe(5);
     });
   });
 
-  describe("포장수량 (SPEC §14 팩 단위 반올림)", () => {
-    it("생략하면 undefined다(낱개 매입 가능한 품목으로 취급)", () => {
+  describe("pack_size (SPEC §14 pack-unit rounding)", () => {
+    it("is undefined when omitted (treated as an item that can be bought individually)", () => {
       const row = parseCsvRow(BASE);
-      expect(row.포장수량).toBeUndefined();
+      expect(row.pack_size).toBeUndefined();
     });
 
-    it("있으면 숫자로 파싱된다", () => {
-      const row = parseCsvRow({ ...BASE, 포장수량: "24" });
-      expect(row.포장수량).toBe(24);
+    it("is parsed as a number when present", () => {
+      const row = parseCsvRow({ ...BASE, pack_size: "24" });
+      expect(row.pack_size).toBe(24);
     });
 
-    it("0 이하이면 거부한다", () => {
-      expect(() => parseCsvRow({ ...BASE, 포장수량: "0" })).toThrow(/포장수량/);
-      expect(() => parseCsvRow({ ...BASE, 포장수량: "-1" })).toThrow(/포장수량/);
+    it("rejects 0 or less", () => {
+      expect(() => parseCsvRow({ ...BASE, pack_size: "0" })).toThrow(/pack_size/);
+      expect(() => parseCsvRow({ ...BASE, pack_size: "-1" })).toThrow(/pack_size/);
     });
   });
 
-  describe("csvRowSchema (safeParse 직접 사용도 가능)", () => {
-    it("실패 시 issues에 path가 채워진다", () => {
-      const result = csvRowSchema.safeParse({ ...BASE, 매장명: "" });
+  describe("csvRowSchema (safeParse can also be used directly)", () => {
+    it("fills the path in issues on failure", () => {
+      const result = csvRowSchema.safeParse({ ...BASE, store: "" });
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error.issues[0]?.path).toContain("매장명");
+        expect(result.error.issues[0]?.path).toContain("store");
       }
     });
   });
 });
 
 describe("salesHistoryModeOf", () => {
-  it("판매수량이 없으면 no_history다", () => {
+  it("is no_history without sales_qty", () => {
     const row = parseCsvRow(BASE);
     expect(salesHistoryModeOf(row)).toBe("no_history");
   });
 
-  it("판매수량+기간이 있으면 history다", () => {
+  it("is history with sales_qty and a period", () => {
     const row = parseCsvRow({
       ...BASE,
-      판매수량: "56",
-      판매기간시작일: "2026-08-01",
-      판매기간종료일: "2026-08-29",
+      sales_qty: "56",
+      period_start: "2026-08-01",
+      period_end: "2026-08-29",
     });
     expect(salesHistoryModeOf(row)).toBe("history");
   });
 
-  it("판매수량이 0이어도(팔린 적 없음, 값 자체는 있음) history다", () => {
+  it("is history even when sales_qty is 0 (never sold, but the value itself is present)", () => {
     const row = parseCsvRow({
       ...BASE,
-      판매수량: "0",
-      판매기간시작일: "2026-08-01",
-      판매기간종료일: "2026-08-29",
+      sales_qty: "0",
+      period_start: "2026-08-01",
+      period_end: "2026-08-29",
     });
     expect(salesHistoryModeOf(row)).toBe("history");
   });

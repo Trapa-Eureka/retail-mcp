@@ -50,7 +50,7 @@ The current test count is as of after T1 and T2 were implemented. T0's own dummy
 
 ## Re-review completion criteria
 
-- [x] README/TASKS contract for the non-existent entry points matches the actual state — added placeholders to `src/server.ts`/`src/agent/reorder.ts`/`scripts/smoke.ts` that print a "T{n} 예정" (scheduled for T{n}) notice and return exit code 1; the README quickstart specifies when each command becomes valid
+- [x] README/TASKS contract for the non-existent entry points matches the actual state — added placeholders to `src/server.ts`/`src/agent/reorder.ts`/`scripts/smoke.ts` that print a "scheduled for T{n}" notice and return exit code 1; the README quickstart specifies when each command becomes valid
 - [x] Formatting errors fail `npm run check` — `format:check` (`prettier --check .`) included in `check`. Prose documents (`*.md`) excluded via `.prettierignore` (separate from the code-formatting gate)
 - [x] Confirmed the policy preventing commits of environment files other than `.env.example` — changed `.gitignore` to `.env*` + `!.env.example`
 - [x] `npm run check` passes

@@ -1,10 +1,12 @@
 /**
- * `src/adapters/secretScanGit.ts`(2차 적대적 검수 SR2-SEC-003) — 임시 git 저장소를 실제로
- * 만들어 "시크릿을 넣은 커밋 → 지운 커밋" 히스토리를 구성하고, 현재 트리 기준으로는 0건이지만
- * 범위 스캔으로는 잡히는지 확인한다. 네트워크는 쓰지 않는다(로컬 git 명령만).
+ * `src/adapters/secretScanGit.ts` (second adversarial review SR2-SEC-003) — actually creates a
+ * temporary git repository, builds a "commit adding a secret → commit removing it" history, and
+ * confirms that the current tree yields 0 findings while the range scan catches it. No network is
+ * used (local git commands only).
  *
- * 픽스처 시크릿은 런타임에 조합한다(SR2-SEC-002와 같은 이유 — 이 파일 자체가 스캔 대상이다).
- * 조합된 완성 문자열은 tmpdir의 임시 저장소에만 커밋되고 이 저장소 트리엔 들어오지 않는다.
+ * Fixture secrets are assembled at runtime (same reason as SR2-SEC-002 — this file itself is a scan
+ * target). The assembled complete string is committed only to the temporary repository in tmpdir
+ * and never enters this repository's tree.
  */
 import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
@@ -49,7 +51,7 @@ describe("scanGitRange (SR2-SEC-003)", () => {
     await rm(repo, { recursive: true, force: true });
   });
 
-  it("중간 커밋에 넣고 마지막 커밋에서 지운 시크릿을 범위 스캔이 잡는다(현재 트리 스캔은 놓치는 케이스)", async () => {
+  it("range scan catches a secret added in an intermediate commit and removed in the last one (the case the current tree scan misses)", async () => {
     const base = git(repo, "rev-parse", "HEAD");
 
     await writeFile(join(repo, "config.ts"), `export const key = "${fakeAwsKey()}";\n`);
@@ -61,20 +63,20 @@ describe("scanGitRange (SR2-SEC-003)", () => {
     git(repo, "commit", "-q", "-m", "remove key");
     const head = git(repo, "rev-parse", "HEAD");
 
-    // 현재 트리(HEAD의 ls-files)에는 시크릿 파일이 없다 — 기존 스캐너가 통과시키던 상태.
+    // The current tree (ls-files at HEAD) has no secret file — the state the old scanner passed.
     expect(git(repo, "ls-files")).toBe("clean.ts");
 
     const result = scanGitRange(repo, base, head);
     expect(result.commitCount).toBe(2);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]?.patternName).toBe("AWS Access Key ID");
-    // 라벨에 경로와 커밋이 붙어 "히스토리에 남아 있다"는 걸 바로 알 수 있어야 한다.
+    // The label must carry the path and commit so it is immediately clear that "it remains in history".
     expect(result.findings[0]?.file).toBe(`config.ts@${leakCommit.slice(0, 8)}`);
   });
 
-  it("base 트리에 이미 있던 blob은 다시 스캔하지 않고, 같은 blob은 한 번만 센다", async () => {
+  it("does not rescan blobs already in the base tree, and counts the same blob only once", async () => {
     const base = git(repo, "rev-parse", "HEAD");
-    // 같은 내용의 파일을 두 커밋에 걸쳐 추가 — blob oid가 같으므로 새 blob은 1개.
+    // Add files with identical content across two commits — same blob oid, so 1 new blob.
     await writeFile(join(repo, "a.txt"), "same content\n");
     git(repo, "add", "a.txt");
     git(repo, "commit", "-q", "-m", "a");
@@ -88,32 +90,32 @@ describe("scanGitRange (SR2-SEC-003)", () => {
     expect(result.findings).toEqual([]);
   });
 
-  it("base == head면 커밋 0개·발견 0건이다", () => {
+  it("base == head yields 0 commits and 0 findings", () => {
     const head = git(repo, "rev-parse", "HEAD");
     const result = scanGitRange(repo, head, head);
     expect(result.commitCount).toBe(0);
     expect(result.findings).toEqual([]);
   });
 
-  it("all-zero SHA(첫 push/force push의 github.event.before)는 UnknownBaseError를 던진다 — 조용히 0건으로 통과시키지 않는다", () => {
+  it("an all-zero SHA (github.event.before of a first push/force push) throws UnknownBaseError — not silently passed as 0 findings", () => {
     const head = git(repo, "rev-parse", "HEAD");
     expect(() => scanGitRange(repo, "0".repeat(40), head)).toThrow(UnknownBaseError);
   });
 
-  it("저장소에 없는 base 커밋도 UnknownBaseError다(얕은 clone 등)", () => {
+  it("a base commit not in the repository is also UnknownBaseError (shallow clone etc.)", () => {
     const head = git(repo, "rev-parse", "HEAD");
     expect(() => scanGitRange(repo, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", head)).toThrow(
       UnknownBaseError,
     );
   });
 
-  it("바이너리 확장자 blob은 읽지 않는다(트리 스캔과 같은 SKIP_EXTENSIONS)", () => {
+  it("does not read blobs with binary extensions (same SKIP_EXTENSIONS as the tree scan)", () => {
     expect(shouldSkipPath("docs/logo.PNG")).toBe(true);
     expect(shouldSkipPath("src/server.ts")).toBe(false);
   });
 });
 
-describe("scanTrackedFiles (SR2-SEC-004 — 읽기 실패는 조용히 건너뛰지 않는다)", () => {
+describe("scanTrackedFiles (SR2-SEC-004 — read failures are not silently skipped)", () => {
   let repo: string;
 
   beforeEach(async () => {
@@ -125,21 +127,21 @@ describe("scanTrackedFiles (SR2-SEC-004 — 읽기 실패는 조용히 건너뛰
   });
 
   afterEach(async () => {
-    // chmod 000 파일이 남아 있으면 rm이 실패할 수 있다 — 먼저 권한을 되돌린다.
+    // rm can fail if a chmod 000 file is left behind — restore permissions first.
     await chmod(join(repo, "locked.txt"), 0o644).catch(() => undefined);
     await rm(repo, { recursive: true, force: true });
   });
 
-  it("정상 트리는 파일 수를 세고 unreadable이 비어 있다", async () => {
+  it("a normal tree counts files and unreadable is empty", async () => {
     const result = await scanTrackedFiles(repo);
     expect(result.scannedFileCount).toBe(1);
     expect(result.unreadable).toEqual([]);
     expect(result.findings).toEqual([]);
   });
 
-  it("추적 파일을 읽지 못하면(권한 없음) unreadable에 파일명과 errno가 담긴다 — 예전엔 조용히 continue였다", async () => {
-    // root는 권한 비트를 무시하므로 이 케이스를 재현할 수 없다 — CI 러너/로컬 개발 환경은
-    // root가 아니다. root면 건너뛴다(잘못 통과시키는 게 아니라 재현 불가 표시).
+  it("an unreadable tracked file (no permission) lands in unreadable with filename and errno — previously it was a silent continue", async () => {
+    // root ignores permission bits so this case cannot be reproduced — CI runners/local dev
+    // environments are not root. Skip if root (marking as not reproducible, not passing wrongly).
     if (process.getuid?.() === 0) return;
 
     await writeFile(join(repo, "locked.txt"), "cannot read me\n");
@@ -149,21 +151,21 @@ describe("scanTrackedFiles (SR2-SEC-004 — 읽기 실패는 조용히 건너뛰
 
     const result = await scanTrackedFiles(repo);
     expect(result.unreadable).toEqual([{ filePath: "locked.txt", reason: "EACCES" }]);
-    // 읽을 수 있는 파일은 여전히 스캔된다 — 실패가 전체를 멈추지 않고 모아서 보고한다.
+    // Readable files are still scanned — a failure does not stop the whole run; it is collected and reported.
     expect(result.scannedFileCount).toBe(1);
   });
 
-  it("추적 중이지만 워킹 트리에서 사라진 파일(race/로컬 삭제)은 ENOENT로 unreadable에 담긴다", async () => {
+  it("a tracked file that vanished from the working tree (race/local deletion) lands in unreadable as ENOENT", async () => {
     await writeFile(join(repo, "gone.txt"), "x\n");
     git(repo, "add", "gone.txt");
     git(repo, "commit", "-q", "-m", "add gone");
-    await unlink(join(repo, "gone.txt")); // git 입장에선 여전히 tracked.
+    await unlink(join(repo, "gone.txt")); // Still tracked from git's point of view.
 
     const result = await scanTrackedFiles(repo);
     expect(result.unreadable).toEqual([{ filePath: "gone.txt", reason: "ENOENT" }]);
   });
 
-  it("심볼릭 링크는 스캔도 실패도 아닌 '건너뜀'으로 센다(깨진 링크 포함 — range 스캔의 mode 120000 제외와 일관)", async () => {
+  it("symbolic links are counted as 'skipped', neither scanned nor failed (including broken links — consistent with the mode 120000 exclusion in the range scan)", async () => {
     await symlink("clean.ts", join(repo, "link-ok"));
     await symlink("does-not-exist", join(repo, "link-broken"));
     git(repo, "add", "link-ok", "link-broken");
@@ -175,13 +177,13 @@ describe("scanTrackedFiles (SR2-SEC-004 — 읽기 실패는 조용히 건너뛰
     expect(result.scannedFileCount).toBe(1);
   });
 
-  it("binary 확장자는 allowlist로만 제외되고 unreadable로 잡히지 않는다", async () => {
+  it("binary extensions are excluded only via the allowlist and are not caught as unreadable", async () => {
     await writeFile(join(repo, "img.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     git(repo, "add", "img.png");
     git(repo, "commit", "-q", "-m", "add png");
 
     const result = await scanTrackedFiles(repo);
-    expect(result.scannedFileCount).toBe(1); // clean.ts만
+    expect(result.scannedFileCount).toBe(1); // clean.ts only
     expect(result.unreadable).toEqual([]);
   });
 });

@@ -1,31 +1,35 @@
 /**
- * CSV/Excel 채널의 고정 템플릿 스키마 (SPEC.md §12 "컬럼 구성"). 실제 파일을 읽고 인코딩을
- * 처리하는 것은 어댑터(TASKS T16, `csvExcelParser.ts`)의 몫이다 — 여기는 "이미 헤더별로
- * 파싱된 한 행 객체"의 유효성만 순수하게 검증한다(외부 IO 없음, CLAUDE.md core 원칙).
+ * Fixed template schema for the CSV/Excel channel (SPEC.md §12 "column layout"). Reading the
+ * actual file and handling its encoding is the adapter's job (TASKS T16, `csvExcelParser.ts`)
+ * — this module only validates "a single row object already parsed per header", purely
+ * (no external IO, CLAUDE.md core principle).
  *
- * 컬럼명은 SPEC §12 표에 정의된 그대로(한글)를 키로 쓴다 — 사용자가 실제로 채우는 템플릿
- * 헤더와 코드상의 이름이 다르면 어댑터 쪽에서 매핑 실수가 나기 쉽다.
+ * The column names are used as keys exactly as defined in the SPEC §12 table — if the template
+ * header the user actually fills in differs from the name in code, mapping mistakes on the
+ * adapter side become easy to make.
  *
- * (매장명, SKU) 유일성 같은 "행 하나로는 판단할 수 없는" 검증(파일 전체를 훑어야 함)은
- * 이 스키마의 책임이 아니다 — T16이 여러 행을 순회하며 도메인 행 타입으로 변환할 때 함께
- * 확인한다.
+ * Validations that "cannot be decided from a single row" (they need a pass over the whole
+ * file), such as (store, sku) uniqueness, are not this schema's responsibility — T16 checks
+ * them while iterating over the rows and converting them into domain row types.
  */
 import { z } from "zod";
 import { unescapeCsvFormulaPrefix } from "./csvSafety.js";
 
-/** 빈 문자열(셀이 비어 있음)을 "값 없음"으로 취급한다 — 필수 컬럼이면 required 에러로,
- * 선택 컬럼이면 undefined로 이어진다. 이게 없으면 z.coerce.number()가 ""를 0으로 바꿔
- * "칸을 비웠다"와 "0을 채웠다"를 구분하지 못하게 된다(판매이력 모드 판정에 치명적). */
+/** Treat an empty string (blank cell) as "no value" — for a required column this becomes a
+ * required error, for an optional column it becomes undefined. Without this, z.coerce.number()
+ * turns "" into 0 and we could not distinguish "left the cell blank" from "filled in 0"
+ * (fatal for the sales-history mode decision). */
 function blankToUndefined(v: unknown): unknown {
   if (typeof v === "string" && v.trim() === "") return undefined;
   return v;
 }
 
-/** blankToUndefined 다음, trim 다음에 formula-injection escape(SEC-004, TASKS T32 —
- * `core/csvSafety.ts`)를 역으로 벗겨낸다. trim을 먼저 해야 사람이 스냅샷 CSV를 열어 앞에
- * 실수로 공백을 남겨도(`  '=foo`) 접두사 판정이 흔들리지 않는다. 매장명·상품명·SKU처럼
- * 사람이 채우는 자유 텍스트 컬럼에만 적용 — 통화 코드 등 다른 문자열 컬럼은 형식이 고정돼
- * 애초에 위험 접두사가 나올 수 없다. */
+/** After blankToUndefined and after trim, reverse the formula-injection escape (SEC-004,
+ * TASKS T32 — `core/csvSafety.ts`). Trimming first means the prefix check stays stable even
+ * if a person opens the snapshot CSV and accidentally leaves leading whitespace (`  '=foo`).
+ * Applied only to free-text columns a human fills in, such as store, product and sku — other
+ * string columns such as the currency code have a fixed format, so a dangerous prefix cannot
+ * occur there in the first place. */
 function requiredTrimmedString(label: string) {
   return z.preprocess(
     (v) => {
@@ -34,20 +38,21 @@ function requiredTrimmedString(label: string) {
         ? unescapeCsvFormulaPrefix(afterBlank.trim())
         : afterBlank;
     },
-    z.string({ error: `${label}은(는) 필수 컬럼입니다.` }).min(1, `${label}이(가) 비어 있습니다.`),
+    z.string({ error: `${label} is a required column.` }).min(1, `${label} is empty.`),
   );
 }
 
 function nonNegativeNumber(label: string) {
   return z.coerce
-    .number({ error: `${label}은(는) 숫자여야 합니다.` })
+    .number({ error: `${label} must be a number.` })
     .refine((n) => Number.isFinite(n) && n >= 0, {
-      message: `${label}은(는) 0 이상의 숫자여야 합니다.`,
+      message: `${label} must be a number of 0 or more.`,
     });
 }
 
-/** 필수 숫자 컬럼 — 빈 셀("")도 z.coerce.number()가 0으로 바꾸기 전에 undefined로 돌려
- * "필수인데 비어 있다"는 에러가 정확히 나오게 한다(재고수량 등). */
+/** Required numeric column — a blank cell ("") is turned back into undefined before
+ * z.coerce.number() would make it 0, so the error correctly says "required but empty"
+ * (stock_qty etc.). */
 function requiredNonNegativeNumber(label: string) {
   return z.preprocess(blankToUndefined, nonNegativeNumber(label));
 }
@@ -56,14 +61,15 @@ function optionalNonNegativeNumber(label: string) {
   return z.preprocess(blankToUndefined, nonNegativeNumber(label).optional());
 }
 
-/** 포장수량(팩사이즈, SPEC §14) — 0은 "포장 단위 없음"과 구분이 안 돼 의미가 없으므로 0 초과. */
+/** pack_size (pack size, SPEC §14) — 0 is meaningless because it cannot be told apart from
+ * "no pack unit", so the value must be greater than 0. */
 function optionalPositiveNumber(label: string) {
   return z.preprocess(
     blankToUndefined,
     z.coerce
-      .number({ error: `${label}은(는) 숫자여야 합니다.` })
+      .number({ error: `${label} must be a number.` })
       .refine((n) => Number.isFinite(n) && n > 0, {
-        message: `${label}은(는) 0보다 큰 숫자여야 합니다.`,
+        message: `${label} must be a number greater than 0.`,
       })
       .optional(),
   );
@@ -72,7 +78,7 @@ function optionalPositiveNumber(label: string) {
 function optionalDate(label: string) {
   return z.preprocess(
     blankToUndefined,
-    z.coerce.date({ error: `${label}은(는) 날짜여야 합니다.` }).optional(),
+    z.coerce.date({ error: `${label} must be a date.` }).optional(),
   );
 }
 
@@ -82,7 +88,7 @@ function optionalCurrencyCode() {
     z
       .string()
       .trim()
-      .regex(/^[A-Za-z]{3}$/, "통화는 3글자 코드(예: PHP, KRW, USD)여야 합니다.")
+      .regex(/^[A-Za-z]{3}$/, "currency must be a 3-letter code (e.g. PHP, KRW, USD).")
       .transform((v) => v.toUpperCase())
       .optional(),
   );
@@ -90,52 +96,55 @@ function optionalCurrencyCode() {
 
 export const csvRowSchema = z
   .object({
-    매장명: requiredTrimmedString("매장명"),
-    상품명: requiredTrimmedString("상품명"),
-    SKU: requiredTrimmedString("SKU"),
-    재고수량: requiredNonNegativeNumber("재고수량"),
-    판매수량: optionalNonNegativeNumber("판매수량"),
-    판매기간시작일: optionalDate("판매기간시작일"),
-    판매기간종료일: optionalDate("판매기간종료일"),
-    단가: optionalNonNegativeNumber("단가"),
-    통화: optionalCurrencyCode(),
-    저재고임계치: optionalNonNegativeNumber("저재고임계치"),
-    // SPEC §14 "팩 단위 반올림" — 선택 컬럼. 없으면 낱개 매입 가능한 품목으로 취급한다
-    // (기존 템플릿에 이 컬럼이 없어도 그대로 파싱된다 — 하위 호환).
-    포장수량: optionalPositiveNumber("포장수량"),
+    store: requiredTrimmedString("store"),
+    product: requiredTrimmedString("product"),
+    sku: requiredTrimmedString("sku"),
+    stock_qty: requiredNonNegativeNumber("stock_qty"),
+    sales_qty: optionalNonNegativeNumber("sales_qty"),
+    period_start: optionalDate("period_start"),
+    period_end: optionalDate("period_end"),
+    unit_price: optionalNonNegativeNumber("unit_price"),
+    currency: optionalCurrencyCode(),
+    low_stock_threshold: optionalNonNegativeNumber("low_stock_threshold"),
+    // SPEC §14 "pack-unit rounding" — optional column. When absent the item is treated as one
+    // that can be bought individually (older templates without this column still parse —
+    // backward compatible).
+    pack_size: optionalPositiveNumber("pack_size"),
   })
   .superRefine((row, ctx) => {
-    const hasSales = row.판매수량 !== undefined;
-    const hasStart = row.판매기간시작일 !== undefined;
-    const hasEnd = row.판매기간종료일 !== undefined;
+    const hasSales = row.sales_qty !== undefined;
+    const hasStart = row.period_start !== undefined;
+    const hasEnd = row.period_end !== undefined;
 
     if (hasSales && !(hasStart && hasEnd)) {
       ctx.addIssue({
         code: "custom",
         message:
-          "판매수량이 있으면 판매기간시작일·판매기간종료일이 모두 있어야 일평균판매를 계산할 수 있습니다.",
-        path: ["판매기간시작일"],
+          "If sales_qty is present, both period_start and period_end are required to compute average daily sales.",
+        path: ["period_start"],
       });
     }
     if (!hasSales && (hasStart || hasEnd)) {
       ctx.addIssue({
         code: "custom",
-        message: "판매기간만 있고 판매수량이 없습니다 — 판매수량을 채우거나 기간을 지우세요.",
-        path: ["판매수량"],
+        message:
+          "A sales period is given but sales_qty is missing — fill in sales_qty or clear the period.",
+        path: ["sales_qty"],
       });
     }
-    if (hasStart && hasEnd && row.판매기간시작일! >= row.판매기간종료일!) {
+    if (hasStart && hasEnd && row.period_start! >= row.period_end!) {
       ctx.addIssue({
         code: "custom",
-        message: "판매기간시작일은 판매기간종료일보다 앞서야 합니다.",
-        path: ["판매기간종료일"],
+        message: "period_start must be before period_end.",
+        path: ["period_end"],
       });
     }
-    if (row.단가 !== undefined && row.통화 === undefined) {
+    if (row.unit_price !== undefined && row.currency === undefined) {
       ctx.addIssue({
         code: "custom",
-        message: "단가가 있으면 통화 코드도 필요합니다(SPEC §9 — 통화 없이 금액을 다루지 않는다).",
-        path: ["통화"],
+        message:
+          "If unit_price is present, a currency code is also required (SPEC §9 — amounts are never handled without a currency).",
+        path: ["currency"],
       });
     }
   });
@@ -143,23 +152,24 @@ export const csvRowSchema = z
 export type CsvRow = z.infer<typeof csvRowSchema>;
 
 /**
- * `raw`(헤더별로 파싱된 한 행)를 검증한다. 실패하면 원인을 전부 모아 하나의 에러로 던진다
- * (CLAUDE.md "에러 메시지는 원인 + 수정 방법까지").
+ * Validate `raw` (a single row parsed per header). On failure, collect every cause and throw
+ * a single error (CLAUDE.md "error messages give the cause and how to fix it").
  */
 export function parseCsvRow(raw: unknown): CsvRow {
   const result = csvRowSchema.safeParse(raw);
   if (!result.success) {
     const detail = result.error.issues
-      .map((issue) => `${issue.path.join(".") || "(행 전체)"}: ${issue.message}`)
+      .map((issue) => `${issue.path.join(".") || "(whole row)"}: ${issue.message}`)
       .join("; ");
-    throw new Error(`CSV/Excel 행이 SPEC §12 고정 템플릿과 맞지 않습니다 — ${detail}`);
+    throw new Error(`CSV/Excel row does not match the SPEC §12 fixed template — ${detail}`);
   }
   return result.data;
 }
 
-/** 판매이력이 있는 행인지(셀스루 계산 가능) 없는 행인지(임계치 폴백) 판정한다. SPEC §12. */
+/** Decide whether a row has sales history (sell-through can be computed) or not (threshold
+ * fallback). SPEC §12. */
 export type SalesHistoryMode = "history" | "no_history";
 
 export function salesHistoryModeOf(row: CsvRow): SalesHistoryMode {
-  return row.판매수량 !== undefined ? "history" : "no_history";
+  return row.sales_qty !== undefined ? "history" : "no_history";
 }

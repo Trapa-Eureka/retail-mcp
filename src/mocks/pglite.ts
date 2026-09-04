@@ -1,9 +1,10 @@
 /**
- * 테스트 전용 PGlite 웨어하우스 헬퍼 (TESTING.md §2).
- * 테스트마다 새 인프로세스 Postgres 인스턴스를 만들고, adapters/migrationRunner.ts의 공용
- * runner(loadMigrations/runMigrations)로 migrations/*.sql을 적용해 운영(Postgres)과
- * 동일한 스키마 + 동일한 러너 동작(파일명 검증, 이력 테이블, checksum)을 보장한다.
- * 네트워크 호출 없음.
+ * Test-only PGlite warehouse helper (TESTING.md §2).
+ * Creates a fresh in-process Postgres instance per test and applies migrations/*.sql with the
+ * shared runner from adapters/migrationRunner.ts (loadMigrations/runMigrations), guaranteeing
+ * the same schema as production (Postgres) and the same runner behaviour (file name
+ * validation, history table, checksum).
+ * No network calls.
  */
 import { PGlite } from "@electric-sql/pglite";
 import {

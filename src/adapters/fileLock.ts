@@ -1,12 +1,12 @@
 /**
- * 디렉터리 단위 배타 접근을 위한 파일 락. PGlite는 같은 데이터 디렉터리를 여러 프로세스가
- * 동시에 열어도 에러를 내지 않고 나중에 연 프로세스의 쓰기를 조용히 유실한다(SPEC.md §12
- * "PGlite 다중 프로세스 동시 접근" 스파이크 결과) — PGlite 자체의 동시성 보장에 기대지 않고,
- * 이 모듈이 PID+타임스탬프 락 파일로 "이미 다른 살아있는 프로세스가 쓰고 있으면 시작을
- * 거부"하게 만든다(TASKS.md T13).
+ * File lock for directory-level exclusive access. PGlite does not raise an error when several
+ * processes open the same data directory at once; it silently loses the writes of the process
+ * that opened it later (SPEC.md §12 "PGlite multi-process concurrent access" spike result) —
+ * instead of relying on PGlite's own concurrency guarantees, this module uses a PID+timestamp
+ * lock file to "refuse to start if another live process is already using it" (TASKS.md T13).
  *
- * 락 파일은 보호 대상 디렉터리 밖에 둔다(`{targetPath}.lock`) — PGlite 데이터 디렉터리
- * 안에 낯선 파일을 넣지 않기 위해서다.
+ * The lock file lives outside the protected directory (`{targetPath}.lock`) — so that no
+ * foreign file is placed inside the PGlite data directory.
  */
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -15,29 +15,29 @@ import { hostname as osHostname, networkInterfaces } from "node:os";
 import path from "node:path";
 
 export interface FileLock {
-  /** 이 프로세스가 보유한 락이 맞는지 확인 후 락 파일을 지운다. 다른 프로세스 소유면 무시한다. */
+  /** Verifies the lock is held by this process, then deletes the lock file. Ignored if another process owns it. */
   release(): Promise<void>;
 }
 
 export interface FileLockOptions {
-  /** 테스트 주입용. 기본값: process.pid. */
+  /** For test injection. Default: process.pid. */
   pid?: number;
-  /** 테스트 주입용. 기본값: process.kill(pid, 0)로 생존 여부 확인. */
+  /** For test injection. Default: liveness check via process.kill(pid, 0). */
   isAlive?: (pid: number) => boolean;
-  /** 테스트 주입용. 기본값: () => new Date(). */
+  /** For test injection. Default: () => new Date(). */
   nowFn?: () => Date;
-  /** stale lock을 회수한 뒤 재시도할 최대 횟수(다른 프로세스와의 경합 대비). 기본 5. */
+  /** Maximum number of retries after reclaiming a stale lock (to handle contention with other processes). Default 5. */
   maxRetries?: number;
-  /** 테스트 주입용(OPS-002). 기본값: os.hostname(). */
+  /** For test injection (OPS-002). Default: os.hostname(). */
   hostname?: string;
-  /** 테스트 주입용(2차 적대적 검수 SR2-LOCK-001). 기본값: defaultGetMachineId()(첫 번째
-   * non-internal 네트워크 인터페이스의 MAC 주소, 못 구하면 undefined). */
+  /** For test injection (second adversarial review SR2-LOCK-001). Default: defaultGetMachineId()
+   * (MAC address of the first non-internal network interface, undefined if unavailable). */
   machineId?: string;
   /**
-   * 테스트 주입용(OPS-002) — 주어진 pid로 실행 중인 프로세스의 시작 시각을 구할 수 있으면
-   * 문자열로, 못 구하면(플랫폼 미지원·권한 없음·프로세스 없음) null을 반환한다. 기본값은
-   * POSIX에서 `ps -o lstart= -p <pid>`(Windows는 항상 null — 아래 defaultGetProcessStartedAt
-   * 참고).
+   * For test injection (OPS-002) — returns the start time of the process running under the
+   * given pid as a string if it can be determined, or null if not (unsupported platform, no
+   * permission, no such process). Default is `ps -o lstart= -p <pid>` on POSIX (always null on
+   * Windows — see defaultGetProcessStartedAt below).
    */
   getProcessStartedAt?: (pid: number) => string | null;
 }
@@ -45,35 +45,41 @@ export interface FileLockOptions {
 interface LockFileContent {
   pid: number;
   acquiredAt: string;
-  /** OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 방법이 없으므로 자동
-   * 회수하지 않는다(수동 확인 필요). 이 필드가 없는 락(T34 이전 형식, 또는 다른 도구가 만든
-   * 파일)은 **소유 호스트 불명**으로 취급해 마찬가지로 자동 회수하지 않는다(2차 적대적 검수
-   * SR2-LOCK-002 — 예전엔 "같은 호스트"로 간주해 로컬 PID 검사만으로 회수했는데, 공유
-   * filesystem에서 다른 호스트의 살아있는 락을 뺏을 수 있었다). 현재 코드는 항상 기록한다. */
+  /** OPS-002 — a lock written by another host cannot have its liveness checked from this
+   * process, so it is never reclaimed automatically (manual verification required). A lock
+   * without this field (pre-T34 format, or a file created by another tool) is treated as
+   * **owner host unknown** and likewise never reclaimed automatically (second adversarial
+   * review SR2-LOCK-002 — previously it was assumed to be "the same host" and reclaimed based
+   * on the local PID check alone, which could steal a live lock of another host on a shared
+   * filesystem). Current code always records it. */
   hostname?: string;
-  /** 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
-   * 머신/컨테이너가 같은 값을 쓰면(흔한 기본 hostname, 동일 이미지의 컨테이너 등) 오판할 수
-   * 있다. MAC 주소는 물리/가상 NIC에 묶인 값이라 그런 충돌 확률이 훨씬 낮다 — 이 값이 있으면
-   * hostname 문자열 비교보다 우선한다(둘 다 있을 때). 구버전 락(필드 없음)이나 이 값을 구할 수
-   * 없는 환경(네트워크 인터페이스 없음 등)에서는 기존 hostname 판정으로 폴백한다. */
+  /** Second adversarial review SR2-LOCK-001 — hostname is a user-editable string, so different
+   * machines/containers using the same value (a common default hostname, containers from the
+   * same image, etc.) could be misjudged. A MAC address is bound to a physical/virtual NIC, so
+   * such collisions are far less likely — when this value is present it takes precedence over
+   * the hostname string comparison (when both exist). For older locks (field missing) or
+   * environments where it cannot be determined (no network interface etc.), fall back to the
+   * existing hostname judgement. */
   machineId?: string;
-  /** 같은 pid·hostname이라도 이 락을 실제로 만든 실행 인스턴스를 구분하는 무작위 값
-   * (release()가 pid만이 아니라 이 값도 맞는지 확인한다 — OPS-002 보강). */
+  /** A random value that distinguishes the actual run instance that created this lock, even
+   * with the same pid/hostname (release() checks this value as well as the pid — OPS-002 hardening). */
   nonce?: string;
-  /** OPS-002 — PID 재사용(죽은 프로세스의 PID를 OS가 다른 프로세스에 재할당) 오판 완화용
-   * 보조 신호. 락을 만들 당시 이 pid로 실행 중이던 프로세스의 시작 시각(구할 수 있는
-   * 플랫폼에서만) — 나중에 같은 pid가 "살아있다"고 나와도 그 pid의 *현재* 시작 시각이 이
-   * 값과 다르면 그 사이 pid가 재사용된 것으로 판단해 stale 취급한다. null/누락이면 이 신호
-   * 없이 기존 PID-only 판정을 쓴다(필수 신호가 아니다).
+  /** OPS-002 — auxiliary signal to mitigate PID reuse misjudgement (the OS reassigning a dead
+   * process's PID to another process). The start time of the process running under this pid
+   * when the lock was created (only on platforms where it can be determined) — if later the
+   * same pid reports "alive" but the pid's *current* start time differs from this value, the
+   * pid was reused in the meantime and the lock is treated as stale. If null/missing, the
+   * existing PID-only judgement is used without this signal (it is not a required signal).
    */
   pidStartedAt?: string | null;
 }
 
-/** POSIX(macOS/Linux 공통 `ps -o lstart=`)에서만 시도한다 — Windows엔 동등한 무설치 명령이
- * 없고(`wmic`/PowerShell은 더 무겁고 이 프로젝트가 검증한 적 없음, OPS-006 참고), 실패하면
- * (ps 없음·권한 없음·이미 종료) OPS-002의 보조 신호일 뿐이므로 조용히 null로 폴백한다 — 이
- * 함수가 예외를 던지면 락 획득 자체가 막히는데, 그건 이 신호가 의도한 "완화"가 아니라
- * "새 장애"가 된다. */
+/** Only attempted on POSIX (`ps -o lstart=` is common to macOS/Linux) — Windows has no
+ * equivalent command without extra installs (`wmic`/PowerShell are heavier and this project has
+ * never validated them, see OPS-006), and on failure (no ps, no permission, already exited) it
+ * silently falls back to null since this is only OPS-002's auxiliary signal — if this function
+ * threw, lock acquisition itself would be blocked, which would be a "new failure" rather than
+ * the "mitigation" this signal is meant to be. */
 function defaultGetProcessStartedAt(pid: number): string | null {
   if (process.platform === "win32") return null;
   try {
@@ -87,16 +93,19 @@ function defaultGetProcessStartedAt(pid: number): string | null {
   }
 }
 
-/** 2차 적대적 검수 SR2-LOCK-001 — hostname 문자열 충돌(동일 기본 hostname을 쓰는 서로 다른
- * 머신/컨테이너)이 다른 호스트의 active lock을 stale로 오판·삭제하게 만드는 문제의 보조 신호.
- * 디스크에 아무것도 쓰지 않고(설치 시 UUID를 파일로 영속화하는 방식은 lock 대상 디렉터리 자체가
- * 공유/network filesystem일 때 그 파일도 같이 공유돼 목적을 못 이룬다) 이미 OS가 들고 있는
- * network interface MAC 주소를 그대로 쓴다 — 물리/가상 NIC에 묶인 값이라 hostname보다 충돌
- * 확률이 훨씬 낮고, 동기 호출이라 테스트에서 실제 파일 IO 부수효과가 없다. loopback(internal)과
- * 값이 없는 인터페이스는 제외하고 첫 번째로 찾은 값을 쓴다 — 인터페이스가 여러 개여도 이 값은
- * "같은 머신인지" 판정의 보조 신호일 뿐이라 어느 걸 골라도 일관되게 재현 가능하면 충분하다.
- * 못 구하면(네트워크 인터페이스 없는 샌드박스 등) undefined — 이 경우 기존 hostname 판정으로
- * 안전하게 폴백한다(이 함수가 예외를 던지면 락 획득 자체가 막히므로 절대 throw하지 않는다). */
+/** Second adversarial review SR2-LOCK-001 — auxiliary signal against the problem where a
+ * hostname string collision (different machines/containers using the same default hostname)
+ * causes another host's active lock to be misjudged as stale and deleted. Writes nothing to disk
+ * (persisting a UUID to a file at install time fails its purpose when the lock target directory
+ * itself is a shared/network filesystem, because that file would be shared too) and reuses the
+ * network interface MAC address the OS already holds — bound to a physical/virtual NIC, so
+ * collisions are far less likely than with hostname, and the call is synchronous so tests have
+ * no real file IO side effects. Loopback (internal) and interfaces without a value are skipped
+ * and the first one found is used — even with several interfaces this value is only an
+ * auxiliary "same machine?" signal, so any choice is fine as long as it is consistently
+ * reproducible. If unavailable (a sandbox without network interfaces etc.) returns undefined —
+ * in that case it safely falls back to the existing hostname judgement (never throws, because
+ * a throw here would block lock acquisition itself). */
 function defaultGetMachineId(): string | undefined {
   try {
     for (const entries of Object.values(networkInterfaces())) {
@@ -113,9 +122,10 @@ function defaultGetMachineId(): string | undefined {
 }
 
 export class FileLockBusyError extends Error {
-  /** 2차 적대적 검수 SR2-LOCK-002 — 락 파일에 hostname이 없어(구버전 형식) 어느 호스트의
-   * 프로세스가 만들었는지 알 수 없는 경우 true. 이때는 로컬 PID 검사가 무의미하므로(다른
-   * 호스트의 pid일 수 있다) 자동 회수하지 않고, 사람이 확인 후 직접 지워야 한다. */
+  /** Second adversarial review SR2-LOCK-002 — true when the lock file has no hostname (legacy
+   * format), so it is unknown which host's process created it. The local PID check is
+   * meaningless then (the pid may belong to another host), so it is not reclaimed automatically
+   * and a person must verify and delete it manually. */
   public readonly unknownHost: boolean;
 
   constructor(
@@ -127,17 +137,17 @@ export class FileLockBusyError extends Error {
   ) {
     const unknownHost = opts.unknownHost ?? false;
     const hostNote = unknownHost
-      ? " 락 파일에 소유 호스트 정보(hostname)가 없습니다(구버전 형식) — 어느 호스트의 프로세스가 만들었는지 알 수 없어 이 머신의 PID 검사로는 stale 여부를 판정할 수 없으므로 자동 회수하지 않습니다."
+      ? " The lock file has no owner host information (hostname) (legacy format) — it is unknown which host's process created it, so this machine's PID check cannot decide whether it is stale and it will not be reclaimed automatically."
       : holderHostname !== undefined
-        ? ` 락은 호스트 "${holderHostname}"의 프로세스가 만들었습니다 — 다른 호스트의 프로세스면 이 머신에서 생사를 확인할 수 없어 자동 회수하지 않습니다.`
+        ? ` The lock was created by a process on host "${holderHostname}" — if that is a process on another host, its liveness cannot be checked from this machine and it will not be reclaimed automatically.`
         : "";
     const remedy = unknownHost
-      ? `다른 호스트를 포함해 이 디렉터리를 쓰고 있는 프로세스가 없음을 확인한 뒤 ${lockPath}를 직접 삭제하고 다시 시도하세요.`
-      : `그 프로세스가 끝난 뒤 다시 시도하세요. 프로세스가 이미 죽었는데도 이 에러가 계속 뜨면 ${lockPath}를 수동으로 삭제하세요.`;
+      ? `Verify that no process, including on other hosts, is using this directory, then delete ${lockPath} manually and try again.`
+      : `Try again after that process has finished. If this error keeps appearing even though the process is already dead, delete ${lockPath} manually.`;
     super(
-      `${lockPath}를 프로세스 ${holderPid}가 이미 사용 중입니다(${acquiredAt}부터).${hostNote} ` +
-        "같은 데이터 디렉터리를 두 프로세스가 동시에 열면 PGlite가 조용히 데이터를 잃을 수 " +
-        `있습니다(SPEC §12) — ${remedy}`,
+      `${lockPath} is already in use by process ${holderPid} (since ${acquiredAt}).${hostNote} ` +
+        "If two processes open the same data directory at the same time, PGlite may silently " +
+        `lose data (SPEC §12) — ${remedy}`,
     );
     this.name = "FileLockBusyError";
     this.unknownHost = unknownHost;
@@ -150,12 +160,12 @@ function isNodeErrnoException(err: unknown): err is NodeJS.ErrnoException {
 
 function defaultIsAlive(pid: number): boolean {
   try {
-    // signal 0: 신호를 실제로 보내지 않고 프로세스 존재·권한만 확인한다.
+    // signal 0: does not actually send a signal; only checks process existence and permission.
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    // ESRCH: 그 PID의 프로세스가 없다(죽었다) — stale lock. EPERM 등 다른 에러는 존재는
-    // 하지만 신호 권한이 없다는 뜻이므로 "살아있다"로 보수적으로 취급한다.
+    // ESRCH: no process with that PID (it died) — stale lock. Other errors such as EPERM mean
+    // it exists but we lack signal permission, so conservatively treat it as "alive".
     return isNodeErrnoException(err) ? err.code !== "ESRCH" : true;
   }
 }
@@ -166,15 +176,18 @@ function lockPathFor(targetPath: string): string {
 
 async function tryCreateLockFile(lockPath: string, content: LockFileContent): Promise<boolean> {
   try {
-    // 락 파일의 부모 디렉터리가 아직 없을 수 있다 — 예를 들어 임베디드 PGlite 기본 경로
-    // `.retail-mcp/data`(DESIGN §12.1, 새 설치 첫 실행)는 그 부모 `.retail-mcp/`조차 아직
-    // 없는 완전히 새 디렉터리에서 시작한다. 착수 중 발견(QA-001 tarball smoke test,
-    // `scripts/verifyPack.ts`) — mkdir 없이 바로 `wx`로 쓰면 ENOENT로 실패했다. `recursive:
-    // true`라 이미 있어도 안전하고, 동시에 두 프로세스가 mkdir해도 에러 없이 성공한다(POSIX
-    // mkdir -p와 동일 시맨틱) — 아래 'wx' 배타 생성이 실제 경합 조정을 맡는다.
+    // The lock file's parent directory may not exist yet — for example the embedded PGlite
+    // default path `.retail-mcp/data` (DESIGN §12.1, first run of a fresh install) starts from
+    // a completely new directory where even the parent `.retail-mcp/` does not exist yet. Found
+    // during work (QA-001 tarball smoke test, `scripts/verifyPack.ts`) — writing with `wx`
+    // directly without mkdir failed with ENOENT. `recursive: true` is safe if it already
+    // exists, and two processes calling mkdir at the same time both succeed without error
+    // (same semantics as POSIX mkdir -p) — the 'wx' exclusive create below does the actual
+    // contention arbitration.
     await mkdir(path.dirname(lockPath), { recursive: true });
-    // 'wx': 파일이 이미 있으면 실패하는 배타적 생성 — 단일 syscall이라 두 프로세스가 동시에
-    // 시도해도 하나만 성공한다(TOCTOU 경합 없음, SPEC §12 스파이크가 재현한 문제의 해결책).
+    // 'wx': exclusive create that fails if the file already exists — a single syscall, so even
+    // if two processes try at once only one succeeds (no TOCTOU race; the fix for the problem
+    // the SPEC §12 spike reproduced).
     await writeFile(lockPath, JSON.stringify(content), { flag: "wx" });
     return true;
   } catch (err) {
@@ -201,19 +214,20 @@ async function readLockFile(lockPath: string): Promise<LockFileContent | null> {
     ) {
       return parsed as LockFileContent;
     }
-    throw new Error("형식이 예상과 다릅니다.");
+    throw new Error("Unexpected format.");
   } catch (err) {
     throw new Error(
-      `${lockPath}의 내용을 해석할 수 없습니다(손상됐을 수 있습니다). ` +
-        "다른 프로세스가 이 디렉터리를 쓰고 있지 않은지 확인한 뒤 파일을 수동으로 삭제하세요.",
+      `Cannot parse the contents of ${lockPath} (it may be corrupted). ` +
+        "Verify that no other process is using this directory, then delete the file manually.",
       { cause: err },
     );
   }
 }
 
 /**
- * `targetPath`(디렉터리 등)에 대한 배타 락을 획득한다. 이미 살아있는 프로세스가 보유 중이면
- * `FileLockBusyError`를 던진다. 죽은 프로세스가 남긴 stale lock은 자동으로 회수하고 재시도한다.
+ * Acquires an exclusive lock on `targetPath` (a directory etc.). Throws `FileLockBusyError` if a
+ * live process already holds it. A stale lock left by a dead process is reclaimed automatically
+ * and the acquisition is retried.
  */
 export async function acquireFileLock(
   targetPath: string,
@@ -236,17 +250,17 @@ export async function acquireFileLock(
       hostname,
       nonce,
       pidStartedAt: getProcessStartedAt(pid),
-      // exactOptionalPropertyTypes: machineId를 못 구했을 때(undefined) 필드 자체를 아예 안
-      // 넣는다 — `machineId: undefined`를 명시적으로 넣는 것과 다르다(구버전 락과 동일하게
-      // "이 신호가 없다"로 취급되게 하려는 의도).
+      // exactOptionalPropertyTypes: when machineId could not be determined (undefined), omit the
+      // field entirely — this differs from explicitly writing `machineId: undefined` (the intent
+      // is for it to be treated as "this signal is absent", the same as an older lock).
       ...(machineId !== undefined ? { machineId } : {}),
     };
     if (await tryCreateLockFile(lockPath, content)) {
       return {
         async release(): Promise<void> {
           const current = await readLockFile(lockPath);
-          // 우리 소유가 아니면(pid도 다르거나, 같은 pid라도 다른 인스턴스의 nonce면) 그대로
-          // 둔다 — nonce는 구버전 락 파일엔 없을 수 있어 그 경우 pid만으로 비교한다.
+          // If it is not ours (different pid, or same pid but another instance's nonce), leave
+          // it alone — nonce may be absent in older lock files, in which case compare pid only.
           if (current === null || current.pid !== pid) return;
           if (typeof current.nonce === "string" && current.nonce !== nonce) return;
           try {
@@ -259,32 +273,36 @@ export async function acquireFileLock(
     }
 
     const holder = await readLockFile(lockPath);
-    if (holder === null) continue; // 그 사이 다른 프로세스가 release했다 — 바로 재시도.
+    if (holder === null) continue; // Another process released it in the meantime — retry immediately.
 
-    // 2차 적대적 검수 SR2-LOCK-002 — hostname 필드가 없는 락(T34 이전 형식)은 어느 호스트의
-    // 프로세스가 만들었는지 알 수 없다. 예전엔 하위 호환으로 "같은 호스트"로 간주해 아래 PID
-    // 판정으로 넘겼는데, 공유/network filesystem에서는 다른 호스트의 살아있는 pid가 이 머신에
-    // 없다는 이유만으로 stale로 오판·삭제될 수 있었다. 그래서 **소유 호스트 불명 = busy**로
-    // 보수 처리하고 사람이 확인 후 직접 지우게 한다. 마이그레이션 옵션은 두지 않는다 — 이
-    // 패키지는 아직 npm 게시 전이라 사용자 측에 구버전 락이 존재하지 않고, 현재 코드는 항상
-    // hostname을 기록하므로 이 분기는 사실상 "정체 불명의 락 파일"에만 걸린다.
+    // Second adversarial review SR2-LOCK-002 — a lock without a hostname field (pre-T34 format)
+    // gives no way to tell which host's process created it. Previously, for backward
+    // compatibility, it was assumed to be "the same host" and passed to the PID judgement below,
+    // but on a shared/network filesystem a live pid on another host could be misjudged as stale
+    // and deleted merely because it does not exist on this machine. So **owner host unknown =
+    // busy** is handled conservatively and a person must verify and delete it manually. No
+    // migration option is provided — this package is not yet published to npm so no legacy
+    // locks exist on the user side, and current code always records hostname, so this branch
+    // effectively only triggers on "lock files of unknown origin".
     if (typeof holder.hostname !== "string") {
       throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, undefined, {
         unknownHost: true,
       });
     }
 
-    // OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 수 없다.
+    // OPS-002 — a lock written by another host cannot have its liveness checked from this process.
     //
-    // 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
-    // 머신/컨테이너가 우연히 같은 값을 쓰면(흔한 기본 hostname, 동일 베이스 이미지의 컨테이너
-    // 등) "같은 호스트"로 오판해 다른 호스트가 실제 쓰고 있는 락을 stale로 삭제할 수 있었다.
-    // 양쪽 다 machineId(네트워크 인터페이스 MAC, defaultGetMachineId 참고)를 구할 수 있으면
-    // hostname 문자열 비교보다 이 값을 우선한다 — hostname이 같아도 machineId가 다르면 다른
-    // 호스트로 판정한다(반대로 hostname이 달라도 machineId가 같으면 같은 호스트로 판정 —
-    // hostname이 실행 중 바뀌는 드문 경우까지 커버). 둘 중 하나라도 machineId를 못 구했으면
-    // (machineId 도입 전 락, 네트워크 인터페이스 없는 샌드박스 등) 이 신호 없이 hostname
-    // 판정으로 폴백한다 — hostname은 위에서 존재를 보장했으므로 여기서는 항상 비교 가능하다.
+    // Second adversarial review SR2-LOCK-001 — hostname is a user-editable string, so if
+    // different machines/containers happen to use the same value (a common default hostname,
+    // containers from the same base image, etc.) they could be misjudged as "the same host" and
+    // a lock actually in use by another host could be deleted as stale. When both sides can
+    // determine a machineId (network interface MAC, see defaultGetMachineId), that value takes
+    // precedence over the hostname string comparison — even with equal hostnames, a different
+    // machineId means another host (and conversely, different hostnames with the same machineId
+    // mean the same host — covering the rare case where the hostname changes while running).
+    // If either side lacks a machineId (a lock from before machineId was introduced, a sandbox
+    // without network interfaces, etc.), fall back to the hostname judgement without this
+    // signal — hostname presence was guaranteed above, so it is always comparable here.
     const holderMachineId = typeof holder.machineId === "string" ? holder.machineId : undefined;
     const crossHost =
       holderMachineId !== undefined && machineId !== undefined
@@ -295,10 +313,11 @@ export async function acquireFileLock(
     }
 
     if (isAlive(holder.pid)) {
-      // PID는 살아있지만, 락을 만들 때 기록해둔 프로세스 시작 시각과 지금 그 pid로 실행 중인
-      // 프로세스의 시작 시각이 다르면 그 사이 OS가 pid를 재사용한 것이다(OPS-002) — "살아
-      // 있다"는 신호를 무시하고 stale로 취급한다. 둘 중 하나라도 못 구했으면(구버전 락,
-      // Windows, 권한 없음 등) 이 신호를 쓰지 않고 기존처럼 "살아있다"로 취급한다.
+      // The PID is alive, but if the process start time recorded when the lock was created
+      // differs from the start time of the process now running under that pid, the OS reused
+      // the pid in the meantime (OPS-002) — ignore the "alive" signal and treat it as stale. If
+      // either value is unavailable (older lock, Windows, no permission, etc.), this signal is
+      // not used and it is treated as "alive" as before.
       const recordedStartedAt = holder.pidStartedAt;
       const currentStartedAt = getProcessStartedAt(holder.pid);
       const pidReused =
@@ -310,8 +329,8 @@ export async function acquireFileLock(
       }
     }
 
-    // stale lock — 죽은 프로세스가 남겼거나(isAlive false) pid가 재사용된 경우이므로 회수하고
-    // 재시도한다.
+    // Stale lock — left by a dead process (isAlive false) or the pid was reused, so reclaim it
+    // and retry.
     try {
       await rm(lockPath);
     } catch (err) {
@@ -320,12 +339,12 @@ export async function acquireFileLock(
   }
 
   throw new Error(
-    `${lockPath} 획득을 ${maxRetries}회 재시도했지만 계속 다른 프로세스와 경합했습니다. ` +
-      "잠시 후 다시 시도하세요.",
+    `Acquiring ${lockPath} was retried ${maxRetries} times but kept contending with another process. ` +
+      "Try again shortly.",
   );
 }
 
-/** acquire → fn 실행 → release(성공/실패 무관하게 항상 시도)까지 한 번에 처리하는 편의 함수. */
+/** Convenience function that handles acquire → run fn → release (always attempted, whether fn succeeded or failed) in one go. */
 export async function withFileLock<T>(
   targetPath: string,
   fn: () => Promise<T>,

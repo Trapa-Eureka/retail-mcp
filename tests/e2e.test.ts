@@ -1,10 +1,11 @@
 /**
- * MCP e2e (T10, TASKS.md 완료 기준): 실제 MCP SDK 클라이언트로 stdio 프로토콜과 동일한
- * 요청/응답 형태(JSON-RPC over Transport)를 거쳐 sync_now → sell_through →
- * reorder_suggestions 시나리오를 검증한다. 실 프로세스를 띄우지 않고 InMemoryTransport로
- * 같은 프로세스 안에서 Client↔Server를 연결한다 — 네트워크 호출 0건 원칙(TESTING §1)을
- * 지키면서도 프로토콜 계층(zod 입력 검증, registerTool 등록, CallToolResult 포장)까지
- * 실제로 통과한다는 점에서 `src/mcp/tools.ts` 함수를 직접 부르는 단위 테스트보다 강하다.
+ * MCP e2e (T10, TASKS.md completion criteria): with a real MCP SDK client, verifies the
+ * sync_now → sell_through → reorder_suggestions scenario through the same request/response shape
+ * as the stdio protocol (JSON-RPC over Transport). No real process is spawned; Client↔Server are
+ * linked in the same process via InMemoryTransport — keeping the zero-network principle
+ * (TESTING §1) while still actually exercising the protocol layer (zod input validation,
+ * registerTool registration, CallToolResult wrapping), which makes this stronger than a unit test
+ * calling the `src/mcp/tools.ts` functions directly.
  */
 import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -19,7 +20,7 @@ import { createFixtureLoyverseClient } from "../src/mocks/fixtureLoyverseClient.
 import { createFixedClock } from "../src/mocks/fixedClock.js";
 import type { Clock, ReorderReport, Warehouse } from "../src/core/types.js";
 
-// 픽스처(fixtures/loyverse/*.json)는 2026-09-01T00:00:00Z를 "오늘"로 anchor한다 (T2).
+// The fixtures (fixtures/loyverse/*.json) anchor "today" at 2026-09-01T00:00:00Z (T2).
 const NOW_ISO = "2026-09-01T00:00:00.000Z";
 const BUSINESS_TIMEZONE = "Asia/Manila";
 
@@ -36,7 +37,7 @@ async function setupServer(): Promise<{ client: Client; warehouse: Warehouse; cl
     config: {
       businessTimezone: BUSINESS_TIMEZONE,
       staleThresholdHours: 24,
-      syncToolEnabled: true, // e2e에서는 sync_now까지 시나리오에 포함해야 하므로 켠다.
+      syncToolEnabled: true, // enabled because the e2e scenario must include sync_now.
       exploreSqlEnabled: false,
     },
     loyverseClient,
@@ -52,22 +53,23 @@ async function setupServer(): Promise<{ client: Client; warehouse: Warehouse; cl
 }
 
 /**
- * client.callTool()의 반환 타입은 실험적 task 결과와의 유니온이라 CallToolResult로 바로 좁혀지지
- * 않는다 — 우리 서버는 task를 쓰지 않으므로(runtime으로 이미 확인됨) 여기서 단언한다.
+ * The return type of client.callTool() is a union with the experimental task result, so it does not
+ * narrow to CallToolResult directly — our server does not use tasks (already confirmed at runtime),
+ * so it is asserted here.
  */
 function structuredOf<T>(result: unknown): T {
   const r = result as CallToolResult;
   if (r.isError) {
-    throw new Error(`도구 호출이 에러를 반환했습니다: ${JSON.stringify(r.content)}`);
+    throw new Error(`The tool call returned an error: ${JSON.stringify(r.content)}`);
   }
   return r.structuredContent as T;
 }
 
 describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", () => {
-  it("실제 MCP 클라이언트로 세 도구를 순서대로 호출한 시나리오가 통과한다", async () => {
+  it("the scenario calling the three tools in order through a real MCP client passes", async () => {
     const { client, warehouse, clock } = await setupServer();
 
-    // 1) tools/list — 등록된 6종이 실제 프로토콜 레벨에서 보인다.
+    // 1) tools/list — the 6 registered tools are visible at the actual protocol level.
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
@@ -80,7 +82,7 @@ describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", 
       ].sort(),
     );
 
-    // 2) sync_now — 픽스처 데이터를 PGlite에 적재한다.
+    // 2) sync_now — loads the fixture data into PGlite.
     const syncResult = structuredOf<{
       ok: boolean;
       resources: { resource: string; status: string; item_count: number }[];
@@ -91,22 +93,23 @@ describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", 
       0,
     );
 
-    // sync_status로도 방금 동기화가 반영됐는지 확인 — 도구 간 상태 일관성.
+    // Confirm via sync_status that the sync just performed is reflected — cross-tool state consistency.
     const statusResult = structuredOf<{
       resources: { resource: string; last_synced_at: string | null }[];
     }>(await client.callTool({ name: "sync_status", arguments: {} }));
     expect(statusResult.resources.every((r) => r.last_synced_at !== null)).toBe(true);
 
-    // 3) sell_through — 동기화된 데이터로 실제 값이 나온다(빈 결과가 아님).
+    // 3) sell_through — real values come out of the synced data (not an empty result).
     const sellThroughResult = structuredOf<{
       rows: { store_id: string; variant_id: string; sell_through: number | null }[];
       note: string;
     }>(await client.callTool({ name: "sell_through", arguments: { period_days: 30 } }));
     expect(sellThroughResult.rows.length).toBeGreaterThan(0);
-    expect(sellThroughResult.note).toMatch(/근사식/);
+    expect(sellThroughResult.note).toMatch(/approximat/i);
 
-    // 4) reorder_suggestions — MCP 프로토콜을 거친 결과가 buildReorderReport() 직접 호출
-    // 결과와 완전히 같다(TESTING §4 "도구=에이전트 수치 일치" 회귀 가드, 프로토콜 경유까지 포함).
+    // 4) reorder_suggestions — the result obtained through the MCP protocol is identical to a direct
+    // buildReorderReport() call (TESTING §4 "tool = agent numbers match" regression guard, now
+    // including the protocol round-trip).
     const reorderResult = structuredOf<ReorderReport>(
       await client.callTool({ name: "reorder_suggestions", arguments: {} }),
     );
@@ -114,7 +117,7 @@ describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", 
       { warehouse, clock },
       { businessTimezone: BUSINESS_TIMEZONE },
     );
-    // 프로토콜을 거치면 Date가 ISO 문자열로 직렬화된다 — 그 점만 보정해 비교한다.
+    // Dates are serialised to ISO strings through the protocol — compensate for only that and compare.
     expect({
       ...reorderResult,
       generatedAt: new Date(reorderResult.generatedAt as unknown as string),
@@ -126,7 +129,7 @@ describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", 
     await client.close();
   });
 
-  it("존재하지 않는 store_id를 넘기면 isError:true와 원인이 담긴 메시지를 받는다(프로토콜 레벨 에러 포장)", async () => {
+  it("passing a non-existent store_id yields isError:true and a message stating the cause (protocol-level error wrapping)", async () => {
     const { client } = await setupServer();
     await client.callTool({ name: "sync_now", arguments: {} });
 
@@ -136,7 +139,7 @@ describe("MCP e2e — sync_now → sell_through → reorder_suggestions (T10)", 
     });
     expect(result.isError).toBe(true);
     const text = (result.content as { type: string; text?: string }[])[0]?.text ?? "";
-    expect(text).toMatch(/존재하지 않는 store_id/);
+    expect(text).toMatch(/Unknown store_id/);
 
     await client.close();
   });
