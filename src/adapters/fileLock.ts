@@ -46,8 +46,10 @@ interface LockFileContent {
   pid: number;
   acquiredAt: string;
   /** OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 방법이 없으므로 자동
-   * 회수하지 않는다(수동 확인 필요). 구버전이 쓴 락 파일엔 이 필드가 없을 수 있다 — 그 경우
-   * "같은 호스트"로 간주해 기존 PID 기반 판정으로 폴백한다(하위 호환). */
+   * 회수하지 않는다(수동 확인 필요). 이 필드가 없는 락(T34 이전 형식, 또는 다른 도구가 만든
+   * 파일)은 **소유 호스트 불명**으로 취급해 마찬가지로 자동 회수하지 않는다(2차 적대적 검수
+   * SR2-LOCK-002 — 예전엔 "같은 호스트"로 간주해 로컬 PID 검사만으로 회수했는데, 공유
+   * filesystem에서 다른 호스트의 살아있는 락을 뺏을 수 있었다). 현재 코드는 항상 기록한다. */
   hostname?: string;
   /** 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
    * 머신/컨테이너가 같은 값을 쓰면(흔한 기본 hostname, 동일 이미지의 컨테이너 등) 오판할 수
@@ -111,23 +113,34 @@ function defaultGetMachineId(): string | undefined {
 }
 
 export class FileLockBusyError extends Error {
+  /** 2차 적대적 검수 SR2-LOCK-002 — 락 파일에 hostname이 없어(구버전 형식) 어느 호스트의
+   * 프로세스가 만들었는지 알 수 없는 경우 true. 이때는 로컬 PID 검사가 무의미하므로(다른
+   * 호스트의 pid일 수 있다) 자동 회수하지 않고, 사람이 확인 후 직접 지워야 한다. */
+  public readonly unknownHost: boolean;
+
   constructor(
     lockPath: string,
     public readonly holderPid: number,
     acquiredAt: string,
     holderHostname?: string,
+    opts: { unknownHost?: boolean } = {},
   ) {
-    const crossHostNote =
-      holderHostname !== undefined
+    const unknownHost = opts.unknownHost ?? false;
+    const hostNote = unknownHost
+      ? " 락 파일에 소유 호스트 정보(hostname)가 없습니다(구버전 형식) — 어느 호스트의 프로세스가 만들었는지 알 수 없어 이 머신의 PID 검사로는 stale 여부를 판정할 수 없으므로 자동 회수하지 않습니다."
+      : holderHostname !== undefined
         ? ` 락은 호스트 "${holderHostname}"의 프로세스가 만들었습니다 — 다른 호스트의 프로세스면 이 머신에서 생사를 확인할 수 없어 자동 회수하지 않습니다.`
         : "";
+    const remedy = unknownHost
+      ? `다른 호스트를 포함해 이 디렉터리를 쓰고 있는 프로세스가 없음을 확인한 뒤 ${lockPath}를 직접 삭제하고 다시 시도하세요.`
+      : `그 프로세스가 끝난 뒤 다시 시도하세요. 프로세스가 이미 죽었는데도 이 에러가 계속 뜨면 ${lockPath}를 수동으로 삭제하세요.`;
     super(
-      `${lockPath}를 프로세스 ${holderPid}가 이미 사용 중입니다(${acquiredAt}부터).${crossHostNote} ` +
+      `${lockPath}를 프로세스 ${holderPid}가 이미 사용 중입니다(${acquiredAt}부터).${hostNote} ` +
         "같은 데이터 디렉터리를 두 프로세스가 동시에 열면 PGlite가 조용히 데이터를 잃을 수 " +
-        `있습니다(SPEC §12) — 그 프로세스가 끝난 뒤 다시 시도하세요. 프로세스가 이미 죽었는데도 ` +
-        `이 에러가 계속 뜨면 ${lockPath}를 수동으로 삭제하세요.`,
+        `있습니다(SPEC §12) — ${remedy}`,
     );
     this.name = "FileLockBusyError";
+    this.unknownHost = unknownHost;
   }
 }
 
@@ -248,8 +261,20 @@ export async function acquireFileLock(
     const holder = await readLockFile(lockPath);
     if (holder === null) continue; // 그 사이 다른 프로세스가 release했다 — 바로 재시도.
 
-    // OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 수 없다. 구버전이 쓴
-    // 락(hostname 필드 없음)은 "같은 호스트"로 간주해 기존 판정으로 폴백한다(하위 호환).
+    // 2차 적대적 검수 SR2-LOCK-002 — hostname 필드가 없는 락(T34 이전 형식)은 어느 호스트의
+    // 프로세스가 만들었는지 알 수 없다. 예전엔 하위 호환으로 "같은 호스트"로 간주해 아래 PID
+    // 판정으로 넘겼는데, 공유/network filesystem에서는 다른 호스트의 살아있는 pid가 이 머신에
+    // 없다는 이유만으로 stale로 오판·삭제될 수 있었다. 그래서 **소유 호스트 불명 = busy**로
+    // 보수 처리하고 사람이 확인 후 직접 지우게 한다. 마이그레이션 옵션은 두지 않는다 — 이
+    // 패키지는 아직 npm 게시 전이라 사용자 측에 구버전 락이 존재하지 않고, 현재 코드는 항상
+    // hostname을 기록하므로 이 분기는 사실상 "정체 불명의 락 파일"에만 걸린다.
+    if (typeof holder.hostname !== "string") {
+      throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, undefined, {
+        unknownHost: true,
+      });
+    }
+
+    // OPS-002 — 다른 호스트가 쓴 락은 이 프로세스에서 생사를 확인할 수 없다.
     //
     // 2차 적대적 검수 SR2-LOCK-001 — hostname은 사용자가 바꿀 수 있는 문자열이라 서로 다른
     // 머신/컨테이너가 우연히 같은 값을 쓰면(흔한 기본 hostname, 동일 베이스 이미지의 컨테이너
@@ -258,13 +283,13 @@ export async function acquireFileLock(
     // hostname 문자열 비교보다 이 값을 우선한다 — hostname이 같아도 machineId가 다르면 다른
     // 호스트로 판정한다(반대로 hostname이 달라도 machineId가 같으면 같은 호스트로 판정 —
     // hostname이 실행 중 바뀌는 드문 경우까지 커버). 둘 중 하나라도 machineId를 못 구했으면
-    // (구버전 락, 네트워크 인터페이스 없는 샌드박스 등) 이 신호 없이 기존 hostname 판정으로
-    // 폴백한다(LOCK-002 — 구버전 락 자체의 안전성 강화는 별도 트래킹).
+    // (machineId 도입 전 락, 네트워크 인터페이스 없는 샌드박스 등) 이 신호 없이 hostname
+    // 판정으로 폴백한다 — hostname은 위에서 존재를 보장했으므로 여기서는 항상 비교 가능하다.
     const holderMachineId = typeof holder.machineId === "string" ? holder.machineId : undefined;
     const crossHost =
       holderMachineId !== undefined && machineId !== undefined
         ? holderMachineId !== machineId
-        : typeof holder.hostname === "string" && holder.hostname !== hostname;
+        : holder.hostname !== hostname;
     if (crossHost) {
       throw new FileLockBusyError(lockPath, holder.pid, holder.acquiredAt, holder.hostname);
     }

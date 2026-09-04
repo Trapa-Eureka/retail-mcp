@@ -193,20 +193,6 @@ describe("fileLock", () => {
       ).rejects.toThrow(/다른 호스트|생사를 확인할 수 없습니다/);
     });
 
-    it("구버전 락 파일(hostname 필드 없음)은 같은 호스트로 간주해 기존 PID 판정을 그대로 쓴다(하위 호환)", async () => {
-      // T34 이전 버전이 쓴 락 파일을 흉내낸다 — hostname/nonce/pidStartedAt이 아예 없다.
-      await writeFile(
-        `${targetPath}.lock`,
-        JSON.stringify({ pid: 99999, acquiredAt: new Date().toISOString() }),
-      );
-
-      const reclaimed = await acquireFileLock(targetPath, { isAlive: () => false });
-      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as { pid: number };
-      expect(content.pid).toBe(process.pid);
-
-      await reclaimed.release();
-    });
-
     it("락 파일에 hostname·nonce·pidStartedAt이 기록된다", async () => {
       const lock = await acquireFileLock(targetPath, { hostname: "test-host" });
       const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as {
@@ -218,6 +204,89 @@ describe("fileLock", () => {
       expect(content.nonce.length).toBeGreaterThan(0);
 
       await lock.release();
+    });
+  });
+
+  describe("hostname 없는 구버전 락은 소유 호스트 불명 → busy(2차 적대적 검수 SR2-LOCK-002)", () => {
+    const legacyLock = (pid: number): string =>
+      // T34 이전 버전이 쓴 락 파일을 흉내낸다 — hostname/machineId/nonce/pidStartedAt이 아예 없다.
+      JSON.stringify({ pid, acquiredAt: "2026-09-01T00:00:00.000Z" });
+
+    it("로컬에서 그 pid가 죽어 있어도 자동 회수하지 않고 FileLockBusyError(unknownHost)를 던진다", async () => {
+      // 예전 동작(하위 호환으로 "같은 호스트" 간주)이었다면 isAlive=false만으로 회수됐다 —
+      // 공유 filesystem에서는 그 pid가 다른 호스트의 살아있는 프로세스일 수 있으므로 안 된다.
+      await writeFile(`${targetPath}.lock`, legacyLock(99999));
+
+      try {
+        await acquireFileLock(targetPath, { isAlive: () => false });
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(FileLockBusyError);
+        const busyErr = err as FileLockBusyError;
+        expect(busyErr.unknownHost).toBe(true);
+        expect(busyErr.holderPid).toBe(99999);
+        expect(busyErr.message).toContain("소유 호스트 정보(hostname)가 없습니다");
+        expect(busyErr.message).toContain(`${targetPath}.lock`);
+        expect(busyErr.message).toMatch(/직접 삭제/); // 원인 + 수정 방법
+      }
+
+      // 락 파일은 그대로 남아 있어야 한다(자동 삭제 금지).
+      const remaining = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as { pid: number };
+      expect(remaining.pid).toBe(99999);
+    });
+
+    it("로컬에서 그 pid가 살아 있어도 마찬가지로 busy(unknownHost)다 — PID 판정 자체를 쓰지 않는다", async () => {
+      await writeFile(`${targetPath}.lock`, legacyLock(4242));
+
+      await expect(
+        acquireFileLock(targetPath, { isAlive: () => true, getProcessStartedAt: () => "T2" }),
+      ).rejects.toMatchObject({ name: "FileLockBusyError", unknownHost: true, holderPid: 4242 });
+    });
+
+    it("machineId만 없고 hostname은 있는 락(SR2-LOCK-001 이전 형식)은 구버전 취급이 아니다 — hostname 판정으로 정상 폴백해 같은 호스트의 stale lock을 회수한다", async () => {
+      await writeFile(
+        `${targetPath}.lock`,
+        JSON.stringify({ pid: 99999, acquiredAt: "2026-09-01T00:00:00.000Z", hostname: "host-a" }),
+      );
+
+      const reclaimed = await acquireFileLock(targetPath, {
+        hostname: "host-a",
+        machineId: "dd:dd:dd:dd:dd:dd",
+        isAlive: () => false,
+      });
+      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as { pid: number };
+      expect(content.pid).toBe(process.pid);
+
+      await reclaimed.release();
+    });
+
+    it("회귀: 현재 형식(hostname+machineId)의 같은 호스트 stale lock은 여전히 자동 회수된다", async () => {
+      await acquireFileLock(targetPath, {
+        pid: 99999,
+        hostname: "this-host",
+        machineId: "ee:ee:ee:ee:ee:ee",
+        isAlive: () => false,
+      });
+
+      const reclaimed = await acquireFileLock(targetPath, {
+        hostname: "this-host",
+        machineId: "ee:ee:ee:ee:ee:ee",
+        isAlive: () => false,
+      });
+      const content = JSON.parse(await readFile(`${targetPath}.lock`, "utf8")) as { pid: number };
+      expect(content.pid).toBe(process.pid);
+
+      await reclaimed.release();
+    });
+
+    it("회귀: 현재 형식의 살아있는 같은 호스트 락은 unknownHost=false인 일반 busy 에러다", async () => {
+      await acquireFileLock(targetPath, { pid: 4242, isAlive: () => true });
+
+      await expect(acquireFileLock(targetPath, { isAlive: () => true })).rejects.toMatchObject({
+        name: "FileLockBusyError",
+        unknownHost: false,
+        holderPid: 4242,
+      });
     });
   });
 
@@ -264,8 +333,9 @@ describe("fileLock", () => {
       await reclaimed.release();
     });
 
-    it("machineId를 한쪽이라도 못 구하면(구버전 락 등) 기존 hostname 판정으로 폴백한다", async () => {
-      // 구버전 락(machineId 필드 자체가 없음)을 흉내낸다.
+    it("machineId를 한쪽이라도 못 구하면(machineId 도입 전 락 등) 기존 hostname 판정으로 폴백한다", async () => {
+      // machineId 도입 전 락(machineId 필드만 없고 hostname은 있음)을 흉내낸다 — hostname까지
+      // 없는 락은 SR2-LOCK-002에 따라 별도 처리(위 describe 참고).
       await writeFile(
         `${targetPath}.lock`,
         JSON.stringify({ pid: 4242, acquiredAt: new Date().toISOString(), hostname: "host-a" }),
