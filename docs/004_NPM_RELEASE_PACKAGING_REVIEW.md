@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: `package.json`, npm tarball, 설치·실행 계약
 - 판정: **출시 차단 — 현재 패키지는 publish 불가이며 설치 후 실행할 공개 진입점도 없음**
-- 상태: **부분 RESOLVED(T29, PR #40, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36에서 README에 문서화(마이그레이션 CLI 미포함 간극은 명시적으로 남겨두고 T37로 이관). REL-007(전체 release gate)·REL-008(사람의 npm 이름 소유권 최종 확인)은 T37에서 마저 진행. 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
+- 상태: **부분 RESOLVED(T29, PR #40, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36에서 README에 문서화(마이그레이션 CLI 미포함 간극은 명시적으로 남겨두고 T37로 이관). REL-007(전체 release gate)은 T37에서 `prepublishOnly` 연결로 RESOLVED(2026-09-04). REL-008은 T37에서 `npm view` 404(이름 사용 가능, 사용자 결정: 재사용 무관)까지 확인했고 **scope `@trapa-eureka`의 npm 조직 소유권은 사람 확인 대기**(`npm org ls trapa-eureka` 403 — `docs/TASKS.md` T37 체크리스트). 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
 - 검수 명령: `npm pack --dry-run --json --cache /tmp/retail-mcp-npm-cache`
 
 ## REL-001 — `private: true`로 npm publish가 명시적으로 차단됨
@@ -65,6 +65,7 @@
 - 영향: 로컬 상태나 CI 실수로 검증되지 않은 tarball이 영구적인 npm version으로 올라갈 수 있다.
 - 수정 기준: 최소 `clean → build → check → coverage → pack/install smoke`를 자동 실행하고, CI trusted publishing/provenance와 승인 단계를 별도로 둔다.
 - 부분 진행(T29): `prepack`이 `build`를 자동 호출해 최소한 "빌드 안 된 채로 pack되는" 사고는 막는다. `npm run verify:pack`(pack/install smoke)은 만들었지만 아직 `prepublishOnly`에 연결하지 않았다 — 전체 게이트 연결은 T37.
+- **RESOLVED(T37, 2026-09-04)**: `package.json`에 `prepublishOnly: npm run check && npm run verify:pack`을 연결했다 — `npm publish`가 어디서 실행되든(로컬/CI) typecheck·lint·format·전체 테스트 → clean build → `npm pack` allowlist → `--omit=dev` fresh install → bin 3종 smoke → tarball 기준 audit을 통과하지 못하면 게시가 중단된다. coverage threshold·lockfile audit·secret scan은 매 PR의 CI가 이미 필수 check(SR2-CI-004 ruleset)로 막고 있어 로컬 publish 훅에 중복해서 넣지 않았다(무겁고, main에 머지된 커밋만 게시 대상이므로 이미 통과한 상태). "CI trusted publishing/provenance와 승인 단계"는 T37 사람 확인 항목(`docs/TASKS.md` T37)으로 분리 — 로컬 publish(provenance 없음) vs. release 워크플로(OIDC provenance) 결정은 사용자가.
 
 ## REL-008 — 패키지명·소유권·공개 범위가 검증되지 않음
 

@@ -2,7 +2,7 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/) 형식을 따릅니다.
 
-아직 `npm publish`가 나가지 않았습니다(`docs/TASKS.md` T28~T37, README 상단 "npm publish 출시 차단" 배너 참고) — 그래서 지금까지의 모든 변경은 `[Unreleased]`에 있습니다. 첫 게시 시점에 확정 버전으로 태그를 달고 이 섹션을 그 버전 아래로 옮깁니다. 각 항목의 구현/테스트 근거는 `docs/TASKS.md`의 해당 태스크(Txx) 절, finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`를 참고하세요.
+아직 `npm publish`가 나가지 않았습니다(`docs/TASKS.md` T28~T37, README 상단 "npm publish 출시 차단" 배너 참고) — 그래서 지금까지의 모든 변경은 `[Unreleased]`에 있습니다. **첫 게시 버전은 `0.1.0`으로 확정**(사용자 결정, 2026-09-04, T37 — `package.json.version`과 일치). 실제 게시 시점에 `v0.1.0` 태그를 달고 이 섹션을 `## [0.1.0] - <게시일>` 아래로 옮깁니다(게시 전에는 옮기지 않는다 — Keep a Changelog의 "릴리스된 것만 버전 헤더" 원칙). 각 항목의 구현/테스트 근거는 `docs/TASKS.md`의 해당 태스크(Txx) 절, finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`를 참고하세요.
 
 ## [Unreleased]
 
