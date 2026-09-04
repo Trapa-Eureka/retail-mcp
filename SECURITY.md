@@ -1,6 +1,6 @@
 # 보안 정책
 
-`@trapa-eureka/retail-mcp`(리테일 다지점 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트)의 취약점 신고 절차입니다. `docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md` SEC-007 대응(TASKS T32)으로 작성됐습니다.
+`@shiz_son/retail-mcp`(리테일 다지점 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트)의 취약점 신고 절차입니다. `docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md` SEC-007 대응(TASKS T32)으로 작성됐습니다.
 
 ## 지원 버전
 

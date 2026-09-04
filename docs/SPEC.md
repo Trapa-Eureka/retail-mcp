@@ -345,7 +345,7 @@ v0.2 대기열(§13~§17) 완료 직후 npm publish 준비 전 사용자 지시�
 
 사용자 확인(2026-09-03, AskUserQuestion)으로 확정:
 
-- **범위**: `@trapa-eureka/retail-mcp` — scoped, 공개(public) 배포. `publishConfig.access=public`을 명시해 scoped 패키지가 기본값인 restricted로 실수 게시되지 않게 한다.
+- **범위**: `@shiz_son/retail-mcp` — scoped, 공개(public) 배포. `publishConfig.access=public`을 명시해 scoped 패키지가 기본값인 restricted로 실수 게시되지 않게 한다. **scope 변경(2026-09-04, 사용자 결정, T37)**: 처음 확정한 `@trapa-eureka`는 npm에 그 이름의 조직이 존재하지 않아(`npm org ls trapa-eureka` 403, 게시 계정은 `shiz_son`) 그대로는 게시할 수 없었다. 조직을 새로 만드는 대신 게시 계정 소유의 사용자 scope `@shiz_son`을 쓴다 — "계정 소유 scope로 이름 재사용 불확실성을 없앤다"는 아래 원칙은 그대로다. GitHub 저장소 경로(`Trapa-Eureka/retail-mcp`)·`author`·라이선스는 바뀌지 않는다.
 - **이름 재사용 위험 회피**: unscoped `retail-mcp`는 2026-01-12 unpublish 이력이 있는 이름이라(REL-008) npm이 일정 기간 재사용을 막을 수 있다 — 계정 소유 scope를 쓰면 이 불확실성 자체가 사라진다.
 - **라이선스**: MIT. LICENSE 파일과 `package.json.license`/`author`/`repository`/`bugs`/`homepage`를 일치시킨다(REL-005).
 - 이 결정 전까지는 `private: true`를 유지한다 — 실제 `private` 해제와 `bin`/`exports`/`main`/빌드 파이프라인/`files` allowlist 구현은 T29.
