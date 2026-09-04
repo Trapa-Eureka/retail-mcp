@@ -4,7 +4,14 @@
  * 언제 즉시 반환하는가"만 검증한다.
  */
 import { describe, expect, it } from "vitest";
-import { isValidAuditStdout, runNpmAuditJsonWithRetry } from "../src/adapters/npmAudit.js";
+import {
+  DEFAULT_AUDIT_ATTEMPT_TIMEOUT_MS,
+  isValidAuditStdout,
+  NPM_AUDIT_FETCH_FLAGS,
+  npmAuditArgs,
+  runNpmAuditJsonOnce,
+  runNpmAuditJsonWithRetry,
+} from "../src/adapters/npmAudit.js";
 
 const VALID_EMPTY = JSON.stringify({ auditReportVersion: 2, vulnerabilities: {}, metadata: {} });
 const VALID_WITH_VULN = JSON.stringify({
@@ -94,6 +101,62 @@ describe("runNpmAuditJsonWithRetry", () => {
     expect(out).toBeNull();
     expect(h.calls).toHaveLength(1);
     expect(h.sleeps).toEqual([]);
+  });
+});
+
+describe("시도당 상한 — 응답 없는 레지스트리에서 6~7분씩 기다리지 않는다(T37 후속, 2026-09-04)", () => {
+  it("npm에 짧은 fetch 설정을 플래그로 넘긴다(기본값 fetch-timeout 300초·retries 2를 덮어씀)", () => {
+    const args = npmAuditArgs();
+    expect(args.slice(0, 3)).toEqual(["audit", "--omit=dev", "--json"]);
+    for (const flag of NPM_AUDIT_FETCH_FLAGS) expect(args).toContain(flag);
+    expect(args).toContain("--fetch-timeout=30000");
+    expect(args).toContain("--fetch-retries=1");
+    // 상한은 fetch 설정으로 계산되는 최악(≈70초)보다 커야 정상 경로를 자르지 않고, 5분(npm 기본
+    // fetch-timeout 한 번)보다는 확실히 작아야 의미가 있다.
+    expect(DEFAULT_AUDIT_ATTEMPT_TIMEOUT_MS).toBeGreaterThan(70_000);
+    expect(DEFAULT_AUDIT_ATTEMPT_TIMEOUT_MS).toBeLessThan(300_000);
+  });
+
+  it("프로세스가 timeoutMs 안에 끝나지 않으면 강제 종료하고 null(실행 실패)로 취급한다 — 네트워크 없음, 멈추는 node 스크립트로 재현", () => {
+    const startedAt = Date.now();
+    const out = runNpmAuditJsonOnce(undefined, {
+      timeoutMs: 300,
+      command: { file: process.execPath, args: ["-e", "setTimeout(() => {}, 10_000)"] },
+    });
+    const elapsed = Date.now() - startedAt;
+    expect(out).toBeNull();
+    expect(elapsed).toBeLessThan(5_000); // 10초짜리 스크립트가 0.3초 상한에 잘렸다.
+  });
+
+  it("상한 안에 끝나면 stdout을 그대로 돌려준다(exit code가 0이 아니어도 — npm audit는 취약점만 있어도 non-zero)", () => {
+    const out = runNpmAuditJsonOnce(undefined, {
+      timeoutMs: 5_000,
+      command: {
+        file: process.execPath,
+        args: ["-e", "process.stdout.write(JSON.stringify({vulnerabilities:{}})); process.exit(1)"],
+      },
+    });
+    expect(out).toBe('{"vulnerabilities":{}}');
+    expect(isValidAuditStdout(out)).toBe(true);
+  });
+
+  it("시간 초과로 잘린 시도는 재시도 대상이다 — 다음 시도가 유효하면 그걸 반환한다", async () => {
+    let i = 0;
+    const out = await runNpmAuditJsonWithRetry({
+      attempts: 2,
+      baseDelayMs: 1,
+      sleep: () => Promise.resolve(),
+      warn: () => {},
+      run: () =>
+        i++ === 0
+          ? runNpmAuditJsonOnce(undefined, {
+              timeoutMs: 200,
+              command: { file: process.execPath, args: ["-e", "setTimeout(() => {}, 10_000)"] },
+            })
+          : VALID_EMPTY,
+    });
+    expect(out).toBe(VALID_EMPTY);
+    expect(i).toBe(2);
   });
 });
 
