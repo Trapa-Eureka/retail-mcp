@@ -26,6 +26,7 @@
  */
 import { execFileSync } from "node:child_process";
 import {
+  ACCEPTED_ADVISORIES,
   checkAdvisoriesAgainstAllowlist,
   extractAdvisoryUrls,
   isValidAuditReport,
@@ -46,8 +47,15 @@ export function runNpmAuditJson(): string | null {
   }
 }
 
-/** 반환값: 게이트를 막아야 하면 실패 사유 문자열, 통과하면 null. */
-export function evaluateLockfileAudit(stdout: string | null): string | null {
+/**
+ * 반환값: 게이트를 막아야 하면 실패 사유 문자열, 통과하면 null.
+ * `now`는 승인 예외의 만료 판정 기준 시각(SR2-AUD-003) — 테스트는 고정 시각을 넘기고, CLI는
+ * 기본값(시스템 시계)을 쓴다.
+ */
+export function evaluateLockfileAudit(
+  stdout: string | null,
+  now: Date = new Date(),
+): string | null {
   if (stdout === null) {
     console.warn(
       "npm audit 실행 자체가 실패했습니다(레지스트리 접근 불가 등으로 추정) — " +
@@ -80,11 +88,26 @@ export function evaluateLockfileAudit(stdout: string | null): string | null {
   }
 
   const advisoryUrls = extractAdvisoryUrls(parsed);
-  const { unexpected, noneFound } = checkAdvisoriesAgainstAllowlist(advisoryUrls);
+  const { unexpected, expired, noneFound } = checkAdvisoriesAgainstAllowlist(
+    advisoryUrls,
+    ACCEPTED_ADVISORIES,
+    now,
+  );
   if (unexpected.length > 0) {
     return (
       `lockfile 기준으로 승인되지 않은 새 취약점이 발견됐습니다: ${unexpected.join(", ")} — ` +
       "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요."
+    );
+  }
+  if (expired.length > 0) {
+    // SR2-AUD-003 — 승인 예외에는 재검토 기한이 있고 여기서 기계적으로 집행한다(예전엔 기한이
+    // 주석에만 있어 지나도 계속 자동 승인됐다). 이건 외부 서비스 문제가 아니라 우리 쪽 결정
+    // 사항이 만료된 것이므로 PR 게이트에서도 fail-closed다.
+    return (
+      "승인된 audit 예외의 재검토 기한이 지났습니다: " +
+      expired.map((e) => `${e.url}(기한 ${e.expiresAt})`).join(", ") +
+      " — 근본 해결(의존성 업그레이드/대체)하거나, 재검토 후 근거를 갱신하고 " +
+      "src/core/auditAllowlist.ts ACCEPTED_ADVISORIES의 expiresAt을 연장하세요(docs/005 SEC-006)."
     );
   }
   console.log(

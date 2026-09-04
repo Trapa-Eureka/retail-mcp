@@ -71,7 +71,7 @@ PGlite 실증에서 두 호출 모두 `true`였고 rollback 뒤에도 session ad
 - **해결 시도 + 승인된 예외로 귀결(T32, 2026-09-03)**: 제안된 자동 downgrade(exceljs 3.4.0, semver major)는 채택하지 않았다. 대신 `package.json`에 `overrides: { uuid: "^11.1.1" }`을 추가 — dev 체크아웃의 `npm audit --omit=dev`는 0건으로 깨끗해지고 XLSX 테스트(43개) 전부 통과 확인. **그런데 착수 중 실제로 게시될 tarball을 완전히 새 프로젝트에 설치해 검증하니(`scripts/verifyPack.ts`) uuid@8.3.2가 그대로 해석됐다** — npm의 `overrides`는 그 패키지 자신이 루트 프로젝트일 때만 적용되고, 다른 프로젝트의 의존성으로 설치될 때는 적용되지 않는다(npm 자체의 동작, 이 프로젝트가 고칠 수 없음). 즉 이 override는 dev 체크아웃 위생에는 도움이 되지만 **published 패키지를 설치하는 사용자에게는 아무 효과가 없다** — 계속 유지하되(공짜 dev 위생) 그것으로 SEC-006이 끝났다고 표기하지 않는다.
   - 코드 경로 확인: `exceljs`는 `uuid`의 `v4()`를 **인자 없이만** 호출한다(`node_modules/exceljs/lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`) — advisory(GHSA-w5hq-g745-h8pq)는 `v3`/`v5`/`v6`에 `buf`를 넘길 때의 bounds check 결함이라, exceljs의 실제 호출 경로는 취약 코드를 타지 않는다.
   - 대체 라이브러리 전면 교체는 검토했으나 채택하지 않음 — 43개 XLSX 테스트가 걸린 안정적인 파싱 경로를 재작성할 만큼의 실질 위험(moderate, 도달 불가능한 코드 경로)이 아니라고 판단.
-  - **승인된 예외**: `uuid`의 `GHSA-w5hq-g745-h8pq`(exceljs 경유, "<11.1.1"). 근거는 위 코드 경로 확인. **재검토 기한: 2027-03-03**(exceljs가 그때까지 자체 uuid 의존성을 올렸는지 재확인 — 안 올렸으면 패치/대체 라이브러리 재검토).
+  - **승인된 예외**: `uuid`의 `GHSA-w5hq-g745-h8pq`(exceljs 경유, "<11.1.1"). 근거는 위 코드 경로 확인. **재검토 기한: 2027-03-03**(exceljs가 그때까지 자체 uuid 의존성을 올렸는지 재확인 — 안 올렸으면 패치/대체 라이브러리 재검토). **기한은 CI가 기계적으로 집행한다**(2차 적대적 검수 SR2-AUD-003, 2026-09-04): `src/core/auditAllowlist.ts`의 `ACCEPTED_ADVISORIES`에 `{url, expiresAt: "2027-03-03", rationale}`로 데이터화돼 있고, `npm run audit:lockfile`(매 PR)과 `verify:pack`(release gate) 둘 다 기준 시각이 기한 당일 UTC 00:00 이상이면 이 advisory를 승인으로 치지 않고 **fail-closed**로 막는다 — 예전엔 기한이 주석에만 있어 지나도 계속 자동 승인됐다. 연장은 재검토 후 `expiresAt`을 갱신하는 것만이 방법이다.
   - `scripts/verifyPack.ts`의 release gate에 `npm audit` 단계를 추가해(5단계) — **실제 게시될 tarball을 설치한 디렉터리 기준**으로 매번 확인하고, advisory URL이 승인된 예외(`GHSA-w5hq-g745-h8pq`) 하나뿐인지 검증한다. 새로운/다른 취약점이 나타나면 release gate가 실패한다.
 
 ## SEC-007 — 보안 정책과 취약점 신고 경로가 없음
@@ -88,6 +88,6 @@ PGlite 실증에서 두 호출 모두 `true`였고 rollback 뒤에도 session ad
 - [x] advisory lock 및 timeout override 공격 테스트 통과(T30)
 - [x] 파일 resource limit과 CSV formula 방어 적용(T32) — `fileLimits.ts`, `csvSafety.ts`
 - [x] `.env` 0600 + 원자 쓰기(T32) — `writeEnvFile()`(`cli/onboard.ts`) + `writeFileAtomic()`
-- [x] 운영 dependency audit — 승인된 예외 1건(uuid, 재검토 2027-03-03) 문서화 + `verify:pack` release gate로 회귀 감시(T32). 0건은 아직 아님 — SEC-006 상세 참고.
+- [x] 운영 dependency audit — 승인된 예외 1건(uuid, 재검토 2027-03-03) 문서화 + `verify:pack` release gate로 회귀 감시(T32). 0건은 아직 아님 — SEC-006 상세 참고. 재검토 기한은 `ACCEPTED_ADVISORIES.expiresAt`으로 데이터화돼 CI/release gate가 기계적으로 집행한다(SR2-AUD-003).
 - [x] `SECURITY.md` 추가(T32)
 
