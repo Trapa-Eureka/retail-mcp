@@ -14,30 +14,30 @@ import {
 } from "../src/agent/reorder.js";
 import type { InventoryRow, SalesLineRow, StoreRow, Warehouse } from "../src/core/types.js";
 
-const STORE_MAIN: StoreRow = { id: "store_main", name: "본점" };
-const STORE_MAKATI: StoreRow = { id: "store_makati", name: "마카티점" };
+const STORE_MAIN: StoreRow = { id: "store_main", name: "Main Store" };
+const STORE_MAKATI: StoreRow = { id: "store_makati", name: "South Branch" };
 const PRODUCT_COLA = {
   variantId: "var_cola",
   itemId: "itm_cola",
-  name: "코카콜라 500ml",
+  name: "Cola 500ml",
   sku: "SKU-COLA",
-  category: "음료",
+  category: "Beverages",
 };
 const PRODUCT_CHIPS = {
   variantId: "var_chips",
   itemId: "itm_chips",
   name: "Piattos",
   sku: "SKU-CHIPS",
-  category: "스낵",
+  category: "Snacks",
 };
 
-// FixedClock "지금" — Asia/Manila(UTC+8) 기준 오늘 자정 = 2026-08-31T16:00:00Z.
-// 28일 창 = [2026-08-03T16:00:00Z, 2026-08-31T16:00:00Z).
+// FixedClock "now" — today's midnight in Asia/Manila (UTC+8) = 2026-08-31T16:00:00Z.
+// 28-day window = [2026-08-03T16:00:00Z, 2026-08-31T16:00:00Z).
 const NOW_ISO = "2026-09-01T09:00:00Z";
 const BUSINESS_TIMEZONE = "Asia/Manila";
 
 async function seedSalesAndStock(warehouse: Warehouse): Promise<void> {
-  // store_main / var_cola: 28일 창 내 56개 판매(=일평균 2), 재고 0 → 커버 0일, 제안량 42.
+  // store_main / var_cola: 56 sold in the 28-day window (= avg daily 2), stock 0 → 0 days of cover, suggestion 42.
   const salesLine: SalesLineRow = {
     receiptId: "R-1",
     lineNo: 0,
@@ -48,7 +48,7 @@ async function seedSalesAndStock(warehouse: Warehouse): Promise<void> {
     discount: "0",
     soldAt: new Date("2026-08-25T09:00:00Z"),
   };
-  // store_makati / var_chips: 28일 창 내 28개 판매(=일평균 1), 재고 5 → 커버 5일, 제안량 16.
+  // store_makati / var_chips: 28 sold in the 28-day window (= avg daily 1), stock 5 → 5 days of cover, suggestion 16.
   const salesLine2: SalesLineRow = {
     receiptId: "R-2",
     lineNo: 0,
@@ -75,7 +75,7 @@ async function seedSalesAndStock(warehouse: Warehouse): Promise<void> {
   await warehouse.setCursor("receipts", NOW_ISO, new Date(NOW_ISO));
 }
 
-describe("재주문 에이전트 (agent/reorder.ts)", () => {
+describe("reorder agent (agent/reorder.ts)", () => {
   let db: PGlite;
   let warehouse: Warehouse;
   let logSpy: MockInstance<(...args: unknown[]) => void>;
@@ -104,16 +104,16 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
   }
 
   describe("buildReorderReport", () => {
-    it("존재하지 않는 store_id면 원인이 담긴 에러를 던진다", async () => {
+    it("throws an error stating the cause for a non-existent store_id", async () => {
       await expect(
         buildReorderReport(
           { warehouse, clock: createFixedClock(NOW_ISO) },
           { businessTimezone: BUSINESS_TIMEZONE, storeId: "store_nope" },
         ),
-      ).rejects.toThrow(/존재하지 않는 store_id/);
+      ).rejects.toThrow(/Unknown store_id/);
     });
 
-    it("매장별로 묶고 제안량 내림차순으로 정렬한다", async () => {
+    it("groups by store and sorts by suggested qty descending", async () => {
       await seedSalesAndStock(warehouse);
       const report = await buildReorderReport(
         { warehouse, clock: createFixedClock(NOW_ISO) },
@@ -122,16 +122,16 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       expect(report.stores).toEqual([
         {
           storeId: "store_main",
-          storeName: "본점",
+          storeName: "Main Store",
           items: [
             {
               variantId: "var_cola",
-              name: "코카콜라 500ml",
+              name: "Cola 500ml",
               inStock: 0,
               avgDailySales: 2,
               daysOfCover: 0,
               reorderQty: 42,
-              // PRODUCT_COLA/PRODUCT_CHIPS 둘 다 packSize를 안 줬다 — 낱개 매입 취급.
+              // Neither PRODUCT_COLA nor PRODUCT_CHIPS was given a packSize — treated as single-unit purchase.
               packSize: null,
               finalOrderQty: 42,
               packCount: null,
@@ -140,7 +140,7 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
         },
         {
           storeId: "store_makati",
-          storeName: "마카티점",
+          storeName: "South Branch",
           items: [
             {
               variantId: "var_chips",
@@ -160,8 +160,8 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       expect(countSuggestions(report)).toBe(2);
     });
 
-    it("packSize(포장수량, SPEC §14/TASKS T25)가 있으면 최종 발주량을 팩 배수로 올린다", async () => {
-      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]); // 제안량 42 → 2팩=48
+    it("with a packSize (SPEC §14/TASKS T25) the final order qty is rounded up to a pack multiple", async () => {
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]); // suggestion 42 → 2 packs = 48
       await seedSalesAndStock(warehouse);
       const report = await buildReorderReport(
         { warehouse, clock: createFixedClock(NOW_ISO) },
@@ -175,8 +175,8 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
     });
   });
 
-  describe("제안 0건", () => {
-    it("발송 0건, agent_send_log에 no_suggestions만 기록된다", async () => {
+  describe("0 suggestions", () => {
+    it("sends nothing; only no_suggestions is recorded in agent_send_log", async () => {
       const deps = makeDeps();
       const result = await runReorderAgent(deps, {
         businessTimezone: BUSINESS_TIMEZONE,
@@ -201,7 +201,7 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
   });
 
   describe("SEND_MODE=dry_run", () => {
-    it("provider 호출 0건, dry-run 출력(stdout)과 반환값에 표가 포함된다", async () => {
+    it("0 provider calls; the dry-run output (stdout) and the return value contain the table", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       const result = await runReorderAgent(deps, {
@@ -215,10 +215,10 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       expect(
         (deps.notificationProvider as ReturnType<typeof createMockNotificationProvider>).sent,
       ).toHaveLength(0);
-      expect(result.reportText).toContain("코카콜라 500ml");
-      expect(result.reportText).toContain("본점");
+      expect(result.reportText).toContain("Cola 500ml");
+      expect(result.reportText).toContain("Main Store");
       const loggedOutput = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(loggedOutput).toContain("코카콜라 500ml");
+      expect(loggedOutput).toContain("Cola 500ml");
 
       const { rows } = await db.query<{ status: string; dry_run: boolean }>(
         "select status, dry_run from agent_send_log where run_id = 'run-dry'",
@@ -228,8 +228,8 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
     });
   });
 
-  describe("이중 게이트 — SEND_MODE=live && --confirm", () => {
-    it("live만으로는(confirm 없이) 발송하지 않는다", async () => {
+  describe("double gate — SEND_MODE=live && --confirm", () => {
+    it("live alone (without confirm) does not send", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       const result = await runReorderAgent(deps, {
@@ -244,7 +244,7 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       ).toHaveLength(0);
     });
 
-    it("confirm만으로는(SEND_MODE=dry_run) 발송하지 않는다", async () => {
+    it("confirm alone (SEND_MODE=dry_run) does not send", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       const result = await runReorderAgent(deps, {
@@ -259,7 +259,7 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       ).toHaveLength(0);
     });
 
-    it("live와 confirm 둘 다일 때만 provider가 호출되고 sent로 기록된다", async () => {
+    it("only with both live and confirm is the provider called and sent recorded", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       const result = await runReorderAgent(deps, {
@@ -287,7 +287,7 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       expect(rows[0]?.message_id).toBeTruthy();
     });
 
-    it("recipient가 없으면 원인이 담긴 에러를 던진다", async () => {
+    it("throws an error stating the cause when recipient is missing", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       await expect(
@@ -301,8 +301,8 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
     });
   });
 
-  describe("Summarizer 실패", () => {
-    it("요약 없이 표만으로 발송을 계속 진행한다", async () => {
+  describe("Summarizer failure", () => {
+    it("continues the send with the table only, without a summary", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps({ summarizer: createMockSummarizer({ fail: true }) });
       const result = await runReorderAgent(deps, {
@@ -319,12 +319,12 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
         typeof createMockNotificationProvider
       >;
       expect(provider.sent).toHaveLength(1);
-      expect(provider.sent[0]?.text).toContain("코카콜라 500ml");
+      expect(provider.sent[0]?.text).toContain("Cola 500ml");
     });
   });
 
-  describe("이중 발송 방지 (같은 run_id 재시도)", () => {
-    it("이미 sent인 run_id로 다시 실행하면 재발송하지 않고 에러를 던진다", async () => {
+  describe("duplicate-send prevention (same run_id retry)", () => {
+    it("re-running with an already sent run_id does not re-send and throws an error", async () => {
       await seedSalesAndStock(warehouse);
       const deps = makeDeps();
       const opts = {
@@ -338,20 +338,18 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       const first = await runReorderAgent(deps, opts);
       expect(first.status).toBe("sent");
 
-      await expect(runReorderAgent(deps, opts)).rejects.toThrow(
-        /이미 발송 중이거나 발송 완료된 실행/,
-      );
+      await expect(runReorderAgent(deps, opts)).rejects.toThrow(/run_id.*already/);
 
       const provider = deps.notificationProvider as ReturnType<
         typeof createMockNotificationProvider
       >;
-      expect(provider.sent).toHaveLength(1); // 두 번째 실행에서는 provider.send()가 호출되지 않았다
+      expect(provider.sent).toHaveLength(1); // provider.send() was not called on the second run
     });
   });
 
-  describe("같은 run_id 재시도 — provider dedupe TTL 상태 머신(2차 적대적 검수 SR2-MAIL-003)", () => {
-    // NOW_ISO(2026-09-01T09:00:00Z) 기준으로 계산 — 고정 문자열을 쓰면 NOW_ISO가 바뀔 때 TTL
-    // 안/밖 판정이 조용히 뒤집힌다(folderScan.test.ts와 같은 이유).
+  describe("same run_id retry — provider dedupe TTL state machine (second adversarial review SR2-MAIL-003)", () => {
+    // Computed relative to NOW_ISO (2026-09-01T09:00:00Z) — with fixed strings the inside/outside
+    // TTL judgement would silently flip if NOW_ISO changed (same reason as folderScan.test.ts).
     const HOUR = 60 * 60 * 1000;
     const RETRY_1H_LATER = new Date(new Date(NOW_ISO).getTime() + 1 * HOUR).toISOString();
     const RETRY_25H_LATER = new Date(new Date(NOW_ISO).getTime() + 25 * HOUR).toISOString();
@@ -361,13 +359,14 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       confirm: true,
       recipient: "owner@example.com",
     };
-    // 실제 resendProvider.ts가 응답 유실 시 던지는 것과 같은 모양(.name)의 provider. dedupeTtlMs는
-    // 실 Resend와 같이 24시간으로 선언한다(unknown을 남기는 역할만 하고 실제 send는 항상 실패).
+    // A provider throwing the same shape (.name) the real resendProvider.ts throws on a lost
+    // response. dedupeTtlMs is declared as 24 hours like real Resend (its only role is to leave an
+    // unknown; the actual send always fails).
     const ambiguousProvider = {
       channel: "email" as const,
       dedupeTtlMs: 24 * 60 * 60 * 1000,
       send: () => {
-        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        const err = new Error("The Resend request timed out (simulated).");
         err.name = "AmbiguousSendError";
         return Promise.reject(err);
       },
@@ -383,13 +382,13 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       return rows;
     }
 
-    it("unknown 뒤 TTL 안(1시간 뒤)의 같은 run_id 재시도는 허용되고 실제로 발송된다", async () => {
+    it("a same-run_id retry within the TTL (1 hour later) after unknown is allowed and actually sends", async () => {
       await seedSalesAndStock(warehouse);
       const opts = { ...liveOpts, runId: "run-retry-ok" };
 
       await expect(
         runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
-      ).rejects.toThrow(/타임아웃/);
+      ).rejects.toThrow(/timed out/);
       expect(await statusesOf("run-retry-ok")).toEqual([
         { status: "unknown", error_code: "AmbiguousSendError" },
       ]);
@@ -401,20 +400,20 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
       );
       expect(retried.status).toBe("sent");
       expect(provider.sent).toHaveLength(1);
-      expect(provider.sent[0]?.idempotencyKey).toBe("run-retry-ok"); // 같은 키 → provider가 dedupe
+      expect(provider.sent[0]?.idempotencyKey).toBe("run-retry-ok"); // same key → the provider dedupes
       expect(await statusesOf("run-retry-ok")).toEqual([
         { status: "unknown", error_code: "AmbiguousSendError" },
         { status: "sent", error_code: null },
       ]);
     });
 
-    it("unknown 뒤 TTL이 지난(25시간 뒤) 같은 run_id 재시도는 SendRetryRefusedError로 거부되고 provider는 호출되지 않는다", async () => {
+    it("a same-run_id retry after the TTL (25 hours later) after unknown is refused with SendRetryRefusedError and the provider is not called", async () => {
       await seedSalesAndStock(warehouse);
       const opts = { ...liveOpts, runId: "run-retry-late" };
 
       await expect(
         runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
-      ).rejects.toThrow(/타임아웃/);
+      ).rejects.toThrow(/timed out/);
 
       const provider = createMockNotificationProvider();
       await expect(
@@ -424,18 +423,20 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
         ),
       ).rejects.toMatchObject({
         name: "SendRetryRefusedError",
-        message: expect.stringMatching(/보존 기간.*지났습니다.*--run-id 없이/s) as unknown,
+        message: expect.stringMatching(
+          /retention window.*has passed.*without --run-id/s,
+        ) as unknown,
       });
       expect(provider.sent).toHaveLength(0);
-      // 로그는 그대로 — 새 sending 예약이 만들어지지 않았다.
+      // The log is unchanged — no new sending reservation was created.
       expect(await statusesOf("run-retry-late")).toEqual([
         { status: "unknown", error_code: "AmbiguousSendError" },
       ]);
     });
 
-    it("sending에 멈춘 행(크래시 흉내)은 TTL 안 재시도에서 unknown(stale_sending)으로 마감된 뒤 새 예약으로 발송된다", async () => {
+    it("a row stuck in sending (simulated crash) is closed as unknown (stale_sending) on a within-TTL retry, then sent under a new reservation", async () => {
       await seedSalesAndStock(warehouse);
-      // 이전 실행이 예약만 하고 죽은 상황 — sending 행만 남아 있다.
+      // The previous run reserved and died — only the sending row remains.
       await warehouse.logAgentSend({
         runId: "run-stale",
         sentAt: new Date(NOW_ISO),
@@ -459,14 +460,14 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
         { status: "unknown", error_code: "stale_sending" },
         { status: "sent", error_code: null },
       ]);
-      // stale 마감의 sent_at은 원래 예약 시각을 유지한다(TTL 기준 시각 보존).
+      // The stale closure keeps the original reservation time as sent_at (preserving the TTL anchor).
       const { rows } = await db.query<{ sent_at: string | Date }>(
         "select sent_at from agent_send_log where run_id = 'run-stale' and status = 'unknown'",
       );
       expect(new Date(rows[0]!.sent_at).toISOString()).toBe(new Date(NOW_ISO).toISOString());
     });
 
-    it("sending에 멈춘 행이 TTL을 지났으면 마감하지 않고 거부한다 — 행은 sending 그대로 남는다", async () => {
+    it("a row stuck in sending past the TTL is refused without being closed — the row stays sending", async () => {
       await seedSalesAndStock(warehouse);
       await warehouse.logAgentSend({
         runId: "run-stale-late",
@@ -488,18 +489,18 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
         ),
       ).rejects.toMatchObject({
         name: "SendRetryRefusedError",
-        message: expect.stringContaining("프로세스가 결과를 기록하지 못했습니다") as unknown,
+        message: expect.stringMatching(/process .*record/) as unknown,
       });
       expect(provider.sent).toHaveLength(0);
       expect(await statusesOf("run-stale-late")).toEqual([{ status: "sending", error_code: null }]);
     });
 
-    it("provider가 dedupe를 지원하지 않으면(dedupeTtlMs 없음) unknown 뒤 같은 run_id 재시도는 즉시 거부된다", async () => {
+    it("when the provider does not support dedupe (no dedupeTtlMs), a same-run_id retry after unknown is refused immediately", async () => {
       await seedSalesAndStock(warehouse);
       const opts = { ...liveOpts, runId: "run-no-dedupe" };
       await expect(
         runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
-      ).rejects.toThrow(/타임아웃/);
+      ).rejects.toThrow(/timed out/);
 
       const noDedupeProvider = createMockNotificationProvider({ dedupeTtlMs: null });
       expect(noDedupeProvider.dedupeTtlMs).toBeUndefined();
@@ -511,11 +512,11 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
           }),
           opts,
         ),
-      ).rejects.toThrow(/중복 방지를 지원하지 않아/);
+      ).rejects.toThrow(/does not support/);
       expect(noDedupeProvider.sent).toHaveLength(0);
     });
 
-    it("회귀: failed(확실한 실패) 뒤 같은 run_id 재시도는 TTL과 무관하게 허용된다", async () => {
+    it("regression: a same-run_id retry after failed (definite failure) is allowed regardless of the TTL", async () => {
       await seedSalesAndStock(warehouse);
       const opts = { ...liveOpts, runId: "run-after-failed" };
       await expect(
@@ -542,15 +543,15 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
     });
   });
 
-  it("renderReportText는 매장·품목·경고를 사람이 읽는 형태로 담는다", async () => {
+  it("renderReportText contains stores, items and warnings in human-readable form", async () => {
     await seedSalesAndStock(warehouse);
     const report = await buildReorderReport(
       { warehouse, clock: createFixedClock(NOW_ISO) },
       { businessTimezone: BUSINESS_TIMEZONE },
     );
-    const text = renderReportText(report, "요약 문장입니다.");
-    expect(text).toContain("요약 문장입니다.");
-    expect(text).toContain("본점");
-    expect(text).toContain("제안수량 42");
+    const text = renderReportText(report, "This is the summary sentence.");
+    expect(text).toContain("This is the summary sentence.");
+    expect(text).toContain("Main Store");
+    expect(text).toContain("suggested qty 42");
   });
 });

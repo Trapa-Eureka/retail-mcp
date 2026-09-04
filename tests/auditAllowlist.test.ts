@@ -10,11 +10,11 @@ import {
   type NpmAuditReport,
 } from "../src/core/auditAllowlist.js";
 
-/** 실제 승인 예외(2027-03-03 만료)보다 확실히 이전인 고정 기준 시각 — 실제 시계에 의존하지 않는다. */
+/** A fixed reference time clearly before the real approved exception (expires 2027-03-03) — does not depend on the real clock. */
 const BEFORE_EXPIRY = new Date("2026-09-04T00:00:00.000Z");
 
 describe("extractAdvisoryUrls", () => {
-  it("vulnerabilities 트리에서 advisory URL을 중복 없이 뽑는다", () => {
+  it("extracts advisory URLs from the vulnerabilities tree without duplicates", () => {
     const report: NpmAuditReport = {
       vulnerabilities: {
         uuid: { via: [{ url: "https://github.com/advisories/GHSA-aaaa" }] },
@@ -22,7 +22,7 @@ describe("extractAdvisoryUrls", () => {
           via: [
             { url: "https://github.com/advisories/GHSA-aaaa" },
             { url: "https://github.com/advisories/GHSA-bbbb" },
-            "uuid", // via에는 문자열(직접 의존성 이름)도 섞여 나올 수 있다 — 무시해야 한다.
+            "uuid", // via can also contain strings (direct dependency names) — must be ignored.
           ],
         },
       },
@@ -33,13 +33,13 @@ describe("extractAdvisoryUrls", () => {
     ]);
   });
 
-  it("vulnerabilities가 없으면 빈 배열을 반환한다", () => {
+  it("returns an empty array when vulnerabilities is absent", () => {
     expect(extractAdvisoryUrls({})).toEqual([]);
   });
 });
 
 describe("checkAdvisoriesAgainstAllowlist", () => {
-  it("승인 목록에 없는 URL만 unexpected로 반환한다", () => {
+  it("returns only URLs not in the approved list as unexpected", () => {
     const result = checkAdvisoriesAgainstAllowlist(
       [ACCEPTED_ADVISORY_URLS[0]!, "https://github.com/advisories/GHSA-new-one"],
       ACCEPTED_ADVISORIES,
@@ -50,7 +50,7 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
     expect(result.noneFound).toBe(false);
   });
 
-  it("전부 승인 목록 안이고 기한 전이면 unexpected·expired가 비어 있다", () => {
+  it("unexpected and expired are empty when everything is in the approved list and before the deadline", () => {
     const result = checkAdvisoriesAgainstAllowlist(
       [ACCEPTED_ADVISORY_URLS[0]!],
       ACCEPTED_ADVISORIES,
@@ -60,14 +60,14 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
     expect(result.expired).toEqual([]);
   });
 
-  it("advisory가 하나도 없으면 noneFound가 true다", () => {
+  it("noneFound is true when there are no advisories at all", () => {
     const result = checkAdvisoriesAgainstAllowlist([], ACCEPTED_ADVISORIES, BEFORE_EXPIRY);
     expect(result.noneFound).toBe(true);
     expect(result.unexpected).toEqual([]);
     expect(result.expired).toEqual([]);
   });
 
-  it("커스텀 allowlist를 넘기면 그걸 기준으로 판정한다(패키지 이름이 아니라 URL 기준)", () => {
+  it("judges against a custom allowlist when one is passed (by URL, not package name)", () => {
     const custom: AcceptedAdvisory[] = [
       { url: "https://github.com/advisories/GHSA-custom", expiresAt: "2030-01-01", rationale: "t" },
     ];
@@ -79,11 +79,11 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
     expect(result.unexpected).toEqual([]);
   });
 
-  describe("재검토 기한 집행(2차 적대적 검수 SR2-AUD-003)", () => {
+  describe("review deadline enforcement (second adversarial review SR2-AUD-003)", () => {
     const url = "https://github.com/advisories/GHSA-expiring";
     const allowlist: AcceptedAdvisory[] = [{ url, expiresAt: "2027-03-03", rationale: "t" }];
 
-    it("기한 전날 23:59:59Z까지는 승인이다", () => {
+    it("is approved until 23:59:59Z of the day before the deadline", () => {
       const result = checkAdvisoriesAgainstAllowlist(
         [url],
         allowlist,
@@ -93,18 +93,18 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
       expect(result.unexpected).toEqual([]);
     });
 
-    it("기한 당일 UTC 00:00부터 expired다 — 만료일 당일부터 실패", () => {
+    it("is expired from UTC 00:00 of the deadline day — fails starting on the expiry day itself", () => {
       const result = checkAdvisoriesAgainstAllowlist(
         [url],
         allowlist,
         new Date("2027-03-03T00:00:00.000Z"),
       );
       expect(result.expired).toEqual([{ url, expiresAt: "2027-03-03" }]);
-      // 만료는 "승인 목록에 없음"과 다른 카테고리다 — unexpected에 중복으로 들어가지 않는다.
+      // Expiry is a different category from "not in the approved list" — it is not duplicated into unexpected.
       expect(result.unexpected).toEqual([]);
     });
 
-    it("기한이 한참 지나도 expired다(예전엔 주석에만 있어 영구 승인이었다)", () => {
+    it("is still expired long after the deadline (previously it lived only in a comment and was a permanent approval)", () => {
       const result = checkAdvisoriesAgainstAllowlist(
         [url],
         allowlist,
@@ -113,7 +113,7 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
       expect(result.expired).toHaveLength(1);
     });
 
-    it("리포트에 그 advisory가 안 나오면 기한이 지났어도 아무 문제 없다(만료는 실제 발견된 것에만 적용)", () => {
+    it("no problem when the advisory does not appear in the report even after the deadline (expiry applies only to what is actually found)", () => {
       const result = checkAdvisoriesAgainstAllowlist(
         [],
         allowlist,
@@ -123,12 +123,12 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
       expect(result.noneFound).toBe(true);
     });
 
-    it("실제 승인 데이터(ACCEPTED_ADVISORIES)는 기한·근거를 데이터로 갖고 있고 형식이 유효하다", () => {
+    it("the real approval data (ACCEPTED_ADVISORIES) has deadline and rationale as data and is well-formed", () => {
       expect(ACCEPTED_ADVISORIES.length).toBeGreaterThan(0);
       for (const a of ACCEPTED_ADVISORIES) {
         expect(a.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
         expect(a.rationale.length).toBeGreaterThan(0);
-        // 기한 전 기준 시각으로는 만료가 아니어야 한다(데이터 오타로 이미 만료 상태면 여기서 잡힌다).
+        // Must not be expired at a reference time before the deadline (a data typo that is already expired is caught here).
         expect(isAdvisoryExpired(a.expiresAt, BEFORE_EXPIRY)).toBe(false);
       }
     });
@@ -136,20 +136,20 @@ describe("checkAdvisoriesAgainstAllowlist", () => {
 });
 
 describe("isAdvisoryExpired", () => {
-  it("형식이 잘못된 날짜는 만료로 취급한다 — 승인 데이터 오타가 조용히 영구 승인이 되면 안 된다", () => {
+  it("treats a malformed date as expired — a typo in approval data must not silently become a permanent approval", () => {
     expect(isAdvisoryExpired("2027/03/03", BEFORE_EXPIRY)).toBe(true);
-    expect(isAdvisoryExpired("언젠가", BEFORE_EXPIRY)).toBe(true);
+    expect(isAdvisoryExpired("someday", BEFORE_EXPIRY)).toBe(true);
     expect(isAdvisoryExpired("", BEFORE_EXPIRY)).toBe(true);
   });
 
-  it("유효한 날짜는 UTC 자정 경계로 비교한다", () => {
+  it("compares valid dates at the UTC midnight boundary", () => {
     expect(isAdvisoryExpired("2027-03-03", new Date("2027-03-02T23:59:59.999Z"))).toBe(false);
     expect(isAdvisoryExpired("2027-03-03", new Date("2027-03-03T00:00:00.000Z"))).toBe(true);
   });
 });
 
-describe("isValidAuditReport (2차 적대적 검수 SR2-AUD-001/002, TASKS)", () => {
-  it("실제 npm audit 성공 응답 형태(auditReportVersion/vulnerabilities/metadata)는 유효하다", () => {
+describe("isValidAuditReport (second adversarial review SR2-AUD-001/002, TASKS)", () => {
+  it("the real npm audit success response shape (auditReportVersion/vulnerabilities/metadata) is valid", () => {
     expect(
       isValidAuditReport({
         auditReportVersion: 2,
@@ -159,29 +159,29 @@ describe("isValidAuditReport (2차 적대적 검수 SR2-AUD-001/002, TASKS)", ()
     ).toBe(true);
   });
 
-  it("vulnerabilities만 있어도 유효하다(다른 필드는 요구하지 않음)", () => {
+  it("vulnerabilities alone is valid (other fields are not required)", () => {
     expect(isValidAuditReport({ vulnerabilities: {} })).toBe(true);
   });
 
-  it("npm 레지스트리 오류 응답({error: ...})은 무효다 — vulnerabilities 키가 없다", () => {
+  it("an npm registry error response ({error: ...}) is invalid — no vulnerabilities key", () => {
     expect(isValidAuditReport({ error: { code: "ENOTFOUND", summary: "..." } })).toBe(false);
   });
 
-  it("error 필드가 있으면 vulnerabilities가 같이 있어도 무효로 판정한다(보수적으로)", () => {
+  it("judges invalid when an error field is present even if vulnerabilities is also there (conservatively)", () => {
     expect(isValidAuditReport({ error: {}, vulnerabilities: {} })).toBe(false);
   });
 
-  it("vulnerabilities가 객체가 아니면(문자열/숫자/null) 무효다", () => {
+  it("invalid when vulnerabilities is not an object (string/number/null)", () => {
     expect(isValidAuditReport({ vulnerabilities: "oops" })).toBe(false);
     expect(isValidAuditReport({ vulnerabilities: null })).toBe(false);
     expect(isValidAuditReport({ vulnerabilities: 42 })).toBe(false);
   });
 
-  it("vulnerabilities 키 자체가 없으면 무효다", () => {
+  it("invalid when the vulnerabilities key itself is absent", () => {
     expect(isValidAuditReport({})).toBe(false);
   });
 
-  it("객체가 아닌 값(배열/문자열/null/undefined)은 전부 무효다", () => {
+  it("non-object values (array/string/null/undefined) are all invalid", () => {
     expect(isValidAuditReport(null)).toBe(false);
     expect(isValidAuditReport(undefined)).toBe(false);
     expect(isValidAuditReport("not an object")).toBe(false);

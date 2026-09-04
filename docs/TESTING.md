@@ -107,7 +107,7 @@ As the pre-npm-publish adversarial review (`docs/004_NPM_RELEASE_PACKAGING_REVIE
 
 **Data accuracy gate (TASKS T31/T33 — complete)**
 
-- [x] `포장수량` (pack quantity) is preserved on the snapshot export → import round trip (DATA-001) — `tests/snapshotExport.test.ts`
+- [x] `pack_size` is preserved on the snapshot export → import round trip (DATA-001) — `tests/snapshotExport.test.ts`
 - [x] SKUs/stores that disappear from an authoritative scan are tombstoned and excluded from reorder and low-stock calculations (DATA-002) — `tests/pgWarehouse.test.ts` (`deactivateMissingCsvRows`), `tests/folderScan.test.ts` (tombstone e2e)
 - [x] Repeated cron runs on the same file cause no re-send, and once a day has passed since the last send one digest is sent even with no changes (DATA-003) — `tests/folderScan.test.ts` (daily digest, 5 tests; scope limited to actual send attempts — DESIGN §12.3)
 - [x] If the process dies while writing the snapshot file, the previous good snapshot is not corrupted (atomic write, DATA-004) — `tests/atomicFile.test.ts`

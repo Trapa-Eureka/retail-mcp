@@ -20,7 +20,7 @@ function fakeClient(locked: boolean): { client: QueryClient; calls: string[] } {
 }
 
 describe("withTryAdvisoryLock", () => {
-  it("잠금을 얻으면 fn을 실행하고 끝나면 unlock한다", async () => {
+  it("runs fn once the lock is acquired and unlocks when done", async () => {
     const { client, calls } = fakeClient(true);
     const fn = vi.fn().mockResolvedValue(42);
     await expect(withTryAdvisoryLock(client, 1, fn)).resolves.toBe(42);
@@ -31,14 +31,14 @@ describe("withTryAdvisoryLock", () => {
     ]);
   });
 
-  it("이미 잠겨 있으면 기다리지 않고 AdvisoryLockBusyError를 던지며 fn을 실행하지 않는다", async () => {
+  it("throws AdvisoryLockBusyError without waiting and does not run fn when already locked", async () => {
     const { client } = fakeClient(false);
     const fn = vi.fn().mockResolvedValue(42);
     await expect(withTryAdvisoryLock(client, 1, fn)).rejects.toThrow(AdvisoryLockBusyError);
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it("fn이 실패해도 unlock은 반드시 호출된다", async () => {
+  it("always calls unlock even when fn fails", async () => {
     const { client, calls } = fakeClient(true);
     await expect(
       withTryAdvisoryLock(client, 1, () => Promise.reject(new Error("boom"))),
@@ -46,8 +46,8 @@ describe("withTryAdvisoryLock", () => {
     expect(calls).toContain("select pg_advisory_unlock($1)");
   });
 
-  it("동시 호출 시뮬레이션 — 먼저 실행 중인 쪽만 성공하고 나머지는 즉시 busy 에러를 받는다", async () => {
-    // 실제 pg_try_advisory_lock을 흉내내는 단일 상태(locked) 공유 클라이언트.
+  it("concurrent call simulation — only the one already running succeeds and the rest immediately get a busy error", async () => {
+    // A shared client with a single state (locked) that mimics the real pg_try_advisory_lock.
     let locked = false;
     const client: QueryClient = {
       query: <T extends Record<string, unknown>>(text: string) => {
@@ -73,8 +73,8 @@ describe("withTryAdvisoryLock", () => {
       await slow;
       return "first";
     });
-    // first가 이미 락을 획득한 뒤(동기적으로 잠금 시도까지는 마이크로태스크 큐 안에서 진행) 두
-    // 번째 호출이 뒤따르므로, 두 번째는 busy로 즉시 실패해야 한다.
+    // The second call follows after first has already acquired the lock (the lock attempt
+    // proceeds synchronously up to the microtask queue), so the second must fail immediately as busy.
     await Promise.resolve();
     await Promise.resolve();
     const second = withTryAdvisoryLock(client, 1, () => Promise.resolve("second"));

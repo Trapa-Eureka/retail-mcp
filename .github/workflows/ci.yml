@@ -1,52 +1,58 @@
 name: CI
 
-# TASKS T35(QA-002~006, OPS-006) — 이 저장소의 첫 CI 워크플로. docs/008이 권장한 release
-# gate(TESTING.md §8)를 매 push/PR에서 실행한다. 실제 npm publish 워크플로는 `release.yml`(T37,
-# `v*` 태그 push)이다 — 게시 대상은 이 워크플로를 required check로 통과해 main에 머지된 커밋만이고
-# (SR2-CI-004 ruleset), 게시 직전엔 `prepublishOnly`가 check + verify:pack을 다시 돈다.
+# TASKS T35 (QA-002~006, OPS-006) — the first CI workflow of this repository. It runs the release
+# gate recommended by docs/008 (TESTING.md §8) on every push/PR. The actual npm publish workflow is
+# `release.yml` (T37, `v*` tag push) — only commits that passed this workflow as a required check and
+# were merged into main are eligible for publishing (SR2-CI-004 ruleset), and right before publishing
+# `prepublishOnly` runs check + verify:pack again.
 
 on:
   push:
     branches: [main]
   pull_request:
 
-# 2차 적대적 검수 SR2-CI-001 — 명시적 선언이 없으면 실제 GITHUB_TOKEN 권한은 repository/
-# organization 기본 설정에 따라 달라진다(그 기본값이 나중에 넓어지면 fork PR 코드가 그 권한을
-# 그대로 상속). 네 job 모두 checkout해서 로컬 커맨드(npm ci/test/lint 등)만 실행하고 아무것도
-# 쓰지 않는다 — SBOM `actions/upload-artifact`도 GITHUB_TOKEN이 아니라 Actions 런타임
-# 토큰으로 인증하므로 별도 권한이 필요 없다. 워크플로 전체를 최소값(`contents: read`)으로
-# 고정한다 — 앞으로 PR 코멘트 작성 등 쓰기가 필요한 job이 추가되면 그 job에만 개별로 권한을
-# 추가한다(전역을 넓히지 않는다).
+# Second adversarial review SR2-CI-001 — without an explicit declaration the effective GITHUB_TOKEN
+# permissions depend on the repository/organization default settings (if that default is widened
+# later, fork PR code inherits those permissions as-is). All four jobs only check out and run local
+# commands (npm ci/test/lint etc.) and write nothing — the SBOM `actions/upload-artifact` also
+# authenticates with the Actions runtime token, not GITHUB_TOKEN, so it needs no extra permission.
+# The whole workflow is pinned to the minimum (`contents: read`) — if a job that needs write access
+# (e.g. posting PR comments) is added later, grant the permission to that job individually (do not
+# widen the global scope).
 permissions:
   contents: read
 
-# 2차 적대적 검수 SR2-CI-002 — 외부 Action은 전부 **full commit SHA**로 고정하고 사람이 읽을
-# 태그를 뒤에 주석으로 남긴다(`@v4` 같은 이동 가능한 태그는 upstream이 옮기면 같은 커밋의 CI가
-# 다른 코드를 실행하고, 공급망 침해 시 checkout된 소스·토큰에 접근하는 코드가 바뀐다). SHA는
-# `gh api repos/<owner>/<action>/git/ref/tags/<tag> --jq .object.sha`로 확인한 값이며 고정
-# 시점의 `v4` 태그와 동일해 동작 변화는 없다. 갱신은 `.github/dependabot.yml`(github-actions
-# 에코시스템, 월 1회)이 SHA+태그 주석을 함께 올리는 PR로 제안하고 머지는 사람이 한다 — 자동
-# 머지 없음. 새 Action을 추가할 때도 태그가 아니라 SHA로 적는다(TESTING.md §8 "공급망 게이트").
+# Second adversarial review SR2-CI-002 — every external Action is pinned to a **full commit SHA**
+# with the human-readable tag left as a trailing comment (a movable tag such as `@v4` means CI for the
+# same commit runs different code once upstream moves it, and in a supply-chain compromise the code
+# that touches the checked-out source and tokens changes). Each SHA was verified with
+# `gh api repos/<owner>/<action>/git/ref/tags/<tag> --jq .object.sha` and equals the `v4` tag at pin
+# time, so there is no behaviour change. Updates are proposed by `.github/dependabot.yml`
+# (github-actions ecosystem, monthly) as PRs that bump the SHA and tag comment together, and a human
+# merges them — no auto-merge. When adding a new Action, write the SHA, not the tag (TESTING.md §8
+# "supply-chain gate").
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # 패키징 게이트(TASKS T29) + OPS-006 OS/Node matrix — README/DESIGN §12.8가 이미 문서화한
-  # 지원 범위(Node 20+, macOS 검증, Linux 미검증, **Windows 명시적 미검증** — fileLock.ts의
-  # `ps` 기반 OPS-002 보조 신호가 Windows엔 없어 폴백만 함, 매트릭스에 넣지 않는다)를 그대로
-  # 실제로 검증한다. Node 20(engines.node가 밝힌 최소 지원 버전, 2026-09-03 기준 여전히
-  # 보안 패치 지원 중·2027-04 종료)과 22(다음 유지보수 LTS)를 함께 돈다. CI가 Linux
-  # 러너(ubuntu-latest)에서 도는 것 자체로 "Linux 미검증"이 자동으로 해소된다.
+  # Packaging gate (TASKS T29) + OPS-006 OS/Node matrix — actually verifies the support range that
+  # README/DESIGN §12.8 already document (Node 20+, macOS verified, Linux unverified, **Windows
+  # explicitly unverified** — the `ps`-based OPS-002 auxiliary signal in fileLock.ts does not exist on
+  # Windows and only falls back, so it is not in the matrix). Runs Node 20 (the minimum supported
+  # version declared by engines.node, still receiving security patches as of 2026-09-03, EOL 2027-04)
+  # together with 22 (the next maintenance LTS). CI running on a Linux runner (ubuntu-latest) by
+  # itself resolves "Linux unverified".
   test:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
-    # SR2-CI-003(2차 적대적 검수) — job 전체 상한. Vitest의 testTimeout/hookTimeout은 개별
-    # 테스트만 제한하고 `npm ci`·verify:pack의 tarball 설치·npm audit 네트워크 hang은 제한하지
-    # 않으므로, 교착된 PR(악성이든 사고든)이 러너를 6시간(GitHub 기본) 점유하지 못하게 한다.
-    # 값 = 관측 최대치의 약 2배: PR #63~#68(2026-09-04) 최대 24m28s(macOS, node 20). macOS
-    # 러너 편차가 크고(같은 job이 5m~24m) 테스트 수가 계속 늘어 여유를 넉넉히 둔다. 재조정
-    # 기준은 TESTING.md §8 "공급망 게이트".
+    # SR2-CI-003 (second adversarial review) — upper bound for the whole job. Vitest's
+    # testTimeout/hookTimeout only bound individual tests and do not bound `npm ci`, the tarball
+    # install in verify:pack, or an npm audit network hang, so this keeps a deadlocked PR (malicious
+    # or accidental) from occupying a runner for 6 hours (GitHub default). Value = roughly 2x the
+    # observed maximum: PR #63~#68 (2026-09-04) max 24m28s (macOS, node 20). macOS runner variance is
+    # large (the same job takes 5m~24m) and the test count keeps growing, so leave generous headroom.
+    # Re-tuning criteria: TESTING.md §8 "supply-chain gate".
     timeout-minutes: 50
     strategy:
       fail-fast: false
@@ -66,20 +72,23 @@ jobs:
       - run: npm run format:check
       - run: npm run test
       - name: verify:pack (OPS-006 — clean tarball install smoke)
-        # `--audit-unavailable=warn`(2026-09-04, 사용자 위임 결정): 6단계 tarball `npm audit`가 유효한
-        # 리포트를 **못 얻은 경우만** 경고로 통과한다 — 승인되지 않은 취약점·기한 지난 예외는 여전히
-        # 실패. 같은 날 npm advisory 엔드포인트 장애로 PR #72~#74가 차례로 머지 불가가 됐기 때문
-        # (SR2-AUD-001 수정 기준 "PR gate와 release gate 분리"). 실제 게시 경로(`prepublishOnly` →
-        # `npm run verify:pack`, 플래그 없음 = fail)는 그대로 fail-closed라 유효한 audit 없이는 게시
-        # 되지 않는다. 근거·안전성 논증은 src/core/tarballAuditPolicy.ts 모듈 주석.
+        # `--audit-unavailable=warn` (2026-09-04, decision delegated by the user): step 6's tarball
+        # `npm audit` passes with a warning **only when it could not obtain a valid report** —
+        # unapproved vulnerabilities and expired exceptions still fail. Added because an npm advisory
+        # endpoint outage the same day made PR #72~#74 unmergeable one after another (SR2-AUD-001 fix
+        # criterion "separate the PR gate from the release gate"). The actual publish path
+        # (`prepublishOnly` → `npm run verify:pack`, no flag = fail) stays fail-closed, so nothing is
+        # published without a valid audit. Rationale and safety argument: module comment in
+        # src/core/tarballAuditPolicy.ts.
         run: npm run verify:pack -- --audit-unavailable=warn
 
-  # QA-002/003 — coverage threshold를 필수 게이트로 승격(core 90/90/90/85 + 위험 모듈별 별도
-  # 기준, vitest.config.ts 참고). 로컬 `npm run check`에는 넣지 않는다(무겁다, TESTING.md §8).
+  # QA-002/003 — promote the coverage threshold to a required gate (core 90/90/90/85 + separate
+  # per-risk-module thresholds, see vitest.config.ts). Not included in local `npm run check` (too
+  # heavy, TESTING.md §8).
   coverage:
     name: coverage thresholds (QA-002/QA-003)
     runs-on: ubuntu-latest
-    # SR2-CI-003 — 관측 최대 10m17s(PR #68, 2026-09-04)의 약 2배.
+    # SR2-CI-003 — roughly 2x the observed maximum of 10m17s (PR #68, 2026-09-04).
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,21 +99,22 @@ jobs:
       - run: npm ci
       - run: npm run coverage
 
-  # QA-004 — 실 Postgres 서비스 컨테이너 대상 컴포넌트 테스트(migration/rollback/READ ONLY/
-  # advisory lock/explore_sql timeout). tests/component/**만 대상이고 기본 게이트(가드레일 2)
-  # 와는 완전히 분리돼 있다(vitest.config.ts의 exclude, vitest.component.config.ts 참고).
+  # QA-004 — component tests against a real Postgres service container (migration/rollback/READ
+  # ONLY/advisory lock/explore_sql timeout). Only tests/component/** is targeted and it is fully
+  # separated from the default gate (guardrail 2) (see the exclude in vitest.config.ts and
+  # vitest.component.config.ts).
   postgres-component:
     name: postgres component tests (QA-004)
     runs-on: ubuntu-latest
-    # SR2-CI-003 — 관측 최대 4m24s(PR #65, 2026-09-04)의 약 3배(서비스 컨테이너 pull·health
-    # check 대기가 포함돼 편차가 큼).
+    # SR2-CI-003 — roughly 3x the observed maximum of 4m24s (PR #65, 2026-09-04) (includes the
+    # service container pull and health-check wait, so variance is large).
     timeout-minutes: 15
     services:
       postgres:
-        # SR2-CI-002 — 이동 가능한 `postgres:16` 태그 대신 manifest digest로 고정(Docker Hub
-        # `library/postgres` tag `16`, 2026-09-04 확인, last_updated 2026-08-26). Dependabot은
-        # 워크플로 `services.image`를 갱신하지 않으므로 이 digest만 사람이 갱신한다 — 절차는
-        # TESTING.md §8 "공급망 게이트".
+        # SR2-CI-002 — pinned to the manifest digest instead of the movable `postgres:16` tag
+        # (Docker Hub `library/postgres` tag `16`, verified 2026-09-04, last_updated 2026-08-26).
+        # Dependabot does not update workflow `services.image`, so this digest alone is updated by a
+        # human — procedure: TESTING.md §8 "supply-chain gate".
         image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
         env:
           POSTGRES_USER: retail_mcp
@@ -126,27 +136,30 @@ jobs:
       - run: npm ci
       - run: npm run test:pg-component
         env:
-          # 매 실행마다 새로 만들어지는 CI 전용 컨테이너 DB다 — 절대 운영/공유 DB를 가리키지
-          # 말 것(tests/component/postgres.component.test.ts 상단 주석 참고).
+          # A CI-only container DB created fresh on every run — never point this at a production or
+          # shared DB (see the header comment of tests/component/postgres.component.test.ts).
           TEST_DATABASE_URL: postgres://retail_mcp:retail_mcp@localhost:5432/retail_mcp_component_test
 
-  # QA-006 — dependency audit(lockfile 기준, fail-open/closed 정책은 src/adapters/
-  # auditLockfile.ts 참고) + 커밋된 시크릿 스캔 + SBOM 생성. tarball 기준 audit(SEC-006
-  # 승인 예외 확인)은 test job의 verify:pack이 이미 매 OS/Node 조합에서 수행한다.
+  # QA-006 — dependency audit (lockfile-based; fail-open/closed policy in src/adapters/
+  # auditLockfile.ts) + committed-secret scan + SBOM generation. The tarball-based audit (SEC-006
+  # approved-exception check) is already performed by the test job's verify:pack on every OS/Node
+  # combination.
   audit:
     name: dependency audit + secret scan (QA-006)
     runs-on: ubuntu-latest
-    # SR2-CI-003 — 관측 최대 15m0s(PR #66, 2026-09-04 — npm audit 레지스트리 재시도 포함)의
-    # 2배. audit 재시도(src/adapters/npmAudit.ts)는 최대 3회·지수 백오프라 그 자체로는 수 분
-    # 안에 끝나므로 30분을 넘기면 진짜 hang이다.
+    # SR2-CI-003 — 2x the observed maximum of 15m0s (PR #66, 2026-09-04 — including npm audit
+    # registry retries). The audit retry (src/adapters/npmAudit.ts) is at most 3 attempts with
+    # exponential backoff, so it finishes within minutes on its own; exceeding 30 minutes is a real
+    # hang.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # SR2-SEC-003(2차 적대적 검수) — secret-scan의 히스토리 범위 모드(`--range`)가
-          # base..head 사이 모든 커밋의 트리를 열어야 하므로 전체 히스토리가 필요하다. 예전 주석은
-          # "추적 파일 전체를 훑는다"였는데 그건 현재 트리(git ls-files)만 뜻해 실제 검사 범위를
-          # 과장했다 — 중간 커밋에 넣고 지운 시크릿은 전혀 보지 않았다.
+          # SR2-SEC-003 (second adversarial review) — the history-range mode (`--range`) of
+          # secret-scan has to open the tree of every commit between base..head, so the full history
+          # is required. The old comment said "scans all tracked files", but that only meant the
+          # current tree (git ls-files) and overstated the actual scan scope — secrets added and
+          # removed in an intermediate commit were never looked at.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -154,18 +167,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run audit:lockfile
-      - name: secret-scan (현재 트리 + PR/push 히스토리 범위, SR2-SEC-003)
-        # pull_request: base 브랜치 tip..PR head(merge commit이 아니라 실제 head — merge commit의
-        # blob은 어차피 부분집합). push: 직전 tip..새 tip. base가 all-zero(첫 push/force push)면
-        # 스크립트가 범위 스캔을 "건너뜀"으로 명시하고 트리 스캔만으로 판정한다.
+      - name: secret-scan (current tree + PR/push history range, SR2-SEC-003)
+        # pull_request: base branch tip..PR head (the actual head, not the merge commit — the merge
+        # commit's blobs are a subset anyway). push: previous tip..new tip. If base is all-zero (first
+        # push/force push) the script explicitly reports the range scan as "skipped" and decides on
+        # the tree scan alone.
         env:
           SCAN_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           SCAN_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: npm run secret-scan -- --range="$SCAN_BASE..$SCAN_HEAD"
-      - name: SBOM 생성(CycloneDX)
-        # `npm run sbom`(package.json 스크립트, 로컬 편의용)이 아니라 `npm sbom`을 직접
-        # 부른다 — `npm run`은 배너 줄("> pkg@ver sbom\n> npm sbom ...")을 stdout에
-        # 함께 출력해 리다이렉트한 JSON 파일을 깨뜨린다(실측 확인, TASKS T35).
+      - name: Generate SBOM (CycloneDX)
+        # Calls `npm sbom` directly rather than `npm run sbom` (the package.json script, for local
+        # convenience) — `npm run` also prints its banner lines ("> pkg@ver sbom\n> npm sbom ...") to
+        # stdout, which corrupts the redirected JSON file (confirmed empirically, TASKS T35).
         run: npm sbom --omit=dev --sbom-format cyclonedx > sbom.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

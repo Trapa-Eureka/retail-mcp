@@ -2,25 +2,25 @@ import { describe, expect, it, vi } from "vitest";
 import { ACCEPTED_ADVISORIES, ACCEPTED_ADVISORY_URLS } from "../src/core/auditAllowlist.js";
 import { evaluateLockfileAudit } from "../src/adapters/auditLockfile.js";
 
-/** 실제 승인 예외(2027-03-03 만료)보다 확실히 이전인 고정 기준 시각 — 실제 시계에 의존하지 않는다. */
+/** A fixed reference time clearly before the real approved exception (expires 2027-03-03) — does not depend on the real clock. */
 const BEFORE_EXPIRY = new Date("2026-09-04T00:00:00.000Z");
 
-describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T35)", () => {
-  it("stdout이 null이면(npm audit 실행 자체 실패) fail-open — 통과(null) 처리한다", () => {
+describe("evaluateLockfileAudit — fail-open/fail-closed policy (QA-006, TASKS T35)", () => {
+  it("fail-open when stdout is null (npm audit itself failed to run) — treated as pass (null)", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     expect(evaluateLockfileAudit(null, BEFORE_EXPIRY)).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("fail-open"));
     warnSpy.mockRestore();
   });
 
-  it("stdout이 JSON이 아니면 fail-open — 통과(null) 처리한다", () => {
+  it("fail-open when stdout is not JSON — treated as pass (null)", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    expect(evaluateLockfileAudit("이건 JSON이 아닙니다", BEFORE_EXPIRY)).toBeNull();
+    expect(evaluateLockfileAudit("this is not JSON", BEFORE_EXPIRY)).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it("취약점이 하나도 없으면 통과(null)한다", () => {
+  it("passes (null) when there are no vulnerabilities at all", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     expect(
       evaluateLockfileAudit(JSON.stringify({ vulnerabilities: {} }), BEFORE_EXPIRY),
@@ -28,7 +28,7 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
     logSpy.mockRestore();
   });
 
-  it("승인 목록 안의 advisory만 있고 기한 전이면 통과(null)한다", () => {
+  it("passes (null) when only advisories in the approved list are present and before the deadline", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const report = {
       vulnerabilities: { uuid: { via: [{ url: ACCEPTED_ADVISORY_URLS[0] }] } },
@@ -37,7 +37,7 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
     logSpy.mockRestore();
   });
 
-  it("승인 목록 밖의 새 advisory가 있으면 fail-closed — 사유 문자열을 반환한다", () => {
+  it("fail-closed when a new advisory outside the approved list is present — returns a reason string", () => {
     const report = {
       vulnerabilities: {
         "some-pkg": { via: [{ url: "https://github.com/advisories/GHSA-new-unapproved" }] },
@@ -48,23 +48,23 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
     expect(failure).toContain("GHSA-new-unapproved");
   });
 
-  describe("승인 예외 재검토 기한 집행 — 2차 적대적 검수 SR2-AUD-003", () => {
+  describe("approved exception review deadline enforcement — second adversarial review SR2-AUD-003", () => {
     const accepted = ACCEPTED_ADVISORIES[0]!;
     const report = JSON.stringify({
       vulnerabilities: { uuid: { via: [{ url: accepted.url }] } },
     });
 
-    it("기한이 지난 승인 예외가 리포트에 나오면 PR 게이트도 fail-closed — 기한과 조치를 담은 사유를 반환한다", () => {
+    it("the PR gate is also fail-closed when an expired approved exception appears in the report — returns a reason with the deadline and the action", () => {
       const dayOfExpiry = new Date(`${accepted.expiresAt}T00:00:00.000Z`);
       const failure = evaluateLockfileAudit(report, dayOfExpiry);
       expect(failure).not.toBeNull();
-      expect(failure).toContain("재검토 기한이 지났습니다");
+      expect(failure).toContain("review deadline of an approved audit exception has passed");
       expect(failure).toContain(accepted.url);
       expect(failure).toContain(accepted.expiresAt);
       expect(failure).toContain("expiresAt");
     });
 
-    it("기한 전날까지는 같은 리포트가 통과한다(경계 확인)", () => {
+    it("the same report passes until the day before the deadline (boundary check)", () => {
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const dayBefore = new Date(new Date(`${accepted.expiresAt}T00:00:00.000Z`).getTime() - 1);
       expect(evaluateLockfileAudit(report, dayBefore)).toBeNull();
@@ -72,8 +72,8 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
     });
   });
 
-  describe("무효 리포트(레지스트리 오류 등) — 2차 적대적 검수 SR2-AUD-002 회귀", () => {
-    it("npm 레지스트리 오류 응답({error: ...})은 fail-open으로 통과하되 '0건'이라고 말하지 않는다", () => {
+  describe("invalid report (registry error etc.) — second adversarial review SR2-AUD-002 regression", () => {
+    it("an npm registry error response ({error: ...}) passes fail-open but does not say '0 vulnerabilities'", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const errorResponse = JSON.stringify({
@@ -81,23 +81,22 @@ describe("evaluateLockfileAudit — fail-open/fail-closed 정책(QA-006, TASKS T
       });
 
       expect(evaluateLockfileAudit(errorResponse, BEFORE_EXPIRY)).toBeNull();
-      // 예전엔 이 케이스가 "취약점 0건" 로그를 남겼다(SR2-AUD-002) — 이제는 절대 그렇게
-      // 말하지 않아야 한다.
-      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0건"));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("유효한 취약점 리포트"));
+      // Previously this case logged "0 vulnerabilities" (SR2-AUD-002) — it must never say that now.
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0 vulnerabilities"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("valid vulnerability report"));
 
       warnSpy.mockRestore();
       logSpy.mockRestore();
     });
 
-    it("vulnerabilities가 객체가 아니면(형식 이상) fail-open으로 통과하되 '0건'이라고 말하지 않는다", () => {
+    it("passes fail-open when vulnerabilities is not an object (malformed) but does not say '0 vulnerabilities'", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
       expect(
         evaluateLockfileAudit(JSON.stringify({ vulnerabilities: "oops" }), BEFORE_EXPIRY),
       ).toBeNull();
-      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0건"));
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("0 vulnerabilities"));
       expect(warnSpy).toHaveBeenCalled();
 
       warnSpy.mockRestore();

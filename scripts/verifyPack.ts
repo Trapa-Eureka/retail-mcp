@@ -1,22 +1,25 @@
 /**
- * npm 배포 tarball 검증 스크립트 (TASKS T29, QA-001 대응) — 사람/CI 전용, `npm run check`에는
- * 포함하지 않는다(TESTING.md §8 "release gate"는 매 로컬 check와 별도라고 명시).
+ * npm publish tarball verification script (TASKS T29, response to QA-001) — for humans/CI only,
+ * not part of `npm run check` (TESTING.md §8 states that the "release gate" is separate from every
+ * local check).
  *
- * 저장소 소스가 아니라 **실제로 게시될 tarball**을 검증한다: 빌드 → `npm pack` → 완전히 새
- * 디렉터리에 `npm install --omit=dev`로 설치(개발 의존성 `tsx` 등이 없는 환경) → 설치된
- * `bin`(`retail-mcp`, `retail-mcp-onboard`, `retail-mcp-migrate`, `retail-mcp-scan`,
- * `retail-mcp-reorder`)을 실제로 실행해 확인한다.
+ * Verifies the **tarball that will actually be published**, not the repository source: build →
+ * `npm pack` → install into a completely fresh directory with `npm install --omit=dev` (an
+ * environment without dev dependencies such as `tsx`) → actually run the installed `bin`s
+ * (`retail-mcp`, `retail-mcp-onboard`, `retail-mcp-migrate`, `retail-mcp-scan`,
+ * `retail-mcp-reorder`) to confirm.
  *
- * - `retail-mcp`: 실제 MCP 클라이언트로 stdio 연결해 `tools/list`가 운영 기본값(조회 도구
- *   5종만, `sync_now`/`explore_sql`은 비활성)과 일치하는지 확인한다.
- * - `retail-mcp-onboard`: 지점 모드 답변을 stdin으로 흘려보내 `.env`와 예시 템플릿 CSV가
- *   실제로 만들어지는지 확인한다.
- * - `retail-mcp-migrate`(SR2-REL-001, 2차 적대적 검수): bin이 실제로 tarball에 포함돼
- *   실행 가능한지, DATABASE_URL 누락 시 명확한 에러로 종료하는지 확인한다(실 Postgres가
- *   필요한 실제 적용 경로는 tests/component/postgres.component.test.ts가 검증한다).
+ * - `retail-mcp`: connects over stdio with a real MCP client and confirms that `tools/list` matches
+ *   the production default (only the 5 query tools, `sync_now`/`explore_sql` disabled).
+ * - `retail-mcp-onboard`: pipes branch-mode answers to stdin and confirms that `.env` and the
+ *   example template CSV are actually created.
+ * - `retail-mcp-migrate` (SR2-REL-001, second adversarial review): confirms the bin is actually
+ *   included in the tarball and executable, and exits with a clear error when DATABASE_URL is
+ *   missing (the actual apply path requiring a real Postgres is verified by
+ *   tests/component/postgres.component.test.ts).
  *
- * 실패하면 원인이 담긴 에러로 non-zero 종료한다(CI가 release gate로 이 스크립트를 실행할
- * 수 있게).
+ * On failure it exits non-zero with an error containing the cause (so CI can run this script as a
+ * release gate).
  */
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -49,24 +52,24 @@ function heading(title: string): void {
   console.log(`\n=== ${title} ===`);
 }
 
-/** cwd를 지정해 명령을 실행하고 stdout을 반환한다 — 실패 시 stderr까지 포함된 에러를 던진다. */
+/** Runs a command with the given cwd and returns stdout — on failure throws an error that includes stderr. */
 function run(cmd: string, args: string[], cwd: string): string {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
 
 function packTarball(destDir: string): string {
-  heading("1) 빌드 + npm pack");
+  heading("1) Build + npm pack");
   run("npm", ["run", "build"], REPO_ROOT);
   const json = run("npm", ["pack", "--json", "--pack-destination", destDir], REPO_ROOT);
   const [entry] = JSON.parse(json) as { filename: string }[];
-  if (!entry) throw new Error("npm pack이 결과 파일명을 반환하지 않았습니다.");
+  if (!entry) throw new Error("npm pack did not return a result filename.");
   const tarballPath = path.join(destDir, entry.filename);
   console.log(`tarball: ${tarballPath}`);
   return tarballPath;
 }
 
 async function installFresh(tarballPath: string, installDir: string): Promise<void> {
-  heading("2) 완전히 새 디렉터리에 --omit=dev 설치");
+  heading("2) --omit=dev install into a completely fresh directory");
   await writeFile(
     path.join(installDir, "package.json"),
     JSON.stringify({ name: "retail-mcp-pack-smoke", version: "0.0.0", private: true }, null, 2),
@@ -77,14 +80,14 @@ async function installFresh(tarballPath: string, installDir: string): Promise<vo
 async function assertExecutable(binPath: string): Promise<void> {
   const info = await stat(binPath).catch(() => {
     throw new Error(
-      `bin 파일이 설치되지 않았습니다: ${binPath} — package.json.bin/files allowlist를 확인하세요.`,
+      `bin file was not installed: ${binPath} — check the package.json bin/files allowlist.`,
     );
   });
-  if (!info.isFile()) throw new Error(`bin 경로가 파일이 아닙니다: ${binPath}`);
+  if (!info.isFile()) throw new Error(`bin path is not a file: ${binPath}`);
 }
 
 async function verifyMcpServerBin(installDir: string): Promise<void> {
-  heading("3) retail-mcp(MCP 서버) bin 실행 — tools/list 확인");
+  heading("3) Run retail-mcp (MCP server) bin — check tools/list");
   const binPath = path.join(installDir, "node_modules", ".bin", "retail-mcp");
   await assertExecutable(binPath);
 
@@ -101,27 +104,41 @@ async function verifyMcpServerBin(installDir: string): Promise<void> {
     const names = tools.map((t) => t.name).sort();
     if (JSON.stringify(names) !== JSON.stringify(EXPECTED_DEFAULT_TOOLS)) {
       throw new Error(
-        `tools/list가 운영 기본값과 다릅니다.\n기대: ${EXPECTED_DEFAULT_TOOLS.join(", ")}\n실제: ${names.join(", ")}`,
+        `tools/list differs from the production default.\nExpected: ${EXPECTED_DEFAULT_TOOLS.join(", ")}\nActual: ${names.join(", ")}`,
       );
     }
-    console.log(`tools/list 확인됨: ${names.join(", ")}`);
+    console.log(`tools/list confirmed: ${names.join(", ")}`);
   } finally {
     await client.close().catch(() => undefined);
   }
 }
 
+/** Store name typed into the onboarding CLI in step 4; must show up in the generated template. */
+const SMOKE_STORE_NAME = "Smoke Test Store";
+
 async function verifyOnboardBin(installDir: string): Promise<void> {
-  heading("4) retail-mcp-onboard(온보딩 CLI) bin 실행 — .env + 템플릿 생성 확인");
+  heading("4) Run retail-mcp-onboard (onboarding CLI) bin — check .env + template creation");
   const binPath = path.join(installDir, "node_modules", ".bin", "retail-mcp-onboard");
   await assertExecutable(binPath);
 
   const onboardCwd = path.join(installDir, "onboard-run");
   await mkdir(onboardCwd, { recursive: true });
 
-  // collectOnboardAnswers() 질문 순서 그대로: 모드 → DB 연결문자열(비우면 임베디드) →
-  // 감시폴더 → 스냅샷폴더 → 임계치(비우면 기본값) → 수신 이메일 → Resend API 키(비우면 발송
-  // 설정 생략, 발신 주소는 묻지 않음).
-  const answers = ["branch", "", "./watch", "./snapshot", "", "smoke@example.com", ""].join("\n");
+  // Same order as the collectOnboardAnswers() questions: mode → DB connection string (empty =
+  // embedded) → store name → watch folder → snapshot folder → threshold (empty = default) →
+  // recipient email → Resend API key (empty = skip send settings, sender address is not asked).
+  // Adding a question to onboarding without extending this list makes this step fail on the
+  // recipient prompt ("No value was received ... after 3 attempts") — that happened once (2026-09-04).
+  const answers = [
+    "branch",
+    "",
+    SMOKE_STORE_NAME,
+    "./watch",
+    "./snapshot",
+    "",
+    "smoke@example.com",
+    "",
+  ].join("\n");
 
   const { spawnSync } = await import("node:child_process");
   const result = spawnSync(binPath, [], {
@@ -132,31 +149,42 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
   });
   if (result.status !== 0) {
     throw new Error(
-      `retail-mcp-onboard가 0이 아닌 종료 코드(${String(result.status)})를 반환했습니다.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      `retail-mcp-onboard returned a non-zero exit code (${String(result.status)}).\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
     );
   }
 
   const envContent = await readFile(path.join(onboardCwd, ".env"), "utf8");
   if (!envContent.includes("CSV_MODE=branch")) {
-    throw new Error(`.env에 CSV_MODE=branch가 없습니다:\n${envContent}`);
+    throw new Error(`.env does not contain CSV_MODE=branch:\n${envContent}`);
   }
   const templatePath = path.join(onboardCwd, "watch", "template-example.csv");
   await stat(templatePath).catch(() => {
-    throw new Error(`예시 템플릿 CSV가 만들어지지 않았습니다: ${templatePath}`);
+    throw new Error(`Example template CSV was not created: ${templatePath}`);
   });
-  console.log(".env + 예시 템플릿 CSV 생성 확인됨");
+  const template = await readFile(templatePath, "utf8");
+  const [header, firstRow] = template.trim().split("\n");
+  if (!header?.startsWith("store,product,sku,")) {
+    throw new Error(`Example template header is not the English column contract:\n${header ?? ""}`);
+  }
+  if (!firstRow?.startsWith(`${SMOKE_STORE_NAME},`)) {
+    throw new Error(
+      `Example template's store column does not carry the onboarding answer "${SMOKE_STORE_NAME}":\n${firstRow ?? ""}`,
+    );
+  }
+  console.log(".env + example template CSV creation confirmed (store name from onboarding)");
 }
 
 /**
- * SR2-REL-001(2차 적대적 검수) — `retail-mcp-migrate`가 실제로 tarball에 포함돼 실행 가능한지
- * 확인한다. 이 스크립트 환경엔 실 Postgres가 없으므로(가드레일 2와 같은 정신 — release gate도
- * 네트워크에 기대지 않는다) 실제 migration 적용까지는 여기서 검증하지 않는다(그건
- * tests/component/postgres.component.test.ts가 real Postgres로 확인한다). 대신 "bin이
- * 패키지에 존재하고 실행 가능하며, DATABASE_URL이 없으면 명확한 안내로 종료하는가"만
- * 확인한다 — SR2-REL-001의 근본 결함이 정확히 "이 bin 자체가 tarball에 없었다"였다.
+ * SR2-REL-001 (second adversarial review) — confirms that `retail-mcp-migrate` is actually
+ * included in the tarball and executable. There is no real Postgres in this script's environment
+ * (same spirit as guardrail 2 — the release gate does not depend on the network either), so the
+ * actual migration apply is not verified here (tests/component/postgres.component.test.ts confirms
+ * that with real Postgres). Instead only "the bin exists in the package, is executable, and exits
+ * with clear guidance when DATABASE_URL is missing" is checked — the root defect of SR2-REL-001
+ * was precisely "this bin itself was not in the tarball".
  */
 async function verifyMigrateBin(installDir: string): Promise<void> {
-  heading("5) retail-mcp-migrate(migration CLI) bin 실행 — 패키징·에러 경로 확인");
+  heading("5) Run retail-mcp-migrate (migration CLI) bin — check packaging and error path");
   const binPath = path.join(installDir, "node_modules", ".bin", "retail-mcp-migrate");
   await assertExecutable(binPath);
 
@@ -167,24 +195,26 @@ async function verifyMigrateBin(installDir: string): Promise<void> {
 
   if (result.status === 0) {
     throw new Error(
-      "retail-mcp-migrate가 DATABASE_URL 없이도 성공(exit 0)했습니다 — " +
-        "누락 시 에러로 막는 가드가 깨졌을 수 있습니다.",
+      "retail-mcp-migrate succeeded (exit 0) even without DATABASE_URL — " +
+        "the guard that blocks with an error when it is missing may be broken.",
     );
   }
   if (!result.stderr.includes("DATABASE_URL")) {
     throw new Error(
-      `retail-mcp-migrate의 에러 메시지가 DATABASE_URL을 언급하지 않습니다:\nstderr:\n${result.stderr}`,
+      `retail-mcp-migrate's error message does not mention DATABASE_URL:\nstderr:\n${result.stderr}`,
     );
   }
-  console.log("bin 실행 가능 확인 + DATABASE_URL 누락 시 안내 에러로 종료 확인됨");
+  console.log("bin executable confirmed + exits with guidance error when DATABASE_URL is missing");
 }
 
 /**
- * T37 게시 전 점검(2026-09-04)에서 발견 — 설치 사용자가 핵심 기능(재고 파일 스캔 + 저재고 알림)을
- * 실행할 명령이 tarball에 아예 없었다(`npm run agent:folder-scan`은 저장소 전용 스크립트). 두 에이전트를
- * `retail-mcp-scan`/`retail-mcp-reorder` bin으로 노출하고, migrate bin과 같은 방식으로 "패키지에 있고
- * 실행 가능하며 필수 설정이 없으면 원인+수정 방법이 담긴 에러로 종료하는가"를 확인한다. 실제 스캔·발송
- * 경로는 tests/folderScan.test.ts·tests/reorderAgent.test.ts가 PGlite/목으로 검증한다.
+ * Found in the T37 pre-publish check (2026-09-04) — the tarball had no command at all for an
+ * installing user to run the core feature (inventory file scan + low-stock alert)
+ * (`npm run agent:folder-scan` is a repository-only script). The two agents are exposed as the
+ * `retail-mcp-scan`/`retail-mcp-reorder` bins and, in the same way as the migrate bin, we check
+ * "is it in the package, executable, and does it exit with a cause+fix error when required
+ * settings are missing". The actual scan/send paths are verified by tests/folderScan.test.ts and
+ * tests/reorderAgent.test.ts with PGlite/mocks.
  */
 async function verifyAgentBin(
   step: string,
@@ -193,117 +223,126 @@ async function verifyAgentBin(
   expectedMention: string,
   installDir: string,
 ): Promise<void> {
-  heading(`${step} ${binName} bin 실행 — 패키징·필수 설정 누락 시 안내 에러 확인`);
+  heading(
+    `${step} Run ${binName} bin — check packaging and guidance error when required settings are missing`,
+  );
   const binPath = path.join(installDir, "node_modules", ".bin", binName);
   await assertExecutable(binPath);
 
   const { spawnSync } = await import("node:child_process");
   const env: Record<string, string | undefined> = { ...process.env, ...envOverrides.set };
   for (const key of envOverrides.unset) delete env[key];
-  // 임베디드 PGlite가 cwd 아래 `.retail-mcp/data`를 만들 수 있도록 bin마다 별도 작업 폴더를 준다.
+  // Each bin gets its own working folder so embedded PGlite can create `.retail-mcp/data` under cwd.
   const runCwd = path.join(installDir, `${binName}-run`);
   await mkdir(runCwd, { recursive: true });
   const result = spawnSync(binPath, [], { cwd: runCwd, encoding: "utf8", env });
 
   if (result.status === 0) {
     throw new Error(
-      `${binName}가 필수 설정(${expectedMention}) 없이도 성공(exit 0)했습니다 — 누락 시 에러로 막는 가드가 깨졌을 수 있습니다.`,
+      `${binName} succeeded (exit 0) even without the required setting (${expectedMention}) — the guard that blocks with an error when it is missing may be broken.`,
     );
   }
   if (!result.stderr.includes(expectedMention)) {
     throw new Error(
-      `${binName}의 에러 메시지가 ${expectedMention}을 언급하지 않습니다:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      `${binName}'s error message does not mention ${expectedMention}:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
     );
   }
-  console.log(`bin 실행 가능 확인 + ${expectedMention} 누락 시 안내 에러로 종료 확인됨`);
+  console.log(
+    `bin executable confirmed + exits with guidance error when ${expectedMention} is missing`,
+  );
 }
 
 /**
- * SEC-006(005 검수, TASKS T32)의 "근거·만료일이 기록된 승인된 예외" — exceljs@4.4.0이 고정한
- * `uuid@^8.3.0`은 GHSA-w5hq-g745-h8pq(uuid v3/v5/v6에 buf를 넘길 때의 bounds check 결함,
- * 영향 범위 "<11.1.1")에 걸린다. exceljs는 `uuidv4()`를 인자 없이만 호출해(v4, buf 없음 —
- * `node_modules/exceljs/lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`로 확인) 실제
- * 취약 코드 경로를 타지 않는다. package.json의 `overrides`로 dev 체크아웃의 uuid는
- * 11.1.1로 올렸지만 **npm의 `overrides`는 이 패키지가 다른 프로젝트의 의존성으로 설치될 때는
- * 적용되지 않는다** — 실제 게시되는 tarball을 이 스크립트처럼 완전히 새 프로젝트에 설치해
- * 직접 확인한 결과 uuid@8.3.2가 그대로 해석됐다(착수 중 발견). 그래서 dev 체크아웃의
- * `npm audit`만으로는 이 결함이 가려진다 — 여기서 **실제 tarball을 설치한 디렉터리**를
- * 대상으로 다시 확인해야 진짜 상태를 안다. 재검토 기한: **2027-03-03**(exceljs가 uuid
- * 의존성을 올렸는지 재확인 — 그때도 안 올렸으면 패치/대체 라이브러리 재검토).
+ * The "approved exception with recorded rationale and expiry date" of SEC-006 (review 005, TASKS
+ * T32) — the `uuid@^8.3.0` pinned by exceljs@4.4.0 is affected by GHSA-w5hq-g745-h8pq (bounds
+ * check flaw when passing buf to uuid v3/v5/v6, affected range "<11.1.1"). exceljs only calls
+ * `uuidv4()` with no arguments (v4, no buf — confirmed in
+ * `node_modules/exceljs/lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`) and never reaches the
+ * vulnerable code path. The `overrides` in package.json bumped uuid to 11.1.1 in the dev checkout,
+ * but **npm `overrides` are not applied when this package is installed as a dependency of another
+ * project** — installing the actually published tarball into a completely fresh project, as this
+ * script does, resolved uuid@8.3.2 unchanged (found during implementation). So the `npm audit` of
+ * the dev checkout alone hides this defect — the real state is only known by re-checking against
+ * **the directory where the actual tarball was installed** here. Review deadline: **2027-03-03**
+ * (re-check whether exceljs has bumped its uuid dependency — if still not, revisit patching or an
+ * alternative library).
  *
- * 판정 로직(advisory URL 추출 + 승인 목록 비교)은 `src/core/auditAllowlist.ts`로 옮겼다
- * (TASKS T35) — `scripts/auditLockfile.ts`(CI 매 PR, dev lockfile 기준)도 같은 로직이
- * 필요해져서다. 여기 있던 승인 목록·근거·재검토 기한 주석도 그 파일로 옮겼다.
+ * The verdict logic (advisory URL extraction + allowlist comparison) was moved to
+ * `src/core/auditAllowlist.ts` (TASKS T35) — `scripts/auditLockfile.ts` (CI on every PR, dev
+ * lockfile-based) needed the same logic. The approved list, rationale and review deadline comment
+ * that lived here also moved to that file.
  */
 async function verifyDependencyAudit(
   installDir: string,
   policy: AuditUnavailablePolicy,
 ): Promise<void> {
   heading(
-    `8) npm audit — 게시된 tarball을 실제로 설치한 디렉터리 기준 취약점 확인(불능 시: ${policy})`,
+    `8) npm audit — vulnerability check against the directory where the published tarball was actually installed (when unavailable: ${policy})`,
   );
-  // 유효한 리포트를 못 얻으면 제한 재시도한다(`src/adapters/npmAudit.ts` — 시도당 상한 90초).
-  // 재시도를 다 써도 무효면 정책(`policy`)에 따라 갈린다 — 판정 자체는 순수 함수
-  // `evaluateTarballAudit`(src/core/tarballAuditPolicy.ts)가 하고 여기서는 집행만 한다.
+  // Limited retries when no valid report is obtained (`src/adapters/npmAudit.ts` — 90 s cap per attempt).
+  // If still invalid after all retries, the outcome depends on `policy` — the verdict itself is made
+  // by the pure function `evaluateTarballAudit` (src/core/tarballAuditPolicy.ts); only enforcement happens here.
   //
-  // - `fail`(기본, `prepublishOnly` = 실제 게시 경로): "확인 불가"도 막는다(SR2-AUD-001, fail-closed).
-  // - `warn`(CI `test` matrix가 명시적으로 켬): "확인 불가"만 경고로 통과 — 승인되지 않은 취약점·
-  //   기한 지난 예외는 정책과 무관하게 항상 막는다. 2026-09-04 레지스트리 장애로 PR #72~#74가
-  //   차례로 머지 불가가 된 뒤 사용자 위임으로 도입(근거는 tarballAuditPolicy.ts 모듈 주석).
+  // - `fail` (default, `prepublishOnly` = actual publish path): "could not verify" also blocks (SR2-AUD-001, fail-closed).
+  // - `warn` (explicitly enabled by the CI `test` matrix): only "could not verify" passes with a warning —
+  //   unapproved vulnerabilities and expired exceptions always block regardless of policy. Introduced by
+  //   user delegation after the 2026-09-04 registry outage made PRs #72-#74 unmergeable one after
+  //   another (rationale in the tarballAuditPolicy.ts module comment).
   const stdout = await runNpmAuditJsonWithRetry({ cwd: installDir });
-  // 만료 판정 기준 시각은 여기서 한 번 명시적으로 잡는다(SR2-AUD-003) — release gate는 사람이
-  // 실행하는 시점의 시스템 시계가 맞다.
+  // The reference time for expiry is captured explicitly once here (SR2-AUD-003) — for the release
+  // gate, the system clock at the time a human runs it is the right one.
   const verdict = evaluateTarballAudit(stdout, new Date());
 
   if (shouldBlock(verdict, policy)) {
     switch (verdict.kind) {
       case "unavailable":
         throw new Error(
-          `${verdict.detail}\nrelease gate(정책 fail)는 이 상태를 통과시키지 않습니다 — 네트워크/레지스트리 ` +
-            "상태를 확인하고 다시 시도하세요.",
+          `${verdict.detail}\nThe release gate (policy fail) does not let this state through — check the network/registry ` +
+            "status and try again.",
         );
       case "unexpected":
         throw new Error(
-          `게시된 tarball에서 승인되지 않은 새 취약점이 발견됐습니다: ${verdict.urls.join(", ")} — ` +
-            "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006을 재검토하세요.",
+          `New unapproved vulnerabilities were found in the published tarball: ${verdict.urls.join(", ")} — ` +
+            "review docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-006.",
         );
       case "expired":
-        // SR2-AUD-003 — 승인 예외의 재검토 기한이 지났다. 예전엔 기한이 주석에만 있어 지나도
-        // release gate가 계속 통과시켰다. 게시 직전 판단이므로 fail-closed.
+        // SR2-AUD-003 — the review deadline of an approved exception has passed. Previously the
+        // deadline lived only in a comment and the release gate kept passing after it. This is the
+        // decision right before publishing, so it is fail-closed.
         throw new Error(
-          "승인된 audit 예외의 재검토 기한이 지났습니다: " +
-            verdict.expired.map((e) => `${e.url}(기한 ${e.expiresAt})`).join(", ") +
-            " — 근본 해결(의존성 업그레이드/대체)하거나, 재검토 후 근거를 갱신하고 " +
-            "src/core/auditAllowlist.ts ACCEPTED_ADVISORIES의 expiresAt을 연장하세요(docs/005 SEC-006). " +
-            "기한이 지난 예외로는 게시하지 않습니다.",
+          "The review deadline of an approved audit exception has passed: " +
+            verdict.expired.map((e) => `${e.url} (deadline ${e.expiresAt})`).join(", ") +
+            " — fix at the root (upgrade/replace the dependency), or re-review, update the rationale and " +
+            "extend expiresAt in src/core/auditAllowlist.ts ACCEPTED_ADVISORIES (docs/005 SEC-006). " +
+            "Publishing with an expired exception is not allowed.",
         );
       case "pass":
-        break; // shouldBlock이 pass에 true를 줄 일은 없다 — 타입 완결성용.
+        break; // shouldBlock never returns true for pass — for type exhaustiveness.
     }
   }
 
   if (verdict.kind === "unavailable") {
     console.warn(
-      `⚠ ${verdict.detail}\n  PR gate 정책(warn)이라 경고로 통과합니다. 이 tarball의 audit 결과는 ` +
-        "실제 게시 직전 `prepublishOnly`(정책 fail)에서 반드시 다시 확인됩니다 — 그 단계는 유효한 " +
-        "리포트 없이는 통과하지 않습니다.",
+      `⚠ ${verdict.detail}\n  Passing with a warning under the PR gate policy (warn). The audit result of this tarball is ` +
+        "always re-checked in `prepublishOnly` (policy fail) right before actual publishing — that step does not " +
+        "pass without a valid report.",
     );
     return;
   }
   if (verdict.kind === "pass" && verdict.noneFound) {
     console.log(
-      "취약점 0건 — exceljs/uuid 승인된 예외(SEC-006)가 더 이상 필요 없을 수 있습니다. " +
-        "docs/005와 src/core/auditAllowlist.ts의 ACCEPTED_ADVISORIES를 갱신하세요.",
+      "0 vulnerabilities — the exceljs/uuid approved exception (SEC-006) may no longer be needed. " +
+        "Update docs/005 and ACCEPTED_ADVISORIES in src/core/auditAllowlist.ts.",
     );
   } else if (verdict.kind === "pass") {
-    const described = ACCEPTED_ADVISORIES.map((a) => `${a.url}(재검토 기한 ${a.expiresAt})`);
-    console.log(`승인된 예외만 확인됨(${described.join(", ")}) — docs/005 SEC-006.`);
+    const described = ACCEPTED_ADVISORIES.map((a) => `${a.url} (review deadline ${a.expiresAt})`);
+    console.log(`Only approved exceptions found (${described.join(", ")}) — docs/005 SEC-006.`);
   }
 }
 
 async function main(): Promise<void> {
-  // `--audit-unavailable=fail|warn` — 없으면 fail(게시 경로 기본). 잘못된 값은 여기서 바로 던진다
-  // (6단계까지 가서 조용히 완화되는 일이 없게).
+  // `--audit-unavailable=fail|warn` — absent means fail (publish-path default). An invalid value is
+  // thrown right here (so it is never silently relaxed by the time step 6 is reached).
   const auditPolicy = parseAuditUnavailablePolicy(
     parseNamedArg(process.argv, AUDIT_UNAVAILABLE_FLAG),
   );
@@ -317,8 +356,9 @@ async function main(): Promise<void> {
     await verifyMcpServerBin(installDir);
     await verifyOnboardBin(installDir);
     await verifyMigrateBin(installDir);
-    // retail-mcp-scan: 지점 모드에서 CSV_WATCH_DIR이 없으면 안내 에러. BUSINESS_TIMEZONE은 줘서
-    // 그 이전 단계에서 멈추지 않게 한다(어느 검사가 먼저 오든 "설정 안내 에러로 종료"가 핵심).
+    // retail-mcp-scan: guidance error when CSV_WATCH_DIR is missing in branch mode. BUSINESS_TIMEZONE
+    // is provided so it does not stop at an earlier step (whichever check comes first, "exits with a
+    // settings guidance error" is the point).
     await verifyAgentBin(
       "6)",
       "retail-mcp-scan",
@@ -329,7 +369,7 @@ async function main(): Promise<void> {
       "CSV_WATCH_DIR",
       installDir,
     );
-    // retail-mcp-reorder(Loyverse 경로): BUSINESS_TIMEZONE이 없으면 첫 검사에서 안내 에러.
+    // retail-mcp-reorder (Loyverse path): guidance error at the first check when BUSINESS_TIMEZONE is missing.
     await verifyAgentBin(
       "7)",
       "retail-mcp-reorder",
@@ -338,8 +378,8 @@ async function main(): Promise<void> {
       installDir,
     );
     await verifyDependencyAudit(installDir, auditPolicy);
-    heading("전부 통과");
-    console.log(`tarball fresh-install 검증 완료 (임시 디렉터리: ${workDir})`);
+    heading("All passed");
+    console.log(`tarball fresh-install verification complete (temp directory: ${workDir})`);
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }

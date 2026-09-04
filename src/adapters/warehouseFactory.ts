@@ -1,28 +1,31 @@
 /**
- * `Warehouse` 생성의 공용 진입점 — `server.ts`/`agent/reorder.ts`(그리고 향후 CSV/Excel 폴더
- * 스캔, TASKS T18)가 각자 중복해서 갖고 있던 "`DATABASE_URL` 없으면 에러" 로직을 대체한다.
+ * Shared entry point for creating a `Warehouse` — replaces the "error if `DATABASE_URL` is
+ * missing" logic that `server.ts`/`agent/reorder.ts` (and, later, the CSV/Excel folder scan,
+ * TASKS T18) each had duplicated.
  *
- * `DATABASE_URL`이 있으면 기존처럼 pg.Pool로 Neon/Supabase 등 네트워크 Postgres에 붙는다.
- * 없으면 **임베디드·파일 영속 PGlite**(기본 경로 `.retail-mcp/data/`)를 기본값으로 쓴다 —
- * CSV/Excel 채널의 비개발자 사용자에게 Neon 계정 생성·연결 문자열 설정을 요구하지 않기
- * 위해서다(SPEC.md §12 "웨어하우스" 결정).
+ * When `DATABASE_URL` is set, it connects to network Postgres (Neon/Supabase etc.) with pg.Pool
+ * as before. When it is not, it defaults to **embedded, file-persisted PGlite** (default path
+ * `.retail-mcp/data/`) — so that non-developer users of the CSV/Excel channel are not required
+ * to create a Neon account and configure a connection string (SPEC.md §12 "warehouse" decision).
  *
- * PGlite는 같은 데이터 디렉터리를 여러 프로세스가 동시에 열어도 에러 없이 나중에 연 쪽의
- * 쓰기를 조용히 잃는다(SPEC §12 스파이크 결과) — 그래서 임베디드 경로를 열기 전에 반드시
- * `fileLock.ts`(T13)로 배타 접근을 확보한다. 이미 다른 살아있는 프로세스가 그 디렉터리를
- * 쓰고 있으면 `FileLockBusyError`(원인+조치 포함)로 시작을 거부한다.
+ * PGlite lets several processes open the same data directory at once without an error, but
+ * silently loses the writes of whichever opened later (SPEC §12 spike result) — so before
+ * opening the embedded path, exclusive access is always secured with `fileLock.ts` (T13). If
+ * another live process is already using that directory, startup is refused with
+ * `FileLockBusyError` (which includes the cause and the fix).
  *
- * 이 모듈이 하는 로컬 PGlite 자동 마이그레이션은 CLAUDE.md 가드레일 5("프로덕션
- * `DATABASE_URL` 마이그레이션은 사람만")의 대상이 아니다 — 원격 프로덕션 DB가 아니라
- * 로컬 임베디드 DB 초기화다.
+ * The automatic local PGlite migration done by this module is not subject to CLAUDE.md
+ * guardrail 5 ("production `DATABASE_URL` migrations are run by humans only") — it initialises a
+ * local embedded DB, not a remote production DB.
  *
- * network Postgres(DATABASE_URL) 경로는 반대로 아무 마이그레이션도 자동 적용하지 않는다
- * (가드레일 5). 대신 `ensureNetworkMigrationsApplied()`(SR2-REL-001, 2차 적대적 검수)를
- * 호출자(server.ts/agent 진입점)가 명시적으로 실행해, 스키마가 없거나 일부만 적용된 상태를
- * raw Postgres 에러가 아니라 "무엇을 해야 하는지"까지 담은 메시지로 즉시 알린다. 이 점검을
- * `createNetworkWarehouse()` 안에 넣지 않은 건 의도적이다 — `createWarehouseFromEnv()`는
- * DATABASE_URL이 있어도 실제 네트워크 연결을 시도하지 않는다는 게 기존에 이미 보장돼 있던
- * 계약이라(warehouseFactory.test.ts "실제 연결은 시도하지 않음"), 여기서 깨면 안 된다.
+ * The network Postgres (DATABASE_URL) path, conversely, auto-applies no migrations at all
+ * (guardrail 5). Instead the caller (server.ts/agent entry points) explicitly runs
+ * `ensureNetworkMigrationsApplied()` (SR2-REL-001, second adversarial review), which reports a
+ * missing or partially applied schema immediately, as a message that says what to do rather
+ * than as a raw Postgres error. Not putting that check inside `createNetworkWarehouse()` is
+ * deliberate — `createWarehouseFromEnv()` not attempting a real network connection even when
+ * DATABASE_URL is set was already a guaranteed contract (warehouseFactory.test.ts "does not
+ * attempt a real connection"), and it must not be broken here.
  */
 import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
@@ -44,31 +47,32 @@ import {
   type DbSession,
 } from "./pgWarehouse.js";
 
-/** `DATABASE_URL` 미설정 시 임베디드 PGlite 데이터를 저장할 기본 경로(프로세스 작업 디렉터리 기준). */
+/** Default path for embedded PGlite data when `DATABASE_URL` is not set (relative to the process working directory). */
 export const DEFAULT_EMBEDDED_DATA_DIR = ".retail-mcp/data";
 
 export interface WarehouseHandle {
   warehouse: Warehouse;
   kind: "pg" | "pglite";
   /**
-   * kind === "pg"일 때만 존재한다 — `sync_now`의 advisory lock(pg_try_advisory_lock)처럼
-   * Postgres 전용 기능에 필요하다(DESIGN §11.4). 임베디드 PGlite 경로에는 이 값이 없다.
+   * Present only when kind === "pg" — needed for Postgres-only features such as the
+   * `sync_now` advisory lock (pg_try_advisory_lock) (DESIGN §11.4). The embedded PGlite path
+   * does not have this value.
    */
   pgPool?: Pool;
   /**
-   * `warehouse`를 만들 때 쓴 것과 같은 연결 제공자 — pg/pglite 어느 쪽이든 항상 존재한다.
-   * `explore_sql`(TASKS T27)처럼 Warehouse의 고정 쿼리 계약 밖에서 세션이 필요한 극소수
-   * 예외 용도(현재는 explore_sql 하나뿐)로만 쓴다.
+   * The same connection provider used to build `warehouse` — always present, for pg and pglite
+   * alike. Used only for the very few exceptions that need a session outside the Warehouse's
+   * fixed-query contract, like `explore_sql` (TASKS T27) (currently explore_sql is the only one).
    */
   connectionProvider: DbConnectionProvider;
-  /** 열어둔 자원(pg.Pool 연결 또는 PGlite 인스턴스+파일 락)을 전부 정리한다. */
+  /** Cleans up all open resources (pg.Pool connections, or the PGlite instance + file lock). */
   close(): Promise<void>;
 }
 
 export interface CreateWarehouseOptions {
-  /** 테스트 주입용. 기본값: process.env. */
+  /** For test injection. Default: process.env. */
   env?: NodeJS.ProcessEnv;
-  /** 임베디드 경로 override. 기본값: env RETAIL_MCP_DATA_DIR 또는 DEFAULT_EMBEDDED_DATA_DIR. */
+  /** Embedded path override. Default: env RETAIL_MCP_DATA_DIR or DEFAULT_EMBEDDED_DATA_DIR. */
   dataDir?: string;
 }
 
@@ -91,13 +95,14 @@ async function createEmbeddedWarehouse(dataDir: string): Promise<WarehouseHandle
       warehouse,
       kind: "pglite",
       connectionProvider,
-      // OPS-001(005 검수, TASKS T34) — 예전엔 `await db.close(); await lock.release();` 순서라
-      // db.close()가 reject하면 release가 아예 실행되지 않았다. 락이 안 풀리면 프로세스가
-      // 죽지 않는 한(또는 사람이 수동으로 지우지 않는 한) 다음 실행이 계속 막힌다 — 그래서
-      // release는 항상(db.close() 성공/실패 무관) 시도한다. 두 정리 작업이 각각 독립적으로
-      // 실패할 수 있어(예: PGlite 내부 오류 + 그 사이 락 파일이 다른 프로세스에 의해 지워짐)
-      // 하나만 던지면 다른 원인이 조용히 사라진다 — 둘 다 실패하면 AggregateError로 둘 다
-      // 보존한다.
+      // OPS-001 (005 review, TASKS T34) — this used to be `await db.close(); await lock.release();`
+      // in that order, so if db.close() rejected, release never ran at all. If the lock is not
+      // released, the next run stays blocked until the process dies (or a human deletes it by
+      // hand) — so release is always attempted regardless of whether db.close() succeeded or
+      // failed. The two cleanup steps can each fail independently (e.g. a PGlite internal error
+      // + the lock file removed by another process in between), and throwing only one of them
+      // would silently drop the other cause — if both fail, both are preserved in an
+      // AggregateError.
       async close() {
         const errors: unknown[] = [];
         try {
@@ -114,21 +119,22 @@ async function createEmbeddedWarehouse(dataDir: string): Promise<WarehouseHandle
         if (errors.length > 1) {
           throw new AggregateError(
             errors,
-            "웨어하우스 종료 중 오류가 여러 개 발생했습니다(db.close()와 lock.release() 둘 다 " +
-              "실패) — errors 배열의 각 원인을 확인하세요.",
+            "Multiple errors occurred while closing the warehouse (both db.close() and lock.release() " +
+              "failed) — check each cause in the errors array.",
           );
         }
       },
     };
   } catch (err) {
-    // 초기화(마이그레이션 등) 실패 시에도 락은 항상 풀어야 한다 — 여기서 release()가 또
-    // 실패하면(OPS-001과 같은 원칙) 원래 원인(err)을 조용히 가리지 않도록 둘 다 보존한다.
+    // The lock must always be released even when initialisation (migrations etc.) fails — if
+    // release() fails here too (same principle as OPS-001), preserve both so the original cause
+    // (err) is not silently masked.
     try {
       await lock.release();
     } catch (releaseErr) {
       throw new AggregateError(
         [err, releaseErr],
-        "임베디드 웨어하우스 초기화 실패 + 락 해제도 실패했습니다 — errors 배열의 각 원인을 확인하세요.",
+        "Embedded warehouse initialisation failed and releasing the lock failed too — check each cause in the errors array.",
         { cause: releaseErr },
       );
     }
@@ -150,9 +156,9 @@ function createNetworkWarehouse(databaseUrl: string): WarehouseHandle {
 }
 
 /**
- * `DATABASE_URL`이 있으면 pg, 없으면 임베디드 PGlite(자동 마이그레이션 포함)로 `Warehouse`를
- * 만든다. 호출자는 사용이 끝나면 반드시 `handle.close()`를 호출해야 한다(pg.Pool 연결 반환
- * 또는 PGlite 인스턴스+파일 락 해제).
+ * Creates a `Warehouse` with pg when `DATABASE_URL` is set, otherwise with embedded PGlite
+ * (including automatic migration). The caller must call `handle.close()` when done (returns
+ * pg.Pool connections, or releases the PGlite instance + file lock).
  */
 export async function createWarehouseFromEnv(
   opts: CreateWarehouseOptions = {},
@@ -172,18 +178,20 @@ function queryOnlyExecutorFromSession(session: DbSession): QueryOnlyExecutor {
 }
 
 /**
- * SR2-REL-001(2차 적대적 검수) — network Postgres(`handle.kind === "pg"`) 경로에서 스키마가
- * 없거나 일부만 적용된 상태를 raw Postgres 에러("relation ... does not exist")가 아니라
- * 실행할 명령까지 담은 명확한 메시지로 알린다. 아무것도 쓰지 않는다(읽기 전용, 가드레일 4/5
- * 대상 아님). embedded PGlite 경로(`handle.kind === "pglite"`)는 `createEmbeddedWarehouse`가
- * 기동 시 이미 자동 마이그레이션을 마쳤으므로 이 함수는 그 경우 아무 일도 하지 않는다.
+ * SR2-REL-001 (second adversarial review) — on the network Postgres path
+ * (`handle.kind === "pg"`), reports a missing or partially applied schema as a clear message
+ * that includes the command to run, rather than a raw Postgres error ("relation ... does not
+ * exist"). Writes nothing (read-only, not subject to guardrails 4/5). On the embedded PGlite
+ * path (`handle.kind === "pglite"`), `createEmbeddedWarehouse` has already auto-migrated at
+ * startup, so this function does nothing in that case.
  *
- * `createWarehouseFromEnv()` 자체에는 넣지 않았다 — 그 함수는 DATABASE_URL이 있어도 실제
- * 네트워크 연결을 시도하지 않는다는 기존 계약(warehouseFactory.test.ts 회귀)을 지키기
- * 위해서다. 호출자(server.ts/agent 진입점)가 handle을 얻은 직후 명시적으로 호출한다.
+ * It is not built into `createWarehouseFromEnv()` itself — to keep the existing contract that
+ * that function does not attempt a real network connection even when DATABASE_URL is set
+ * (warehouseFactory.test.ts regression). The caller (server.ts/agent entry points) calls it
+ * explicitly right after obtaining the handle.
  *
- * `DATABASE_URL` 원문(자격증명 포함)은 이 함수의 어떤 출력에도 남기지 않는다(CLAUDE.md 구현
- * 해석 보충).
+ * The raw `DATABASE_URL` (including credentials) is never written to any output of this
+ * function (CLAUDE.md implementation notes).
  */
 export async function ensureNetworkMigrationsApplied(handle: WarehouseHandle): Promise<void> {
   if (handle.kind !== "pg") return;
@@ -195,9 +203,9 @@ export async function ensureNetworkMigrationsApplied(handle: WarehouseHandle): P
   if (pending.length === 0) return;
 
   throw new Error(
-    `DATABASE_URL이 가리키는 데이터베이스에 아직 스키마가 없거나 일부만 적용돼 있습니다 ` +
-      `(대기 중인 마이그레이션 ${pending.length}건: ${pending.join(", ")}). ` +
-      "npx retail-mcp-migrate로 대상과 대기 중인 마이그레이션을 먼저 확인(dry-run)한 뒤, " +
-      "npx retail-mcp-migrate --confirm으로 적용하고 다시 실행하세요.",
+    `The database that DATABASE_URL points to has no schema yet, or only part of it is applied ` +
+      `(${pending.length} pending migration(s): ${pending.join(", ")}). ` +
+      "First check the target and the pending migrations with npx retail-mcp-migrate (dry-run), " +
+      "then apply them with npx retail-mcp-migrate --confirm and run again.",
   );
 }

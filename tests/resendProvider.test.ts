@@ -4,8 +4,8 @@ import type { OutboundMessage } from "../src/core/types.js";
 
 const MSG: OutboundMessage = {
   to: "owner@example.com",
-  subject: "재주문 제안",
-  text: "이번 주 제안 표를 확인하세요.",
+  subject: "Reorder suggestions",
+  text: "Please review this week's suggestion table.",
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -15,8 +15,8 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-describe("createResendEmailProvider — 요청 형태", () => {
-  it("Authorization 헤더, 엔드포인트, 본문 필드가 올바르다", async () => {
+describe("createResendEmailProvider — request shape", () => {
+  it("Authorization header, endpoint and body fields are correct", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_123" }));
     const provider = createResendEmailProvider({
       apiKey: "secret-resend-key",
@@ -38,12 +38,12 @@ describe("createResendEmailProvider — 요청 형태", () => {
     expect(body).toEqual({
       from: "no-reply@retail-mcp.test",
       to: ["owner@example.com"],
-      subject: "재주문 제안",
-      text: "이번 주 제안 표를 확인하세요.",
+      subject: "Reorder suggestions",
+      text: "Please review this week's suggestion table.",
     });
   });
 
-  it("html이 있으면 본문에 포함된다", async () => {
+  it("includes html in the body when present", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_1" }));
     const provider = createResendEmailProvider({
       apiKey: "k",
@@ -56,12 +56,12 @@ describe("createResendEmailProvider — 요청 형태", () => {
     expect((body as { html?: string }).html).toBe("<p>hi</p>");
   });
 
-  it("channel은 항상 email이다", () => {
+  it("channel is always email", () => {
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com" });
     expect(provider.channel).toBe("email");
   });
 
-  it("idempotencyKey가 있으면 Idempotency-Key 헤더로 전달한다(OPS-004, TASKS T34)", async () => {
+  it("passes idempotencyKey as the Idempotency-Key header when present (OPS-004, TASKS T34)", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_1" }));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     await provider.send({ ...MSG, idempotencyKey: "run-abc-123" });
@@ -70,7 +70,7 @@ describe("createResendEmailProvider — 요청 형태", () => {
     expect(headers["Idempotency-Key"]).toBe("run-abc-123");
   });
 
-  it("idempotencyKey가 없으면 헤더 자체를 생략한다", async () => {
+  it("omits the header entirely when idempotencyKey is absent", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "email_1" }));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     await provider.send(MSG);
@@ -80,8 +80,8 @@ describe("createResendEmailProvider — 요청 형태", () => {
   });
 });
 
-describe("createResendEmailProvider — 실패 처리", () => {
-  it("HTTP 오류 응답이면 원인이 담긴 에러를 던진다", async () => {
+describe("createResendEmailProvider — failure handling", () => {
+  it("throws an error with the cause on an HTTP error response", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(jsonResponse({ message: "Invalid `to` field" }, 422));
@@ -89,24 +89,24 @@ describe("createResendEmailProvider — 실패 처리", () => {
     await expect(provider.send(MSG)).rejects.toThrow(/Invalid `to` field/);
   });
 
-  it("성공 응답에 id가 없으면 명확한 에러를 던진다", async () => {
+  it("throws a clear error when the success response has no id", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
-    await expect(provider.send(MSG)).rejects.toThrow(/id가 없습니다/);
+    await expect(provider.send(MSG)).rejects.toThrow(/has no id/);
   });
 
-  it("응답이 timeoutMs 안에 오지 않으면 타임아웃으로 처리한다", async () => {
-    const fetchImpl = vi.fn().mockReturnValue(new Promise<Response>(() => {})); // 절대 응답하지 않음
+  it("treats a response that does not arrive within timeoutMs as a timeout", async () => {
+    const fetchImpl = vi.fn().mockReturnValue(new Promise<Response>(() => {})); // never responds
     const provider = createResendEmailProvider({
       apiKey: "k",
       from: "a@b.com",
       fetchImpl,
       timeoutMs: 20,
     });
-    await expect(provider.send(MSG)).rejects.toThrow(/타임아웃/);
+    await expect(provider.send(MSG)).rejects.toThrow(/timeout/);
   });
 
-  it("타임아웃 에러의 name은 AmbiguousSendError다(OPS-004, TASKS T34 — 호출자가 failed/unknown을 구분하는 신호)", async () => {
+  it("the timeout error's name is AmbiguousSendError (OPS-004, TASKS T34 — the signal callers use to distinguish failed/unknown)", async () => {
     const fetchImpl = vi.fn().mockReturnValue(new Promise<Response>(() => {}));
     const provider = createResendEmailProvider({
       apiKey: "k",
@@ -117,16 +117,16 @@ describe("createResendEmailProvider — 실패 처리", () => {
     await expect(provider.send(MSG)).rejects.toMatchObject({ name: "AmbiguousSendError" });
   });
 
-  // SR2-MAIL-002(2차 적대적 검수) — 응답-이전 네트워크 오류의 failed/ambiguous 분류.
-  // 아래 픽스처는 Node 24 undici가 실제로 던지는 형태(`TypeError("fetch failed")` + `cause`에
-  // `code`)를 직접 재현해 그대로 옮긴 것이다.
+  // SR2-MAIL-002 (second adversarial review) — failed/ambiguous classification of pre-response network errors.
+  // The fixture below reproduces the exact shape Node 24 undici actually throws
+  // (`TypeError("fetch failed")` + `code` on `cause`).
   function undiciFetchFailed(code: string | undefined, causeMessage: string): TypeError {
     const cause = new Error(causeMessage);
     if (code !== undefined) (cause as { code?: string }).code = code;
     return new TypeError("fetch failed", { cause });
   }
 
-  it("연결 거부(ECONNREFUSED)는 요청이 서버에 닿지 않은 게 확실하므로 AmbiguousSendError가 아니다(failed)", async () => {
+  it("connection refused (ECONNREFUSED) is definitely a request that never reached the server, so it is not AmbiguousSendError (failed)", async () => {
     const fetchImpl = vi
       .fn()
       .mockRejectedValue(undiciFetchFailed("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:443"));
@@ -134,10 +134,10 @@ describe("createResendEmailProvider — 실패 처리", () => {
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).name).not.toBe("AmbiguousSendError");
-    expect((err as Error).message).toMatch(/발송되지 않았습니다/);
+    expect((err as Error).message).toMatch(/nothing was sent/);
   });
 
-  it("DNS 실패(ENOTFOUND)도 확실한 failed다", async () => {
+  it("DNS failure (ENOTFOUND) is also a definite failed", async () => {
     const fetchImpl = vi
       .fn()
       .mockRejectedValue(undiciFetchFailed("ENOTFOUND", "getaddrinfo ENOTFOUND api.resend.com"));
@@ -146,32 +146,32 @@ describe("createResendEmailProvider — 실패 처리", () => {
     expect((err as Error).name).not.toBe("AmbiguousSendError");
   });
 
-  it("연결 후 응답 없이 소켓이 끊기면(UND_ERR_SOCKET) 본문이 이미 도달했을 수 있으므로 AmbiguousSendError다(SR2-MAIL-002 핵심 회귀)", async () => {
+  it("a socket dropped after connecting without a response (UND_ERR_SOCKET) means the body may already have arrived, so it is AmbiguousSendError (SR2-MAIL-002 core regression)", async () => {
     const fetchImpl = vi
       .fn()
       .mockRejectedValue(undiciFetchFailed("UND_ERR_SOCKET", "other side closed"));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect((err as Error).name).toBe("AmbiguousSendError");
-    expect((err as Error).message).toMatch(/발송됐을 수 있으니/);
+    expect((err as Error).message).toMatch(/may already have reached the server and been sent/);
   });
 
-  it("ECONNRESET도 AmbiguousSendError다", async () => {
+  it("ECONNRESET is also AmbiguousSendError", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(undiciFetchFailed("ECONNRESET", "socket hang up"));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect((err as Error).name).toBe("AmbiguousSendError");
   });
 
-  it("코드가 없는 알 수 없는 응답-이전 오류는 보수적으로 AmbiguousSendError로 분류한다", async () => {
+  it("an unknown pre-response error without a code is conservatively classified as AmbiguousSendError", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(undiciFetchFailed(undefined, "something odd"));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect((err as Error).name).toBe("AmbiguousSendError");
-    expect((err as Error).message).toMatch(/코드 없음/);
+    expect((err as Error).message).toMatch(/no code/);
   });
 
-  it("cause 체인이 깊어도(2단계) code를 찾아 분류한다", async () => {
+  it("finds the code and classifies even with a deep (2-level) cause chain", async () => {
     const inner = Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
     const middle = new Error("wrapped", { cause: inner });
     const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause: middle }));
@@ -180,21 +180,21 @@ describe("createResendEmailProvider — 실패 처리", () => {
     expect((err as Error).name).not.toBe("AmbiguousSendError");
   });
 
-  it("HTTP 오류 응답(요청은 도달)은 AmbiguousSendError가 아니다 — 확실한 실패다", async () => {
+  it("an HTTP error response (request arrived) is not AmbiguousSendError — it is a definite failure", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ message: "bad" }, 422));
     const provider = createResendEmailProvider({ apiKey: "k", from: "a@b.com", fetchImpl });
     const err = await provider.send(MSG).catch((e: unknown) => e);
     expect((err as Error).name).not.toBe("AmbiguousSendError");
   });
 
-  describe("환경변수 누락", () => {
+  describe("missing environment variables", () => {
     const ORIGINAL_ENV = { ...process.env };
 
     afterEach(() => {
       process.env = { ...ORIGINAL_ENV };
     });
 
-    it("apiKey/from이 없으면 원인과 해결법이 담긴 에러를 생성 시점에 던진다", () => {
+    it("throws an error with the cause and the fix at creation time when apiKey/from are missing", () => {
       delete process.env["RESEND_API_KEY"];
       delete process.env["MAIL_FROM"];
       expect(() => createResendEmailProvider({})).toThrow(/RESEND_API_KEY/);

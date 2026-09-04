@@ -1,30 +1,36 @@
 name: Release (npm publish with provenance)
 
-# T37 8단계 "provenance" 결정(2026-09-04, 사용자 위임 → 비교 후 ② 채택): 로컬 `npm publish`(provenance
-# 없음) 대신 GitHub Actions에서 `npm publish --provenance`로 게시한다. provenance는 "이 tarball이 이
-# 저장소의 이 커밋에서 이 워크플로가 빌드한 것"이라는 서명된 증명(Sigstore)이고 npm 페이지에 표시된다 —
-# 이 프로젝트가 공급망 게이트(SHA 고정 Action, ruleset, prepublishOnly)에 들인 노력의 마지막 조각이다.
-# 로컬 publish는 그 증명을 만들 수 없다(npm 문서: GitHub Actions/GitLab CI의 OIDC로만 생성).
+# T37 step 8 "provenance" decision (2026-09-04, delegated by the user → option 2 adopted after
+# comparison): publish from GitHub Actions with `npm publish --provenance` instead of a local
+# `npm publish` (no provenance). Provenance is a signed attestation (Sigstore) that "this tarball was
+# built by this workflow from this commit of this repository" and is shown on the npm page — it is the
+# last piece of the effort this project put into supply-chain gates (SHA-pinned Actions, ruleset,
+# prepublishOnly). A local publish cannot produce that attestation (npm docs: generated only via the
+# OIDC of GitHub Actions/GitLab CI).
 #
-# 실행 조건: `v*` 태그 push **만**. 태그를 미는 것 자체가 사람의 명시적 게시 결정이다(ruleset은
-# 브랜치만 보호하지만 이 저장소에 push 권한은 소유자뿐이다). 태그 이름은 package.json의 버전과 정확히
-# 일치해야 하고(아래 검증 step), 실제 게시 전 `prepublishOnly`(npm run check && npm run verify:pack —
-# 플래그 없음 = tarball audit fail-closed)가 자동으로 돈다. 즉 "태그 push → 전체 gate → 게시" 순서다.
+# Trigger: `v*` tag push **only**. Pushing the tag is itself a human's explicit decision to publish
+# (the ruleset protects only branches, but only the owner has push access to this repository). The
+# tag name must exactly match the version in package.json (verification step below), and before the
+# actual publish `prepublishOnly` (npm run check && npm run verify:pack — no flag = tarball audit
+# fail-closed) runs automatically. That is, the order is "tag push → full gate → publish".
 #
-# 인증(npm 문서 기준) — 2단계 중 2단계 상태:
-#   1) 첫 게시(v0.1.0, 2026-09-04): 패키지가 아직 없어 trusted publisher를 등록할 수 없었으므로
-#      repo secret `NPM_TOKEN`(npmjs.com granular access token)을 `NODE_AUTH_TOKEN`으로 썼다.
-#   2) 지금(첫 게시 뒤): npmjs.com 패키지 설정 → Trusted Publisher에 이 저장소(Trapa-Eureka/retail-mcp)·
-#      워크플로 파일명(release.yml)·environment(npm-publish)가 등록돼 있고, 게시는 장기 토큰 없이
-#      OIDC만으로 이뤄진다 — `npm publish`가 GitHub의 OIDC id-token을 npm 레지스트리의 단기 토큰으로
-#      교환한다(npm CLI 11.5.1+ 필요 → 아래 "npm 버전 고정" step). `NPM_TOKEN` secret과
-#      `NODE_AUTH_TOKEN` 줄은 제거됐다. 이 워크플로에는 이제 어떤 장기 자격증명도 없다.
-#      등록이 빠져 있으면 publish가 `ENEEDAUTH`/404(token exchange)로 실패하고 아무것도 게시되지
-#      않는다 — 그때는 npmjs.com 패키지 설정에서 trusted publisher 등록을 확인한다.
+# Authentication (per npm docs) — stage 2 of 2:
+#   1) First publish (v0.1.0, 2026-09-04): the package did not exist yet, so a trusted publisher
+#      could not be registered; the repo secret `NPM_TOKEN` (npmjs.com granular access token) was
+#      used as `NODE_AUTH_TOKEN`.
+#   2) Now (after the first publish): npmjs.com package settings → Trusted Publisher has this
+#      repository (Trapa-Eureka/retail-mcp), the workflow file name (release.yml) and the environment
+#      (npm-publish) registered, and publishing happens via OIDC alone with no long-lived token —
+#      `npm publish` exchanges GitHub's OIDC id-token for a short-lived npm registry token (requires
+#      npm CLI 11.5.1+ → the "pin npm version" step below). The `NPM_TOKEN` secret and the
+#      `NODE_AUTH_TOKEN` line have been removed. This workflow now holds no long-lived credential.
+#      If the registration is missing, publish fails with `ENEEDAUTH`/404 (token exchange) and
+#      nothing is published — in that case check the trusted publisher registration in the npmjs.com
+#      package settings.
 #
-# 권한: 워크플로 전역은 `contents: read`(SR2-CI-001 원칙). `id-token: write`는 publish job에만 —
-# provenance 서명과 trusted publishing 토큰 교환에 필요한 OIDC 토큰 발급 권한이고 저장소에
-# 아무것도 쓰지 않는다.
+# Permissions: workflow-wide `contents: read` (SR2-CI-001 principle). `id-token: write` only on the
+# publish job — it is the permission to mint the OIDC token needed for provenance signing and the
+# trusted-publishing token exchange, and writes nothing to the repository.
 
 on:
   push:
@@ -34,7 +40,8 @@ on:
 permissions:
   contents: read
 
-# 같은 태그로 두 번 돌 일은 없지만, 실수로 태그를 지웠다 다시 밀어도 동시에 두 게시가 겹치지 않게.
+# The same tag never runs twice, but even if a tag is accidentally deleted and pushed again, two
+# publishes must not overlap.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -42,12 +49,13 @@ concurrency:
 jobs:
   publish:
     name: npm publish --provenance
-    runs-on: ubuntu-latest # provenance는 GitHub 호스트 러너에서만 생성된다(self-hosted 불가).
-    # SR2-CI-003 원칙 — prepublishOnly가 check(≈3분) + verify:pack(≈10분)을 돌리므로 관측치 2배.
+    runs-on: ubuntu-latest # provenance is generated only on GitHub-hosted runners (no self-hosted).
+    # SR2-CI-003 principle — prepublishOnly runs check (≈3 min) + verify:pack (≈10 min), so 2x observed.
     timeout-minutes: 40
-    # GitHub environment — 저장소 Settings → Environments → npm-publish에 "Required reviewers"를 켜면
-    # 태그 push 뒤 사람 승인이 한 번 더 들어간다(1인 저장소에서도 본인 승인 가능). 없으면 첫 실행 때
-    # 자동 생성되고 승인 없이 진행된다.
+    # GitHub environment — turning on "Required reviewers" under repository Settings → Environments →
+    # npm-publish adds one more human approval after the tag push (self-approval is possible even in a
+    # single-person repository). If it does not exist it is auto-created on the first run and proceeds
+    # without approval.
     environment: npm-publish
     permissions:
       contents: read
@@ -58,52 +66,57 @@ jobs:
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-          # 릴리스 빌드는 캐시를 쓰지 않는다(npm 문서 권고) — 재현성.
-          # setup-node v7부터 `NODE_AUTH_TOKEN`을 더미 값으로 export하지 않는다(PR #1558). 그래서
-          # 위 registry-url이 쓰는 .npmrc의 `_authToken=${NODE_AUTH_TOKEN}`은 게시 외 step에서
-          # 미해결 문자열로 남는데, npm 10.9.9/11.6.2/11.19.1 모두 읽기(`npm ci`/`npm view`)에는
-          # 영향이 없음을 확인했다(2026-09-04, 로컬 재현). publish는 OIDC 교환 토큰이 이를 덮어쓴다.
+          # Release builds do not use the cache (npm docs recommendation) — reproducibility.
+          # Since setup-node v7, `NODE_AUTH_TOKEN` is no longer exported with a dummy value (PR #1558).
+          # So the `_authToken=${NODE_AUTH_TOKEN}` in the .npmrc written by registry-url above stays an
+          # unresolved string in non-publish steps; confirmed that npm 10.9.9/11.6.2/11.19.1 are all
+          # unaffected for reads (`npm ci`/`npm view`) (2026-09-04, reproduced locally). For publish the
+          # OIDC-exchanged token overrides it.
 
-      - name: npm 버전 고정(trusted publishing은 npm CLI 11.5.1+에서만 동작)
-        # 러너의 Node 22가 번들하는 npm 10.x는 OIDC 토큰 교환을 모른다 — 이 step이 없으면 publish가
-        # 조용히 토큰 인증으로 떨어져 `ENEEDAUTH`로 실패한다. `@latest` 대신 고정 버전(SR2-CI-002 원칙).
+      - name: Pin npm version (trusted publishing only works on npm CLI 11.5.1+)
+        # The npm 10.x bundled with the runner's Node 22 does not know the OIDC token exchange — without
+        # this step publish silently falls back to token auth and fails with `ENEEDAUTH`. Pinned
+        # version instead of `@latest` (SR2-CI-002 principle).
         run: |
           npm install -g npm@11.19.1
           npm -v
 
-      - name: 태그가 package.json 버전과 일치하는지 확인
-        # `v0.1.0` 태그 ↔ `"version": "0.1.0"`. 다르면 게시하지 않는다 — 버전을 올리지 않고 태그만
-        # 민 실수, 또는 그 반대를 여기서 잡는다(npm은 같은 버전 재게시를 거부하지만 그 전에 막는다).
+      - name: Verify that the tag matches the package.json version
+        # `v0.1.0` tag ↔ `"version": "0.1.0"`. If they differ, do not publish — this catches pushing a
+        # tag without bumping the version, or the reverse (npm rejects republishing the same version,
+        # but we stop it before that).
         run: |
           pkg_version="$(node -p 'require("./package.json").version')"
           if [ "${GITHUB_REF_NAME}" != "v${pkg_version}" ]; then
-            echo "::error::태그 ${GITHUB_REF_NAME} 가 package.json 버전 v${pkg_version} 과 다릅니다 — 게시하지 않습니다."
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version v${pkg_version} — not publishing."
             exit 1
           fi
-          echo "게시 대상: $(node -p 'require("./package.json").name')@${pkg_version} (태그 ${GITHUB_REF_NAME})"
+          echo "Publish target: $(node -p 'require("./package.json").name')@${pkg_version} (tag ${GITHUB_REF_NAME})"
 
       - run: npm ci
 
-      - name: npm publish --provenance (prepublishOnly가 check + verify:pack을 먼저 실행)
-        # 인증은 trusted publishing(OIDC)뿐 — env에 토큰이 없다. 위 헤더 주석 "인증" 참고.
+      - name: npm publish --provenance (prepublishOnly runs check + verify:pack first)
+        # Authentication is trusted publishing (OIDC) only — there is no token in env. See the
+        # "Authentication" header comment above.
         run: npm publish --provenance --access public
 
-      - name: 게시 확인(레지스트리에서 다시 읽기)
+      - name: Verify publish (read back from the registry)
         run: |
           name="$(node -p 'require("./package.json").name')"
           version="$(node -p 'require("./package.json").version')"
-          # 레지스트리 전파를 기다리며 재시도한다. 첫 게시(v0.1.0, 2026-09-04) 때 publish는 12:20:56에
-          # 성공했는데 이 확인은 10초×6=60초 안에 404만 받아 거짓 실패로 끝났다(1~2분 뒤엔 정상 조회).
-          # 그래서 창을 3분(10초×18)으로 늘린다 — 이 step은 게시 자체를 되돌리지 못하므로(같은 버전
-          # 재게시는 npm이 거부) 실패해도 "게시 안 됨"이 아니라 "아직 못 읽음"일 수 있다는 걸 메시지에
-          # 그대로 적는다.
+          # Retry while waiting for registry propagation. On the first publish (v0.1.0, 2026-09-04)
+          # publish succeeded at 12:20:56 but this check only got 404s within 10s×6=60s and ended in a
+          # false failure (it resolved fine 1~2 minutes later). So the window is widened to 3 minutes
+          # (10s×18) — this step cannot undo the publish itself (npm rejects republishing the same
+          # version), so the message states plainly that a failure may mean "not readable yet" rather
+          # than "not published".
           for i in $(seq 1 18); do
             if npm view "${name}@${version}" version --json >/dev/null 2>&1; then
-              echo "레지스트리 확인: ${name}@${version}"
+              echo "Registry confirmed: ${name}@${version}"
               npm view "${name}@${version}" dist.tarball dist.integrity --json
               exit 0
             fi
             sleep 10
           done
-          echo "::error::게시 후 3분 안에 ${name}@${version} 를 레지스트리에서 읽지 못했습니다 — 위 publish step에 '+ ${name}@${version}' 가 찍혔다면 게시는 된 것이고 전파만 늦은 것입니다. npmjs.com에서 직접 확인하세요."
+          echo "::error::Could not read ${name}@${version} from the registry within 3 minutes after publishing — if the publish step above printed '+ ${name}@${version}', the publish succeeded and only propagation is delayed. Check directly on npmjs.com."
           exit 1

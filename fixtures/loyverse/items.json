@@ -2,7 +2,7 @@
   "items": [
     {
       "id": "itm_cola",
-      "item_name": "코카콜라 500ml",
+      "item_name": "Coca-Cola 500ml",
       "category_id": "cat_beverage",
       "variants": [
         {
@@ -46,7 +46,7 @@
     },
     {
       "id": "itm_shinramyun",
-      "item_name": "신라면 컵",
+      "item_name": "Shin Ramyun Cup",
       "category_id": "cat_noodle",
       "variants": [
         {
@@ -79,7 +79,7 @@
     },
     {
       "id": "itm_mirinda",
-      "item_name": "미린다 오렌지",
+      "item_name": "Mirinda Orange",
       "category_id": "cat_beverage",
       "variants": [
         {

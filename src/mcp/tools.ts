@@ -1,16 +1,17 @@
 /**
- * MCP 도구 6종의 실제 로직 (DESIGN.md §6). `src/server.ts`는 이 파일의 함수들을
- * `McpServer.registerTool()`로 등록하는 조립만 한다 — CLAUDE.md "server.ts는 도구 등록·조립만,
- * 로직 없음"에 따라 로직은 전부 여기 있다.
+ * The actual logic of the 6 MCP tools (DESIGN.md §6). `src/server.ts` only assembles — it
+ * registers this file's functions via `McpServer.registerTool()` — per CLAUDE.md ("server.ts only
+ * registers/assembles tools, no logic") all logic lives here.
  *
- * 조회 도구 4종(sell_through/inventory_status/stockout_risk/reorder_suggestions)은 읽기 전용
- * DB 자격 증명으로 실행한다(DESIGN §11.4) — 이 파일에서 이 4개 함수는 Warehouse의 query 계열/get
- * 계열 메서드만 호출하고 upsert류를 호출하지 않는다. `reorder_suggestions`는 `agent/reorder.ts`의
- * `buildReorderReport()`를 그대로 재사용해 "도구 결과 = 에이전트 리포트"를 구조적으로 보장한다
- * (TESTING §4 MCP 회귀 가드).
+ * The 4 query tools (sell_through/inventory_status/stockout_risk/reorder_suggestions) run with
+ * read-only DB credentials (DESIGN §11.4) — in this file those 4 functions call only the
+ * Warehouse query-/get-style methods and never the upsert-style ones. `reorder_suggestions` reuses
+ * `buildReorderReport()` from `agent/reorder.ts` as-is, structurally guaranteeing "tool result =
+ * agent report" (TESTING §4 MCP regression guard).
  *
- * 응답 공통 메타데이터(DESIGN §11.6): generated_at/data_last_synced_at/timezone/filters/warnings를
- * 4개 조회 도구 모두 포함한다. 신선도 판정은 core/freshness.ts를 공유한다(SPEC §9).
+ * Common response metadata (DESIGN §11.6): all 4 query tools include
+ * generated_at/data_last_synced_at/timezone/filters/warnings. Freshness evaluation is shared via
+ * core/freshness.ts (SPEC §9).
  */
 import { buildReorderReport, type BuildReportOptions, type ReportDeps } from "../agent/reorder.js";
 import { computeFreshness, DEFAULT_STALE_THRESHOLD_HOURS } from "../core/freshness.js";
@@ -32,13 +33,13 @@ import type {
 } from "../core/types.js";
 import { syncAll, type SyncResource, type SyncResult } from "../etl/sync.js";
 
-// ── 공통 ────────────────────────────────────────────────────────────────
+// ── Common ──────────────────────────────────────────────────────────────
 
 export interface QueryToolDeps {
   warehouse: Warehouse;
   clock: Clock;
   businessTimezone: string;
-  /** 기본값 DEFAULT_STALE_THRESHOLD_HOURS(24, env STALE_THRESHOLD_HOURS로 조정). */
+  /** Default DEFAULT_STALE_THRESHOLD_HOURS (24, adjustable via env STALE_THRESHOLD_HOURS). */
   staleThresholdHours?: number;
 }
 
@@ -69,17 +70,18 @@ function buildMeta(
 }
 
 /**
- * store_id가 주어졌는데 존재하지 않으면 원인이 담긴 에러를 던진다(TESTING §4 MCP 도구 항목).
- * `agent/reorder.ts`의 buildReorderReport()에도 동일한 검증이 있다(그쪽은 Warehouse.queryStores
- * 결과를 매장명 조립에도 써야 해서 별도로 조회한다) — 5줄 남짓의 검증이라 의도적으로 각자 둔다.
+ * Throws an error carrying the cause when a store_id is given but does not exist (TESTING §4 MCP
+ * tools item). buildReorderReport() in `agent/reorder.ts` has the same check (it queries
+ * separately because it also needs the Warehouse.queryStores result to build store names) — it
+ * is a ~5-line check, so each deliberately keeps its own copy.
  */
 async function assertStoreExists(warehouse: Warehouse, storeId: string | undefined): Promise<void> {
   if (storeId === undefined) return;
   const stores = await warehouse.queryStores(storeId);
   if (stores.length === 0) {
     throw new Error(
-      `존재하지 않는 store_id입니다: "${storeId}". sync_status 도구나 stores 테이블에서 ` +
-        "등록된 매장 id를 확인하세요.",
+      `Unknown store_id: "${storeId}". Check the registered store ids with the sync_status ` +
+        "tool or in the stores table.",
     );
   }
 }
@@ -103,7 +105,7 @@ export interface SellThroughRowOut {
   sold_qty: number;
   end_stock_raw: number;
   end_stock: number;
-  /** null = 신규/무재고(판매+기말재고=0) — SPEC §2. */
+  /** null = new/no stock (sales + ending stock = 0) — SPEC §2. */
   sell_through: number | null;
   warnings: string[];
 }
@@ -155,7 +157,7 @@ export async function sellThroughTool(
   ]);
 
   const rows = computeSellThrough(salesAgg, stock);
-  // null(신규/무재고)은 순위를 매길 수 없으니 정렬 방향과 무관하게 항상 끝으로 보낸다.
+  // null (new/no stock) cannot be ranked, so it always goes last regardless of sort direction.
   const sorted = [...rows].sort((a, b) => {
     if (a.sellThrough === null && b.sellThrough === null) return a.name.localeCompare(b.name);
     if (a.sellThrough === null) return 1;
@@ -174,8 +176,8 @@ export async function sellThroughTool(
   return {
     rows: top.map(toSellThroughRowOut),
     note:
-      "근사식(SPEC §2): 셀스루 = 기간 판매수량 ÷ (기간 판매수량 + 기말재고). " +
-      "정통 정의(판매 ÷ (기초재고+입고))는 입고 데이터 확보 후 v0.2.",
+      "Approximate formula (SPEC §2): sell-through = period sales qty ÷ (period sales qty + ending stock). " +
+      "The canonical definition (sales ÷ (opening stock + receipts)) comes in v0.2 once receipt data is available.",
     meta: buildMeta(
       deps.clock,
       deps.businessTimezone,
@@ -206,7 +208,7 @@ export interface InventoryStatusRowOut {
   category: string | null;
   in_stock: number;
   avg_daily_sales: number;
-  /** null = ∞(무한 커버) — 최근 판매가 없다는 뜻. */
+  /** null = ∞ (infinite cover) — means no recent sales. */
   days_of_cover: number | null;
   warnings: string[];
 }
@@ -250,7 +252,7 @@ export async function inventoryStatusTool(
   let rows = computeReorderMetrics(salesAgg, stock, { windowDays });
   if (input.belowDaysCover !== undefined) {
     const threshold = input.belowDaysCover;
-    // ∞(null) 커버는 어떤 유한 임계값보다도 "미달"이 아니다.
+    // ∞ (null) cover is never "below" any finite threshold.
     rows = rows.filter((r) => r.daysOfCover !== null && r.daysOfCover < threshold);
   }
   rows = [...rows].sort((a, b) => {
@@ -295,7 +297,7 @@ export interface StockoutRiskRowOut {
   in_stock: number;
   avg_daily_sales: number;
   days_of_cover: number;
-  /** YYYY-MM-DD(사업장 타임존 기준). daysOfCover를 올림한 날수만큼 오늘에 더한 근사값. */
+  /** YYYY-MM-DD (in the business timezone). Approximation: today plus daysOfCover rounded up. */
   expected_stockout_date: string;
   warnings: string[];
 }
@@ -338,11 +340,12 @@ export async function stockoutRiskTool(
     month: "2-digit",
     day: "2-digit",
   });
-  // periodEnd = calendarWindow()이 계산한 "사업장 현지 오늘 자정"(DESIGN §11.3) — 예상 소진일의
-  // 기준일로 쓴다. daysOfCover는 소수일 수 있어 올림한다(더 이르게, 안전한 쪽으로 경고).
+  // periodEnd = "today's midnight in the business timezone" as computed by calendarWindow()
+  // (DESIGN §11.3) — used as the base date for the expected stockout date. daysOfCover may be
+  // fractional, so it is rounded up (earlier, i.e. warning on the safe side).
   const rows: StockoutRiskRowOut[] = [];
   for (const r of risky) {
-    if (r.daysOfCover === null) continue; // isStockoutRisk가 null이면 false를 반환하므로 도달 불가.
+    if (r.daysOfCover === null) continue; // Unreachable: isStockoutRisk returns false for null.
     const stockoutAt = new Date(periodEnd.getTime() + Math.ceil(r.daysOfCover) * 86_400_000);
     rows.push({
       store_id: r.storeId,
@@ -366,7 +369,7 @@ export async function stockoutRiskTool(
 
   return {
     rows,
-    note: "expected_stockout_date는 daysOfCover를 올림해 오늘(사업장 타임존)에 더한 근사값입니다.",
+    note: "expected_stockout_date is an approximation: today (business timezone) plus daysOfCover rounded up.",
     meta: buildMeta(
       deps.clock,
       deps.businessTimezone,
@@ -381,7 +384,7 @@ export async function stockoutRiskTool(
   };
 }
 
-// ── reorder_suggestions (에이전트와 동일 함수) ───────────────────────────
+// ── reorder_suggestions (same function as the agent) ────────────────────
 
 export interface ReorderSuggestionsInput {
   storeId?: string;
@@ -390,9 +393,10 @@ export interface ReorderSuggestionsInput {
 }
 
 /**
- * DESIGN §6: "제안 수량 표 — 에이전트와 동일 함수". agent/reorder.ts의 buildReorderReport()를
- * 그대로 호출해 반환한다 — 별도 변환 없이 같은 ReorderReport를 반환해야 TESTING §4의
- * "reorder_suggestions 결과 = 에이전트 리포트 표와 완전 동일" 회귀 가드가 성립한다.
+ * DESIGN §6: "suggested quantity table — same function as the agent". Calls
+ * buildReorderReport() from agent/reorder.ts and returns its result as-is — it must return the
+ * same ReorderReport without any transformation for the TESTING §4 regression guard
+ * "reorder_suggestions result = exactly the agent report table" to hold.
  */
 export async function reorderSuggestionsTool(
   deps: QueryToolDeps,
@@ -439,13 +443,13 @@ export async function syncStatusTool(deps: {
   };
 }
 
-// ── sync_now (쓰기, 운영 기본값 비활성 — DESIGN §11.4) ────────────────────
+// ── sync_now (write, disabled by default in production — DESIGN §11.4) ──
 
 export interface SyncNowDeps {
   loyverseClient: LoyverseClient;
   warehouse: Warehouse;
   clock: Clock;
-  /** 동시 호출 중 하나만 실행되게 한다(advisory lock). 나머지는 즉시 실행 중 오류. */
+  /** Lets only one of concurrent calls run (advisory lock). The rest get an "already running" error immediately. */
   runExclusively: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
@@ -495,10 +499,10 @@ export async function syncNowTool(deps: SyncNowDeps, input: SyncNowInput): Promi
   return toSyncNowResult(result);
 }
 
-// ── explore_sql (v0.2 대기열, TASKS T27) — 운영 기본값 비활성, EXPLORE_SQL_ENABLED=true 필요 ──
+// ── explore_sql (v0.2 backlog, TASKS T27) — disabled by default in production, needs EXPLORE_SQL_ENABLED=true ──
 //
-// 실제 안전장치(SQL 검증 + BEGIN READ ONLY)는 core/sqlValidator.ts와
-// adapters/exploreSqlExecutor.ts에 있다 — 여기는 다른 5개 도구와 같은 얇은 조립 계층이다.
+// The real safeguards (SQL validation + BEGIN READ ONLY) live in core/sqlValidator.ts and
+// adapters/exploreSqlExecutor.ts — this is the same thin assembly layer as the other 5 tools.
 
 export interface ExploreSqlDeps {
   executor: ExploreSqlExecutor;

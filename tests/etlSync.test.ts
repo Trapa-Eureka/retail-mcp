@@ -33,21 +33,21 @@ async function allReceipts(client: LoyverseClient): Promise<LvReceipt[]> {
   return out;
 }
 
-/** listReceipts를 두 번째 호출(=2페이지 중 1페이지 처리 후)에서 실패시키는 래퍼. */
+/** Wrapper that fails listReceipts on the second call (= after page 1 of 2 has been processed). */
 function failOnSecondReceiptsCall(inner: LoyverseClient): LoyverseClient {
   let calls = 0;
   return {
     ...inner,
     listReceipts: (sinceISO, cursor) => {
       calls += 1;
-      if (calls === 2) return Promise.reject(new Error("시뮬레이션된 네트워크 실패"));
+      if (calls === 2) return Promise.reject(new Error("simulated network failure"));
       return inner.listReceipts(sinceISO, cursor);
     },
   };
 }
 
-describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
-  it("동일 픽스처로 2회 동기화해도 stores/products/sales_lines/inventory_levels 행 수가 늘지 않는다 (멱등)", async () => {
+describe("etl/sync — TESTING.md §4 ETL 4 items", () => {
+  it("syncing the same fixture twice does not increase the stores/products/sales_lines/inventory_levels row counts (idempotent)", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
 
     const first = await syncAll({ loyverseClient, warehouse, clock });
@@ -68,7 +68,7 @@ describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
     expect(await count(db, "inventory_levels")).toBe(after1.inventory_levels);
   });
 
-  it("receipts가 페이지 처리 중 실패하면 watermark가 갱신되지 않고 아무 것도 적재되지 않으며, 재실행 시 이전 watermark부터 안전하게 재개한다", async () => {
+  it("if receipts fail mid-page, the watermark is not updated and nothing is loaded, and a re-run safely resumes from the previous watermark", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
     const failing = failOnSecondReceiptsCall(loyverseClient);
 
@@ -81,8 +81,8 @@ describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
     expect(await warehouse.getCursor("receipts")).toBeNull();
     expect(await count(db, "sales_lines")).toBe(0);
 
-    // 재실행 — 이번엔 정상 클라이언트. stores/items는 이전 실행에서 이미 적재돼 있으므로
-    // 이번 syncAll 호출에 포함하지 않아도 receipts를 시도할 수 있어야 한다.
+    // Re-run — this time with the healthy client. stores/items were already loaded by the previous
+    // run, so receipts must be attemptable even without including them in this syncAll call.
     const retry = await syncAll({ loyverseClient, warehouse, clock }, { resources: ["receipts"] });
     const retryReceipts = retry.resources.find((r) => r.resource === "receipts");
     expect(retryReceipts?.status).toBe("success");
@@ -90,13 +90,13 @@ describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
     expect(await count(db, "sales_lines")).toBeGreaterThan(0);
   });
 
-  it("환불 영수증의 line_items는 부호가 반전되어 음수 qty로 적재된다", async () => {
+  it("line_items of refund receipts are loaded with the sign flipped as negative qty", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
     const receipts = await allReceipts(loyverseClient);
     const refund = receipts.find((r) => r.receipt_type === "REFUND" && r.cancelled_at === null);
-    if (!refund) throw new Error("fixture에 취소되지 않은 REFUND 영수증이 있어야 한다");
+    if (!refund) throw new Error("the fixture must contain a non-cancelled REFUND receipt");
     const firstLine = refund.line_items[0];
-    if (!firstLine) throw new Error("REFUND 영수증에 line_items가 있어야 한다");
+    if (!firstLine) throw new Error("the REFUND receipt must have line_items");
 
     await syncAll({ loyverseClient, warehouse, clock });
 
@@ -107,7 +107,7 @@ describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
     expect(Number(rows[0]?.qty)).toBe(-firstLine.quantity);
   });
 
-  it("2회 동기화하면 inventory_snapshots에 서로 다른 두 실행(run_id)이 남는다 — FixedClock이라도 randomUUID로 구분", async () => {
+  it("syncing twice leaves two distinct runs (run_id) in inventory_snapshots — distinguished by randomUUID even with a FixedClock", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
     await syncAll({ loyverseClient, warehouse, clock });
     await syncAll({ loyverseClient, warehouse, clock });
@@ -119,12 +119,12 @@ describe("etl/sync — TESTING.md §4 ETL 4항목", () => {
   });
 });
 
-describe("etl/sync — 추가 정책", () => {
-  it("취소된 영수증은 sales_lines에 적재되지 않는다 (SPEC §9)", async () => {
+describe("etl/sync — additional policies", () => {
+  it("cancelled receipts are not loaded into sales_lines (SPEC §9)", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
     const receipts = await allReceipts(loyverseClient);
     const cancelled = receipts.find((r) => r.cancelled_at !== null);
-    if (!cancelled) throw new Error("fixture에 취소된 영수증이 있어야 한다");
+    if (!cancelled) throw new Error("the fixture must contain a cancelled receipt");
 
     await syncAll({ loyverseClient, warehouse, clock });
 
@@ -135,7 +135,7 @@ describe("etl/sync — 추가 정책", () => {
     expect(rows[0]?.count).toBe("0");
   });
 
-  it("inventory 응답이 비어 있으면 동기화 오류로 처리하고 기존 재고를 건드리지 않는다", async () => {
+  it("an empty inventory response is treated as a sync error and leaves the existing stock untouched", async () => {
     const { db, warehouse, loyverseClient, clock } = await setup();
     await syncAll({ loyverseClient, warehouse, clock });
     const before = await count(db, "inventory_levels");
@@ -154,7 +154,7 @@ describe("etl/sync — 추가 정책", () => {
     expect(await count(db, "inventory_levels")).toBe(before);
   });
 
-  it("stores가 실패하면 receipts/inventory는 FK 의존 때문에 시도하지 않고 skipped로 보고한다", async () => {
+  it("if stores fail, receipts/inventory are not attempted because of the FK dependency and are reported as skipped", async () => {
     const { warehouse, clock } = await setup();
     const failingStoresClient: LoyverseClient = {
       listStores: () => Promise.reject(new Error("boom")),
@@ -166,14 +166,14 @@ describe("etl/sync — 추가 정책", () => {
 
     expect(result.ok).toBe(false);
     expect(result.resources.find((r) => r.resource === "stores")?.status).toBe("failed");
-    // items는 stores에 의존하지 않으므로 독립적으로 계속 시도된다.
+    // items does not depend on stores, so it is still attempted independently.
     expect(result.resources.find((r) => r.resource === "items")?.status).toBe("success");
-    // receipts/inventory는 stores·products를 FK로 참조하므로, stores가 실패한 이상 시도하지 않는다.
+    // receipts/inventory reference stores and products via FK, so once stores failed they are not attempted.
     expect(result.resources.find((r) => r.resource === "receipts")?.status).toBe("skipped");
     expect(result.resources.find((r) => r.resource === "inventory")?.status).toBe("skipped");
   });
 
-  it("동일 updated_at 영수증이 페이지 경계에 걸쳐도 누락 없이 전부 적재된다", async () => {
+  it("receipts with identical updated_at spanning a page boundary are all loaded without omission", async () => {
     const { warehouse, db, clock } = await setup();
     const tiedReceipts: LvReceipt[] = [
       {
@@ -216,13 +216,13 @@ describe("etl/sync — 추가 정책", () => {
       },
     ];
     const client: LoyverseClient = {
-      listStores: () => Promise.resolve([{ id: "s1", name: "매장" }]),
+      listStores: () => Promise.resolve([{ id: "s1", name: "Store" }]),
       listItems: () =>
         Promise.resolve({
           items: [
             {
               id: "i1",
-              item_name: "품목",
+              item_name: "Item",
               category_id: null,
               variants: [{ variant_id: "v1", sku: null }],
             },
@@ -234,7 +234,7 @@ describe("etl/sync — 추가 정책", () => {
           .filter((r) => r.updated_at >= sinceISO)
           .sort((a, b) => a.receipt_number.localeCompare(b.receipt_number));
         const offset = cursor ? Number(cursor) : 0;
-        const pageSize = 1; // 동률 updated_at을 페이지 경계에 강제로 걸치게 한다
+        const pageSize = 1; // force the tied updated_at values across a page boundary
         const items = filtered.slice(offset, offset + pageSize);
         const nextCursor = offset + pageSize < filtered.length ? String(offset + pageSize) : null;
         return Promise.resolve({ items, cursor: nextCursor });
@@ -258,16 +258,16 @@ describe("etl/sync — 추가 정책", () => {
     expect(await count(db, "sales_lines")).toBe(2);
   });
 
-  it("품목 variants가 여러 개면 각각 별도 ProductRow로 평탄화되고, category는 category_id를 그대로 담는다", async () => {
+  it("an item with multiple variants is flattened into separate ProductRows, and category holds category_id as-is", async () => {
     const { db, warehouse, clock } = await setup();
     const client: LoyverseClient = {
-      listStores: () => Promise.resolve([{ id: "s1", name: "매장" }]),
+      listStores: () => Promise.resolve([{ id: "s1", name: "Store" }]),
       listItems: () =>
         Promise.resolve({
           items: [
             {
               id: "i1",
-              item_name: "티셔츠",
+              item_name: "T-shirt",
               category_id: "cat_apparel",
               variants: [
                 { variant_id: "v1-s", sku: "TS-S" },

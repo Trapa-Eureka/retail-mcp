@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * 재주문 제안 에이전트 (DESIGN.md §7).
+ * Reorder suggestion agent (DESIGN.md §7).
  *
- * 흐름: opts 로드 → (선택) sync_now → reorderSuggestions(core, 결정론) → 제안 0건이면 로그만
- * 남기고 종료 → 리포트 조립(지점별 표) → Summarizer로 문구 2~3문장(LLM, 실패해도 표만으로
- * 계속 진행) → SEND_MODE=live && --confirm 둘 다일 때만 provider.send, 아니면 dry-run 출력 →
- * agent_send_log 기록.
+ * Flow: load opts → (optional) sync_now → reorderSuggestions (core, deterministic) → if 0
+ * suggestions, only log and exit → assemble the report (per-branch tables) → 2-3 sentence wording
+ * from the Summarizer (LLM; on failure continue with the table only) → provider.send only when
+ * SEND_MODE=live && --confirm are both present, otherwise dry-run output → record in agent_send_log.
  *
- * `buildReorderReport()`는 결정론 계산만 하는 순수 오케스트레이션이라 T9의 `reorder_suggestions`
- * MCP 도구가 그대로 재사용한다(같은 core 경유 회귀 가드, docs/TASKS.md T9 의존성 "T8(코어
- * 재사용 확인용)"). `runReorderAgent()`가 그 위에 요약·발송·로깅을 얹는다. 이 파일 하단의
- * `main()`만 실제 어댑터를 조립하는 CLI 진입점이고, 로직은 전부 이 두 함수에 있다.
+ * `buildReorderReport()` is pure orchestration doing deterministic calculation only, so the T9
+ * `reorder_suggestions` MCP tool reuses it as is (the same-core regression guard, docs/TASKS.md T9
+ * dependency "T8 (to confirm core reuse)"). `runReorderAgent()` layers summary, sending and logging
+ * on top. Only `main()` at the bottom of this file is the CLI entry point that assembles the real
+ * adapters; all the logic lives in those two functions.
  */
 import { randomUUID } from "node:crypto";
 import { parseNamedArg } from "../core/cliArgs.js";
@@ -45,18 +46,18 @@ import {
 import { syncAll } from "../etl/sync.js";
 import { enforceSameRunRetryPolicy } from "./sendRetryGate.js";
 
-// ── 리포트 조립 (결정론, T9 재사용) ────────────────────────────────────────
+// ── Report assembly (deterministic, reused by T9) ─────────────────────────
 
 export interface BuildReportOptions {
-  /** 사업장 타임존(예: Asia/Manila). 암묵 기본값 없음 — 호출자가 명시한다(CLAUDE.md). */
+  /** Business timezone (e.g. Asia/Manila). No implicit default — the caller states it (CLAUDE.md). */
   businessTimezone: string;
-  /** 지정하면 이 매장만. 존재하지 않는 store_id면 원인이 담긴 에러를 던진다. */
+  /** If given, only this store. A non-existent store_id throws an error stating the cause. */
   storeId?: string;
   windowDays?: number;
   leadTimeDays?: number;
   safetyDays?: number;
   targetCoverDays?: number;
-  /** 기본값 DEFAULT_STALE_THRESHOLD_HOURS(24). SPEC §9 stale 경고 기준. */
+  /** Default DEFAULT_STALE_THRESHOLD_HOURS (24). SPEC §9 stale warning threshold. */
   staleThresholdHours?: number;
 }
 
@@ -65,15 +66,16 @@ export interface ReportDeps {
   clock: Clock;
 }
 
-/** report.stores의 총 품목 수 = "제안 건수"(reorderQty>0인 (store,variant) 쌍의 수). */
+/** Total item count of report.stores = "suggestion count" (number of (store,variant) pairs with reorderQty>0). */
 export function countSuggestions(report: ReorderReport): number {
   return report.stores.reduce((sum, s) => sum + s.items.length, 0);
 }
 
 /**
- * 지점별 재주문 제안 표를 계산한다. reorderQty>0인 품목만 포함한다(0건은 "제안"이 아니다).
- * salesAgg/stock/stores 조회 → core/metrics.computeReorderMetrics(순수 계산) → 매장별로 묶어
- * ReorderReport로 조립하는 순서 외에 다른 로직은 없다 — 외부 IO는 warehouse 호출뿐이다.
+ * Computes the per-branch reorder suggestion tables. Only items with reorderQty>0 are included
+ * (0 is not a "suggestion"). There is no logic beyond: query salesAgg/stock/stores →
+ * core/metrics.computeReorderMetrics (pure calculation) → group by store into a ReorderReport —
+ * the only external IO is the warehouse calls.
  */
 export async function buildReorderReport(
   deps: ReportDeps,
@@ -85,8 +87,8 @@ export async function buildReorderReport(
   const stores = await deps.warehouse.queryStores(opts.storeId);
   if (opts.storeId !== undefined && stores.length === 0) {
     throw new Error(
-      `존재하지 않는 store_id입니다: "${opts.storeId}". sync_status 도구나 stores 테이블에서 ` +
-        "등록된 매장 id를 확인하세요.",
+      `Unknown store_id: "${opts.storeId}". Check the registered store ids with the ` +
+        "sync_status tool or in the stores table.",
     );
   }
   const storeNameById = new Map(stores.map((s) => [s.id, s.name]));
@@ -108,8 +110,9 @@ export async function buildReorderReport(
   };
   const metrics = computeReorderMetrics(salesAgg, stock, metricsOpts);
 
-  // 팩 단위 반올림(SPEC §14, TASKS T25) — reorderQty() 계산 자체는 위에서 이미 끝났고, 그
-  // 결과를 ProductRow.packSize와 조인해 감싸기만 한다(computeReorderMetrics는 무변경).
+  // Pack-multiple rounding (SPEC §14, TASKS T25) — the reorderQty() calculation itself is already
+  // done above; this only wraps the result by joining ProductRow.packSize (computeReorderMetrics
+  // is unchanged).
   const products = await deps.warehouse.queryProducts(metrics.map((row) => row.variantId));
   const packRounded = applyPackRounding(metrics, products);
 
@@ -138,16 +141,19 @@ export async function buildReorderReport(
     items.sort((a, b) => b.reorderQty - a.reorderQty || a.name.localeCompare(b.name));
     const storeName = storeNameById.get(storeId);
     if (storeName === undefined) {
-      // FK(sales_lines/inventory_levels → stores) 상 정상적으로는 나올 수 없지만, 방어적으로
-      // 데이터를 누락시키지 않고 store_id를 표시명으로 대체한 채 경고를 남긴다.
-      warnings.add(`매장 이름을 찾지 못한 store_id(${storeId})의 제안을 id로 표시했습니다.`);
+      // Cannot normally happen given the FK (sales_lines/inventory_levels → stores), but
+      // defensively keep the data rather than dropping it: show the store_id as the display name
+      // and leave a warning.
+      warnings.add(
+        `Could not find a store name for store_id (${storeId}); its suggestions are shown under the id.`,
+      );
     }
     sections.push({ storeId, storeName: storeName ?? storeId, items });
   }
   sections.sort((a, b) => a.storeId.localeCompare(b.storeId));
 
-  // 리포트는 receipts(판매 창)와 inventory(현재고) 둘 다에 의존한다 — 신선도는 둘 중 더 오래된
-  // 쪽 기준(SPEC §9, core/freshness.ts를 T9의 MCP 조회 도구와 공유).
+  // The report depends on both receipts (sales window) and inventory (current stock) — freshness is
+  // judged by the older of the two (SPEC §9, core/freshness.ts shared with the T9 MCP query tools).
   const syncState = await deps.warehouse.getSyncState();
   const freshness = computeFreshness(
     syncState,
@@ -166,16 +172,16 @@ export async function buildReorderReport(
   };
 }
 
-// ── 리포트 렌더링 (사람이 읽는 표 — 결정론, LLM 문구는 별도 삽입) ─────────────
+// ── Report rendering (human-readable table — deterministic; the LLM wording is inserted separately) ──
 
 function formatCover(daysOfCover: number | null): string {
   return daysOfCover === null ? "∞" : daysOfCover.toFixed(1);
 }
 
-/** packSize가 없으면(낱개 매입) 계산량만, 있으면 "27개 → 최종 발주량 48개(2팩)"까지 표시한다. */
+/** Without packSize (single-unit purchase) only the computed qty; with it, "27 → final order qty 48 (2 packs, 24 per pack)". */
 function formatOrderQty(item: ReorderLineItem): string {
   if (item.packSize === null || item.packCount === null) return `${item.reorderQty}`;
-  return `${item.reorderQty} → 최종 발주량 ${item.finalOrderQty}(${item.packCount}팩, 팩당 ${item.packSize}개)`;
+  return `${item.reorderQty} → final order qty ${item.finalOrderQty} (${item.packCount} packs, ${item.packSize} per pack)`;
 }
 
 function escapeHtml(s: string): string {
@@ -188,26 +194,26 @@ function escapeHtml(s: string): string {
 
 export function renderReportText(report: ReorderReport, summary: string | null): string {
   const lines: string[] = [
-    `재주문 제안 — 생성 시각 ${report.generatedAt.toISOString()} (기준 타임존: ${report.timezone})`,
-    `데이터 마지막 동기화: ${report.dataLastSyncedAt ? report.dataLastSyncedAt.toISOString() : "정보 없음"}`,
+    `Reorder suggestions — generated at ${report.generatedAt.toISOString()} (timezone: ${report.timezone})`,
+    `Data last synced: ${report.dataLastSyncedAt ? report.dataLastSyncedAt.toISOString() : "not available"}`,
   ];
   if (summary) {
     lines.push("", summary);
   }
   if (report.stores.length === 0) {
-    lines.push("", "재주문이 필요한 품목이 없습니다.");
+    lines.push("", "No items need reordering.");
   }
   for (const store of report.stores) {
-    lines.push("", `[매장: ${store.storeName}] (품목 ${store.items.length}건)`);
+    lines.push("", `[Store: ${store.storeName}] (${store.items.length} item(s))`);
     for (const item of store.items) {
       lines.push(
-        `- ${item.name}: 현재고 ${item.inStock}, 일평균판매 ${item.avgDailySales.toFixed(2)}, ` +
-          `재고커버 ${formatCover(item.daysOfCover)}일, 제안수량 ${formatOrderQty(item)}`,
+        `- ${item.name}: in stock ${item.inStock}, avg daily sales ${item.avgDailySales.toFixed(2)}, ` +
+          `days of cover ${formatCover(item.daysOfCover)}, suggested qty ${formatOrderQty(item)}`,
       );
     }
   }
   if (report.warnings.length > 0) {
-    lines.push("", "경고:");
+    lines.push("", "Warnings:");
     for (const w of report.warnings) lines.push(`- ${w}`);
   }
   return lines.join("\n");
@@ -215,14 +221,14 @@ export function renderReportText(report: ReorderReport, summary: string | null):
 
 export function renderReportHtml(report: ReorderReport, summary: string | null): string {
   const parts: string[] = [
-    `<p>생성 시각 ${escapeHtml(report.generatedAt.toISOString())} (기준 타임존: ${escapeHtml(report.timezone)})<br/>`,
-    `데이터 마지막 동기화: ${escapeHtml(report.dataLastSyncedAt ? report.dataLastSyncedAt.toISOString() : "정보 없음")}</p>`,
+    `<p>Generated at ${escapeHtml(report.generatedAt.toISOString())} (timezone: ${escapeHtml(report.timezone)})<br/>`,
+    `Data last synced: ${escapeHtml(report.dataLastSyncedAt ? report.dataLastSyncedAt.toISOString() : "not available")}</p>`,
   ];
   if (summary) parts.push(`<p>${escapeHtml(summary)}</p>`);
   for (const store of report.stores) {
     parts.push(
       `<h3>${escapeHtml(store.storeName)}</h3><table><tr>` +
-        "<th>품목</th><th>현재고</th><th>일평균판매</th><th>재고커버(일)</th><th>제안수량</th></tr>",
+        "<th>Item</th><th>In stock</th><th>Avg daily sales</th><th>Days of cover</th><th>Suggested qty</th></tr>",
     );
     for (const item of store.items) {
       parts.push(
@@ -235,13 +241,13 @@ export function renderReportHtml(report: ReorderReport, summary: string | null):
   }
   if (report.warnings.length > 0) {
     parts.push(
-      `<p>경고:</p><ul>${report.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul>`,
+      `<p>Warnings:</p><ul>${report.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul>`,
     );
   }
   return parts.join("");
 }
 
-// ── 발송 오케스트레이션 ───────────────────────────────────────────────────
+// ── Send orchestration ────────────────────────────────────────────────────
 
 export interface ReorderAgentDeps extends ReportDeps {
   notificationProvider: NotificationProvider;
@@ -249,13 +255,13 @@ export interface ReorderAgentDeps extends ReportDeps {
 }
 
 export interface ReorderAgentOptions extends BuildReportOptions {
-  /** 기본값: randomUUID(). 재시도에 같은 run_id를 쓰면 이중 발송 방지 예약이 이를 막는다. */
+  /** Default: randomUUID(). Reusing the same run_id on a retry lets the duplicate-send reservation block it. */
   runId?: string;
-  /** 기본값: "dry_run". */
+  /** Default: "dry_run". */
   sendMode?: "dry_run" | "live";
-  /** 기본값: false. sendMode="live"와 둘 다 참일 때만 실제 발송한다(가드레일 1). */
+  /** Default: false. A real send happens only when this and sendMode="live" are both true (guardrail 1). */
   confirm?: boolean;
-  /** live 발송 시 필수. dry-run에는 없어도 된다. */
+  /** Required for a live send. May be omitted for dry-run. */
   recipient?: string;
   subject?: string;
 }
@@ -265,9 +271,9 @@ export interface ReorderAgentResult {
   status: AgentSendStatus;
   suggestionCount: number;
   report: ReorderReport;
-  /** LLM 요약 문구. Summarizer 실패 시 null(표만으로 계속 진행, DESIGN §7). */
+  /** LLM summary wording. null when the Summarizer failed (continue with the table only, DESIGN §7). */
   summary: string | null;
-  /** 사람이 읽는 전체 본문(표+요약) — dry-run 출력과 실제 발송 본문이 같은 텍스트를 쓴다. */
+  /** The full human-readable body (table+summary) — the dry-run output and the real send body use the same text. */
   reportText: string;
   sent: boolean;
   messageId: string | null;
@@ -277,15 +283,16 @@ function errorCodeOf(err: unknown): string {
   return err instanceof Error && err.name ? err.name : "UnknownError";
 }
 
-/** OPS-004(007 검수, TASKS T34) — agent/folderScan.ts와 동일한 판정. */
+/** OPS-004 (007 review, TASKS T34) — the same judgement as agent/folderScan.ts. */
 function isAmbiguousSendError(err: unknown): boolean {
   return err instanceof Error && err.name === "AmbiguousSendError";
 }
 
 /**
- * DESIGN §7 흐름 전체(요약 → 이중 게이트 발송 → 로깅)를 실행한다. LLM(summarizer) 실패는
- * 발송을 막지 않는다 — 표만으로 계속 진행한다. 실제 발송(SEND_MODE=live && confirm)에서는
- * provider.send() 호출 **전에** 반드시 status='sending' 예약 행을 먼저 커밋한다(DESIGN §11.5).
+ * Runs the whole DESIGN §7 flow (summary → double-gated send → logging). An LLM (summarizer)
+ * failure does not block the send — it continues with the table only. For a real send
+ * (SEND_MODE=live && confirm) the status='sending' reservation row is always committed **before**
+ * calling provider.send() (DESIGN §11.5).
  */
 export async function runReorderAgent(
   deps: ReorderAgentDeps,
@@ -294,7 +301,7 @@ export async function runReorderAgent(
   const runId = opts.runId ?? randomUUID();
   const sendMode = opts.sendMode ?? "dry_run";
   const confirm = opts.confirm ?? false;
-  const willSend = sendMode === "live" && confirm; // 이중 게이트 — 한쪽만으로는 발송 안 됨
+  const willSend = sendMode === "live" && confirm; // double gate — neither alone sends
 
   const report = await buildReorderReport(deps, opts);
   const suggestionCount = countSuggestions(report);
@@ -329,7 +336,7 @@ export async function runReorderAgent(
   } catch (err) {
     summary = null;
     console.error(
-      "요약(LLM) 생성에 실패해 요약 없이 표만으로 계속 진행합니다:",
+      "Summary (LLM) generation failed; continuing with the table only, without a summary:",
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -366,18 +373,20 @@ export async function runReorderAgent(
 
   if (!opts.recipient) {
     throw new Error(
-      "REPORT_RECIPIENT이 없습니다. 발송받을 이메일 주소를 .env의 REPORT_RECIPIENT에 추가하세요.",
+      "REPORT_RECIPIENT is not set. Add the email address that should receive the report to REPORT_RECIPIENT in .env.",
     );
   }
   const recipient = opts.recipient;
 
-  // SR2-MAIL-003 — 같은 run_id 재시도(사람이 --run-id로 명시)는 provider의 Idempotency-Key 보존
-  // 기간 안에서만 허용한다. 기간이 지났으면 여기서 거부(중복 발송 위험), 안이면 sending에 멈춘
-  // 행을 unknown으로 마감해 아래 예약이 막히지 않게 한다. 새 run_id면 아무 일도 없다.
+  // SR2-MAIL-003 — a same-run_id retry (a human passing --run-id explicitly) is allowed only within
+  // the provider's Idempotency-Key retention period. If it has passed, refuse here (duplicate-send
+  // risk); if within, close the row stuck in sending as unknown so the reservation below is not
+  // blocked. With a new run_id nothing happens.
   await enforceSameRunRetryPolicy(deps, { runId, now: deps.clock.now(), recipient });
 
-  // 예약: send() 호출 전에 'sending' 행을 먼저 커밋한다. run_id가 이미 sending/sent면 여기서
-  // unique violation으로 실패해 재발송을 막는다(DESIGN §11.5, pgWarehouse.logAgentSend).
+  // Reservation: commit the 'sending' row before calling send(). If the run_id is already
+  // sending/sent this fails with a unique violation and blocks the re-send (DESIGN §11.5,
+  // pgWarehouse.logAgentSend).
   await deps.warehouse.logAgentSend({
     runId,
     sentAt: deps.clock.now(),
@@ -396,8 +405,8 @@ export async function runReorderAgent(
       subject,
       text: reportText,
       html: renderReportHtml(report, summary),
-      // OPS-004 — folderScan.ts와 동일: runId를 idempotency key로 써 사람이 같은 runId로
-      // 재시도해도 중복 발송되지 않는다(resendProvider.ts 문서 참고).
+      // OPS-004 — same as folderScan.ts: runId is used as the idempotency key so a human retrying
+      // with the same runId does not cause a duplicate send (see resendProvider.ts docs).
       idempotencyKey: runId,
     });
     await deps.warehouse.logAgentSend({
@@ -437,13 +446,13 @@ export async function runReorderAgent(
   }
 }
 
-// ── CLI 진입점 (조립만 — 로직은 위 두 함수에 있다) ──────────────────────────
+// ── CLI entry point (assembly only — the logic is in the two functions above) ──────────
 
 function parseSendMode(): "dry_run" | "live" {
   const raw = process.env["SEND_MODE"] ?? "dry_run";
   if (raw !== "dry_run" && raw !== "live") {
     throw new Error(
-      `SEND_MODE 값이 올바르지 않습니다: "${raw}". "dry_run" 또는 "live"만 허용합니다(.env 확인).`,
+      `Invalid SEND_MODE value: "${raw}". Only "dry_run" or "live" is allowed (check .env).`,
     );
   }
   return raw;
@@ -453,29 +462,30 @@ async function main(): Promise<void> {
   const businessTimezone = process.env["BUSINESS_TIMEZONE"];
   if (!businessTimezone) {
     throw new Error(
-      "BUSINESS_TIMEZONE이 없습니다. 예: Asia/Manila. .env의 BUSINESS_TIMEZONE에 추가하세요.",
+      "BUSINESS_TIMEZONE is not set. Example: Asia/Manila. Add it to BUSINESS_TIMEZONE in .env.",
     );
   }
 
   const confirm = process.argv.includes("--confirm");
   const shouldSync = process.argv.includes("--sync");
-  // --run-id=<값>(SR2-MAIL-001, 2차 적대적 검수 대응) — 예전엔 CLI에 이 플래그가 아예 없어
-  // 실행마다 randomUUID()로 새 run_id가 나갔다. Resend timeout 뒤 "발송됐는지 알 수 없음"
-  // 상태(status='unknown')를 사람이 확인 후 재시도할 때 README가 문서화한 "같은 run_id로
-  // 다시 실행"이 실제로는 불가능했던 결함 — 재시도가 새 Idempotency-Key를 써 중복 발송
-  // 위험이 있었다. 지정하지 않으면 기존처럼 randomUUID()로 폴백한다(runReorderAgent 참고).
+  // --run-id=<value> (SR2-MAIL-001, second adversarial review) — the CLI previously had no such
+  // flag at all, so every run produced a fresh run_id via randomUUID(). The "re-run with the same
+  // run_id" documented in the README for a human retrying after a Resend timeout left status
+  // 'unknown' ("unknown whether it was sent") was therefore actually impossible — the retry used a
+  // new Idempotency-Key and risked a duplicate send. When not given it falls back to randomUUID()
+  // as before (see runReorderAgent).
   const runId = parseNamedArg(process.argv, "run-id");
   const sendMode = parseSendMode();
   const clock = createSystemClock();
 
-  // DATABASE_URL이 없으면 임베디드 PGlite로 기동한다(T14, SPEC §12) — Neon 계정 없이도
-  // 비개발자 운영자가 npm install만으로 쓸 수 있게 하기 위해서다.
+  // Without DATABASE_URL, start on embedded PGlite (T14, SPEC §12) — so a non-developer operator
+  // can use it with just npm install, without a Neon account.
   const handle = await createWarehouseFromEnv();
   const warehouse = handle.warehouse;
   try {
-    // SR2-REL-001(2차 적대적 검수) — network Postgres(DATABASE_URL) 경로에서 스키마가 없거나
-    // 일부만 적용됐으면 raw Postgres 에러 대신 여기서 명확한 안내로 즉시 멈춘다. embedded
-    // PGlite 경로는 이미 자동 마이그레이션됐으므로 no-op.
+    // SR2-REL-001 (second adversarial review) — on the network Postgres (DATABASE_URL) path, if the
+    // schema is missing or only partially applied, stop right here with clear guidance instead of a
+    // raw Postgres error. The embedded PGlite path is already auto-migrated, so this is a no-op.
     await ensureNetworkMigrationsApplied(handle);
 
     if (shouldSync) {
@@ -486,8 +496,8 @@ async function main(): Promise<void> {
       if (!syncResult.ok) {
         const failed = syncResult.resources.filter((r) => r.status !== "success");
         console.error(
-          "--sync 동기화 중 일부 리소스가 실패/건너뜀 처리됐습니다 — 그래도 기존 데이터로 " +
-            `제안을 계속 계산합니다: ${failed.map((r) => `${r.resource}=${r.status}`).join(", ")}`,
+          "Some resources failed or were skipped during --sync — continuing to compute " +
+            `suggestions from the existing data anyway: ${failed.map((r) => `${r.resource}=${r.status}`).join(", ")}`,
         );
       }
     }
@@ -509,10 +519,11 @@ async function main(): Promise<void> {
     );
 
     console.log(
-      `재주문 에이전트 실행 완료 — run_id=${result.runId}, status=${result.status}, ` +
-        `제안 ${result.suggestionCount}건, 발송 ${result.sent ? "완료" : "안 함"}.`,
+      `Reorder agent run complete — run_id=${result.runId}, status=${result.status}, ` +
+        `${result.suggestionCount} suggestion(s), send ${result.sent ? "done" : "skipped"}.`,
     );
-    // OPS-005(007 검수, TASKS T34) — 사람이 읽는 위 줄과 별개로 파싱 가능한 한 줄을 남긴다.
+    // OPS-005 (007 review, TASKS T34) — alongside the human-readable line above, leave one
+    // machine-parseable line.
     logStructured({
       event: "reorder_agent_completed",
       runId: result.runId,

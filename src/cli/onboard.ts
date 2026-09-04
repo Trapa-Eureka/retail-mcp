@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * 온보딩 CLI(`npm run onboard`, TASKS T21) — 지점/본사 모드 선택, 감시 폴더 경로, 저재고
- * 임계치·수신자 이메일, 웨어하우스 선택(임베디드 기본/`DATABASE_URL` 옵션)을 물어 `.env`에
- * 저장하고, 지점 모드면 SPEC §12 고정 템플릿 예시 CSV를 감시 폴더에 만들어준다.
+ * Onboarding CLI (`npm run onboard`, TASKS T21) — asks for the branch/HQ mode, the watched
+ * folder path, the low-stock threshold and recipient email, and the warehouse choice
+ * (embedded by default / `DATABASE_URL` optional), saves them to `.env`, and in branch mode
+ * creates an example CSV in the SPEC §12 fixed template inside the watched folder.
  *
- * npm 패키지 `bin`(TASKS T29, DESIGN §12.1) — `package.json.bin["retail-mcp-onboard"]`가
- * 빌드된 `dist/cli/onboard.js`를 가리킨다. 저장소 안에서 개발할 땐 `npm run onboard`(tsx로
- * 소스 직접 실행)를 그대로 쓴다.
+ * npm package `bin` (TASKS T29, DESIGN §12.1) — `package.json.bin["retail-mcp-onboard"]`
+ * points at the built `dist/cli/onboard.js`. When developing inside the repository, keep
+ * using `npm run onboard` (runs the source directly via tsx).
  *
- * 질문·답변 수집(`collectOnboardAnswers`)과 `.env` 병합(`mergeEnvFile`)은 순수 함수로
- * 분리해뒀다 — `ask()`를 주입하면 실제 터미널 없이도 비대화식으로(스크립트가 답을 미리
- * 정해둔 채) 테스트할 수 있다.
+ * Question/answer collection (`collectOnboardAnswers`) and `.env` merging (`mergeEnvFile`)
+ * are split out as pure functions — injecting `ask()` lets them be tested non-interactively
+ * (with a script that pre-decides the answers) without a real terminal.
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
@@ -26,16 +27,16 @@ async function askRequired(ask: AskFn, question: string, maxAttempts = 3): Promi
     const answer = (await ask(question)).trim();
     if (answer !== "") return answer;
     if (attempt < maxAttempts) {
-      console.log("값이 필요합니다 — 다시 입력해주세요.");
+      console.log("A value is required — please enter it again.");
     }
   }
   throw new Error(
-    `"${question}"에 대한 값을 ${maxAttempts}번 시도해도 받지 못했습니다. 값을 준비한 뒤 다시 실행하세요.`,
+    `No value was received for "${question}" after ${maxAttempts} attempts. Prepare the value and run again.`,
   );
 }
 
 async function askWithDefault(ask: AskFn, question: string, defaultValue: string): Promise<string> {
-  const answer = (await ask(`${question} (기본값: ${defaultValue})`)).trim();
+  const answer = (await ask(`${question} (default: ${defaultValue})`)).trim();
   return answer === "" ? defaultValue : answer;
 }
 
@@ -49,13 +50,11 @@ async function askChoice<T extends string>(
     const raw = (await ask(`${question} (${choices.join("/")})`)).trim().toLowerCase();
     if ((choices as readonly string[]).includes(raw)) return raw as T;
     if (attempt < maxAttempts) {
-      console.log(
-        `"${raw}"는 알 수 없는 값입니다 — ${choices.join(" 또는 ")} 중 하나를 입력해주세요.`,
-      );
+      console.log(`"${raw}" is not a known value — please enter one of ${choices.join(" or ")}.`);
     }
   }
   throw new Error(
-    `"${question}"에 유효한 값(${choices.join("/")})을 ${maxAttempts}번 시도해도 받지 못했습니다.`,
+    `No valid value (${choices.join("/")}) was received for "${question}" after ${maxAttempts} attempts.`,
   );
 }
 
@@ -63,19 +62,27 @@ function isLikelyEmail(s: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
-// ── 답변 수집 (순수 로직 — ask()만 주입받는다) ───────────────────────────────
+// ── Answer collection (pure logic — only ask() is injected) ─────────────────
 
 export interface BranchOnboardAnswers {
   mode: "branch";
+  /**
+   * Name of this store/branch as the user wants it to appear in reports. Store and product
+   * names are data, not configuration: every CSV row carries its own `store` and `product`
+   * values. This answer only seeds the `store` column of the generated example template so the
+   * first file the user opens already shows their own store name instead of a placeholder.
+   */
+  storeName: string;
   watchDir: string;
   snapshotDir: string;
   defaultLowStockThreshold: number;
   recipient: string;
   databaseUrl?: string;
   /**
-   * 이메일 발송 설정(선택, T37 게시 전 점검에서 추가) — 둘 다 있어야 실제 발송이 가능하다.
-   * 온보딩에서 비워두면 `retail-mcp-scan`은 미리보기(dry-run)만 하고, 나중에 `.env`에
-   * `RESEND_API_KEY`/`MAIL_FROM`을 채우면 된다. 값은 `.env`(0600)에만 쓰고 화면에 되풀이하지 않는다.
+   * Email sending settings (optional, added in the T37 pre-publish check) — both are needed
+   * for live sending. If left empty during onboarding, `retail-mcp-scan` only previews
+   * (dry-run); fill `RESEND_API_KEY`/`MAIL_FROM` in `.env` later. The values are written only
+   * to `.env` (0600) and never echoed to the screen.
    */
   resendApiKey?: string;
   mailFrom?: string;
@@ -92,57 +99,69 @@ export type OnboardAnswers = BranchOnboardAnswers | ConsolidatedOnboardAnswers;
 export async function collectOnboardAnswers(ask: AskFn): Promise<OnboardAnswers> {
   const mode = await askChoice(
     ask,
-    "연결 모드를 선택하세요 — branch(지점, 재고 파일 직접 감시) / consolidated(본사, 지점 스냅샷 취합)",
+    "Select the connection mode — branch (a store, watches its inventory file directly) / consolidated (HQ, collects branch snapshots)",
     ["branch", "consolidated"] as const,
   );
 
   const databaseUrlRaw = await ask(
-    "웨어하우스로 쓸 Postgres 연결 문자열(Neon/Supabase 등)을 입력하세요. 비워두면 로컬 임베디드 PGlite를 씁니다",
+    "Postgres connection string to use as the warehouse (Neon/Supabase etc.)? Leave empty to use the local embedded PGlite",
   );
   const databaseUrl = databaseUrlRaw.trim() === "" ? undefined : databaseUrlRaw.trim();
 
   if (mode === "consolidated") {
-    const collectDir = await askRequired(ask, "지점 스냅샷이 모이는 수집 폴더 경로를 입력하세요");
+    const collectDir = await askRequired(
+      ask,
+      "Path of the collection folder where branch snapshots arrive?",
+    );
     return { mode, collectDir, ...(databaseUrl !== undefined ? { databaseUrl } : {}) };
   }
 
-  const watchDir = await askRequired(ask, "재고 파일을 감시할 폴더 경로를 입력하세요");
+  const storeName = await askWithDefault(
+    ask,
+    "Name of this store or branch (used as the `store` value in the example template; each CSV row carries its own store name)",
+    DEFAULT_EXAMPLE_STORE_NAME,
+  );
+
+  const watchDir = await askRequired(ask, "Path of the folder to watch for CSV/Excel files?");
   let snapshotDir: string;
   for (;;) {
     snapshotDir = await askRequired(
       ask,
-      "스냅샷 CSV를 저장할 폴더 경로를 입력하세요(감시 폴더와 달라야 합니다)",
+      "Path of the folder to save snapshot CSVs to (must differ from the watched folder)?",
     );
     if (path.resolve(watchDir) !== path.resolve(snapshotDir)) break;
-    console.log("감시 폴더와 스냅샷 폴더가 같습니다 — 서로 다른 폴더를 입력해주세요.");
+    console.log(
+      "The watched folder and the snapshot folder are the same — please enter two different folders.",
+    );
   }
 
   const thresholdRaw = await askWithDefault(
     ask,
-    "판매 이력이 없는 품목의 기본 저재고 임계치(품목별로 다르면 CSV의 저재고임계치 컬럼으로 개별 지정 가능)",
+    "Default low-stock threshold for items with no sales history (per-item values can be set in the CSV low_stock_threshold column)",
     "5",
   );
   const defaultLowStockThreshold = Number(thresholdRaw);
   if (!Number.isFinite(defaultLowStockThreshold) || defaultLowStockThreshold < 0) {
     throw new Error(
-      `저재고 임계치가 올바르지 않습니다: "${thresholdRaw}". 0 이상의 숫자여야 합니다.`,
+      `Invalid low-stock threshold: "${thresholdRaw}". It must be a number of 0 or more.`,
     );
   }
 
   let recipient: string;
   for (;;) {
-    recipient = await askRequired(ask, "저재고 알림을 받을 이메일 주소를 입력하세요");
+    recipient = await askRequired(ask, "Email address that should receive low-stock alerts?");
     if (isLikelyEmail(recipient)) break;
-    console.log(`"${recipient}"는 이메일 주소 형식이 아닙니다 — 다시 입력해주세요.`);
+    console.log(`"${recipient}" is not a valid email address — please enter it again.`);
   }
 
-  // 이메일 발송 설정(선택). 실제 발송에는 Resend API 키와 발신 주소가 둘 다 필요하다 — 키를
-  // 비우면 미리보기(dry-run) 전용으로 안내하고 발신 주소는 묻지 않는다. 키를 줬는데 발신 주소가
-  // 없으면 발송이 실패하므로 그 경우엔 발신 주소를 필수로 받는다.
+  // Email sending settings (optional). Live sending needs both a Resend API key and a sender
+  // address — if the key is left empty, explain that only preview (dry-run) is available and
+  // do not ask for the sender address. If a key is given but no sender address, sending would
+  // fail, so in that case the sender address is required.
   const resendApiKeyRaw = (
     await ask(
-      "이메일 발송용 Resend API 키를 입력하세요(re_로 시작, resend.com > API Keys에서 발급). " +
-        "비워두면 지금은 미리보기(dry-run)만 하고 발송 설정은 나중에 .env에 채웁니다",
+      "Resend API key for sending email (starts with re_, issued at resend.com > API Keys)? " +
+        "Leave empty to only preview (dry-run) for now and fill the sending settings in .env later",
     )
   ).trim();
   let mailFrom: string | undefined;
@@ -150,15 +169,16 @@ export async function collectOnboardAnswers(ask: AskFn): Promise<OnboardAnswers>
     for (;;) {
       mailFrom = await askRequired(
         ask,
-        "발신 이메일 주소를 입력하세요(Resend에서 인증한 도메인의 주소, 예: alerts@내도메인.com)",
+        "Sender email address (an address on a domain verified in Resend, e.g. alerts@yourdomain.com)?",
       );
       if (isLikelyEmail(mailFrom)) break;
-      console.log(`"${mailFrom}"는 이메일 주소 형식이 아닙니다 — 다시 입력해주세요.`);
+      console.log(`"${mailFrom}" is not a valid email address — please enter it again.`);
     }
   }
 
   return {
     mode,
+    storeName,
     watchDir,
     snapshotDir,
     defaultLowStockThreshold,
@@ -169,9 +189,9 @@ export async function collectOnboardAnswers(ask: AskFn): Promise<OnboardAnswers>
   };
 }
 
-// ── .env 병합 (기존 내용 보존, 관리하는 키만 갱신/추가) ──────────────────────
+// ── .env merge (preserves existing content, only updates/adds managed keys) ─
 
-/** `updates`의 키가 이미 있는 줄이면 그 줄의 값을 바꾸고, 없으면 파일 끝에 새로 추가한다. */
+/** If a line for a key in `updates` already exists, replace its value; otherwise append it at the end of the file. */
 export function mergeEnvFile(
   existing: string,
   updates: Record<string, string | undefined>,
@@ -201,13 +221,13 @@ export function mergeEnvFile(
     [
       ...header,
       ...(header.length > 0 ? [""] : []),
-      "# --- 온보딩(npm run onboard)이 추가함 ---",
+      "# --- added by onboarding (npm run onboard) ---",
       ...appendedLines,
     ].join("\n") + "\n"
   );
 }
 
-/** answers를 .env가 관리하는 키=값 맵으로 변환한다(값이 없으면 undefined — mergeEnvFile이 건드리지 않는다). */
+/** Converts answers into the key=value map managed in .env (undefined when there is no value — mergeEnvFile leaves those alone). */
 export function envUpdatesFor(answers: OnboardAnswers): Record<string, string | undefined> {
   const shared: Record<string, string | undefined> = {
     CSV_MODE: answers.mode,
@@ -222,23 +242,31 @@ export function envUpdatesFor(answers: OnboardAnswers): Record<string, string | 
     CSV_SNAPSHOT_DIR: answers.snapshotDir,
     CSV_DEFAULT_LOW_STOCK_THRESHOLD: String(answers.defaultLowStockThreshold),
     REPORT_RECIPIENT: answers.recipient,
-    // 비우면 undefined → mergeEnvFile이 기존 줄을 건드리지 않는다(이미 채워둔 값 보존).
+    // Empty → undefined → mergeEnvFile leaves any existing line untouched (preserves values already filled in).
     RESEND_API_KEY: answers.resendApiKey,
     MAIL_FROM: answers.mailFrom,
   };
 }
 
-// ── 템플릿 예시 파일 (지점 모드) ─────────────────────────────────────────────
+// ── Example template file (branch mode) ─────────────────────────────────────
 
-/** SPEC §12 고정 템플릿 헤더·형식 그대로인 예시 1행짜리 CSV — T19 export를 그대로 재사용한다. */
-export function buildExampleTemplateCsv(now: Date = new Date()): string {
+/** Placeholder store name for the example template when onboarding is not used (e.g. tests). */
+export const DEFAULT_EXAMPLE_STORE_NAME = "Main Store";
+
+/** One-row example CSV in exactly the SPEC §12 fixed template header/format — reuses the T19
+ * export as is. `storeName` is the onboarding answer; product name/SKU stay placeholders because
+ * products are per-row data the user fills in. */
+export function buildExampleTemplateCsv(
+  now: Date = new Date(),
+  storeName: string = DEFAULT_EXAMPLE_STORE_NAME,
+): string {
   return exportSnapshotCsv({
-    inventory: [{ storeId: "본점", variantId: "SKU-EXAMPLE", inStock: "10", updatedAt: now }],
+    inventory: [{ storeId: storeName, variantId: "SKU-EXAMPLE", inStock: "10", updatedAt: now }],
     products: [
       {
         variantId: "SKU-EXAMPLE",
         itemId: "SKU-EXAMPLE",
-        name: "예시 상품명",
+        name: "Example Product",
         sku: "SKU-EXAMPLE",
         category: null,
         lowStockThreshold: "5",
@@ -248,7 +276,7 @@ export function buildExampleTemplateCsv(now: Date = new Date()): string {
   });
 }
 
-// ── CLI 진입점 ────────────────────────────────────────────────────────────
+// ── CLI entry point ─────────────────────────────────────────────────────────
 
 const ENV_PATH = ".env";
 const EXAMPLE_TEMPLATE_FILE_NAME = "template-example.csv";
@@ -263,31 +291,35 @@ async function readExistingEnv(): Promise<string> {
 }
 
 /**
- * `.env`에 원자적으로 0o600 권한으로 쓴다(SEC-005, TASKS T32) — DATABASE_URL·이메일 주소
- * 등 민감정보가 담기므로 소유자만 읽기/쓰기 가능해야 한다. `writeFileAtomic`은 임시 파일을
- * 0o600으로 새로 만든 뒤 rename으로 교체하므로, 기존 `.env`가 더 느슨한 권한이었어도(예:
- * umask로 만들어진 0o644) rename 후에는 새 inode의 권한(0o600)으로 항상 교체된다 — 별도
- * "기존 파일 권한 검사·보정" 단계 없이 매 온보딩 실행이 곧 보정이다(rename(2)이 대상 경로의
- * 예전 inode를 완전히 새 inode로 교체하기 때문 — 예전 파일의 권한이 새 inode로 넘어오지
- * 않는다). `main()`과 분리해둬 실제 readline 없이 직접 테스트할 수 있다.
+ * Writes `.env` atomically with 0o600 permissions (SEC-005, TASKS T32) — it holds sensitive
+ * data such as DATABASE_URL and email addresses, so only the owner may read/write it.
+ * `writeFileAtomic` creates a fresh temp file as 0o600 and then replaces via rename, so even
+ * if the existing `.env` had looser permissions (e.g. 0o644 created by umask), after the
+ * rename it always carries the new inode's permissions (0o600) — every onboarding run is
+ * itself the fix, with no separate "check and repair existing file permissions" step
+ * (rename(2) replaces the old inode at the target path with a completely new inode — the old
+ * file's permissions do not carry over). Kept separate from `main()` so it can be tested
+ * directly without a real readline.
  */
 export async function writeEnvFile(envPath: string, content: string): Promise<void> {
   await writeFileAtomic(envPath, content, { mode: 0o600 });
 }
 
 /**
- * `rl.question()`을 반복 호출하는 대신 `rl`의 비동기 이터레이터에서 한 줄씩 꺼내는 `AskFn`을
- * 만든다.
+ * Builds an `AskFn` that pulls one line at a time from `rl`'s async iterator instead of
+ * calling `rl.question()` repeatedly.
  *
- * 착수 중 발견(QA-001 tarball smoke test, `scripts/verifyPack.ts`) — 파이프로 넘긴 비대화식
- * 입력(`printf "a\nb\nc" | retail-mcp-onboard`, CI/스크립트 온보딩의 일반적인 방식)에서는
- * `readline/promises`의 `rl.question()`을 여러 번 순차 호출하면 **첫 질문만 응답을 받고
- * 이후 질문은 영원히 멈춘다** — stdin이 TTY가 아니면 파이프에 이미 도착해 있는 나머지 줄들이
- * `question()`이 다음 리스너를 등록하기 전에 먼저 소비돼버리는 Node 자체의 알려진 동작이다
- * (사람이 터미널에서 한 줄씩 타이핑할 때는 매 줄이 늦게 도착해 문제가 드러나지 않는다 —
- * `collectOnboardAnswers`의 단위 테스트가 주입한 `ask()`도 실제 `readline`을 거치지 않아
- * 이 결함을 가리고 있었다). 비동기 이터레이터로 한 줄씩 명시적으로 꺼내면 TTY·파이프 양쪽에서
- * 안전하다 — Node 공식 문서가 권장하는 `for await...of rl` 소비 방식과 같은 메커니즘이다.
+ * Found during work (QA-001 tarball smoke test, `scripts/verifyPack.ts`) — with piped
+ * non-interactive input (`printf "a\nb\nc" | retail-mcp-onboard`, the usual way for CI/script
+ * onboarding), calling `readline/promises`' `rl.question()` several times in sequence means
+ * **only the first question receives an answer and the following ones hang forever** — when
+ * stdin is not a TTY, the remaining lines already sitting in the pipe are consumed before
+ * `question()` registers its next listener; this is known Node behaviour (when a person types
+ * line by line in a terminal each line arrives late, so the problem never shows — and the
+ * unit tests of `collectOnboardAnswers` inject `ask()` without going through a real
+ * `readline`, which hid this defect). Explicitly pulling one line at a time from the async
+ * iterator is safe for both TTY and pipes — the same mechanism as the `for await...of rl`
+ * consumption pattern recommended by the official Node docs.
  */
 function createReadlineAsk(rl: ReturnType<typeof createInterface>): AskFn {
   const lines = rl[Symbol.asyncIterator]();
@@ -307,29 +339,29 @@ async function main(): Promise<void> {
     const existingEnv = await readExistingEnv();
     const merged = mergeEnvFile(existingEnv, envUpdatesFor(answers));
     await writeEnvFile(ENV_PATH, merged);
-    console.log(`설정을 ${ENV_PATH}에 저장했습니다(권한 0600).`);
+    console.log(`Settings saved to ${ENV_PATH} (permissions 0600).`);
 
     if (answers.mode === "branch") {
       const { mkdir } = await import("node:fs/promises");
       await mkdir(answers.watchDir, { recursive: true });
       const templatePath = path.join(answers.watchDir, EXAMPLE_TEMPLATE_FILE_NAME);
-      await writeFile(templatePath, buildExampleTemplateCsv(), "utf8");
+      await writeFile(templatePath, buildExampleTemplateCsv(new Date(), answers.storeName), "utf8");
       console.log(
-        `예시 템플릿 파일을 만들었습니다: ${templatePath}\n` +
-          "이 파일을 열어 실제 재고 데이터로 채우거나, 같은 형식의 파일로 교체하세요.",
+        `Created an example template file: ${templatePath}\n` +
+          "Open this file and fill it with your real inventory data, or replace it with a file in the same format.",
       );
     }
 
-    // 설치 사용자(npm bin)와 저장소 개발자(npm run) 둘 다 보는 안내라 두 명령을 함께 적는다.
+    // Both installed users (npm bin) and repository developers (npm run) read this, so both commands are listed.
     const hasSending = answers.mode === "branch" && answers.resendApiKey !== undefined;
     console.log(
       [
-        "온보딩 완료.",
-        "다음: 같은 폴더에서 `retail-mcp-scan`(저장소에서는 `npm run agent:folder-scan`)을 한 번 실행해 결과를 확인하세요.",
-        "  기본은 미리보기(SEND_MODE=dry_run)라 이메일은 나가지 않고 화면에만 표시됩니다.",
+        "Onboarding complete.",
+        "Next: run `retail-mcp-scan` (in the repository: `npm run agent:folder-scan`) once from the same folder and check the result.",
+        "  The default is preview (SEND_MODE=dry_run), so no email is sent — the result is only printed to the screen.",
         hasSending
-          ? "실제 발송을 켜려면 .env의 SEND_MODE를 live로 바꾸고, 처음 한 번은 직접 `retail-mcp-scan --confirm`을 실행해 수신을 확인한 뒤 자동 실행(cron)에 등록하세요."
-          : '실제 발송을 켜려면 .env에 RESEND_API_KEY와 MAIL_FROM을 채우고 SEND_MODE를 live로 바꾼 뒤, 처음 한 번은 직접 `retail-mcp-scan --confirm`을 실행해 수신을 확인하세요(README "5. 이메일 발송 켜기").',
+          ? "To enable live sending, set SEND_MODE to live in .env, run `retail-mcp-scan --confirm` manually once to verify delivery, and then register it for automatic runs (cron)."
+          : 'To enable live sending, fill RESEND_API_KEY and MAIL_FROM in .env, set SEND_MODE to live, and run `retail-mcp-scan --confirm` manually once to verify delivery (README "5. Enable email sending").',
       ].join("\n"),
     );
   } finally {

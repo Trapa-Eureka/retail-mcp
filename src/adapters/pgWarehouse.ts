@@ -1,7 +1,8 @@
 /**
- * Warehouse의 pg/PGlite 겸용 구현. 커넥션은 밖에서 주입한다(운영 = pg.Pool, 테스트 = PGlite).
- * SQL은 전부 파라미터라이즈드 고정 쿼리다 — 문자열 보간으로 값을 SQL에 직접 넣지 않는다.
- * `transaction(fn)`은 실제 BEGIN/COMMIT/ROLLBACK으로 구현한다(DESIGN §11.1, T1 적대적 검수 002-02).
+ * Warehouse implementation shared by pg and PGlite. The connection is injected from outside
+ * (production = pg.Pool, tests = PGlite).
+ * All SQL is parameterised fixed queries — values are never interpolated directly into SQL.
+ * `transaction(fn)` is implemented with real BEGIN/COMMIT/ROLLBACK (DESIGN §11.1, T1 adversarial review 002-02).
  */
 import type {
   AgentSendEntry,
@@ -21,9 +22,9 @@ import type {
   Warehouse,
 } from "../core/types.js";
 
-// ── 커넥션 추상화 ───────────────────────────────────────────────────────
+// ── Connection abstraction ─────────────────────────────────────────────
 
-/** 단일 세션에서 파라미터라이즈드 쿼리를 실행하는 최소 인터페이스. */
+/** Minimal interface for running parameterised queries on a single session. */
 export interface DbSession {
   query<T extends Record<string, unknown>>(
     text: string,
@@ -32,16 +33,16 @@ export interface DbSession {
 }
 
 interface DbConnection extends DbSession {
-  /** 세션을 반환한다. pg.Pool 기반이면 실제 반환, PGlite처럼 단일 세션뿐이면 no-op. */
+  /** Returns the session. A real return for pg.Pool; a no-op for single-session backends like PGlite. */
   release(): void;
 }
 
-/** pgWarehouse가 세션을 확보하는 방법 — pg.Pool.connect()이거나 PGlite 인스턴스를 감싼 것. */
+/** How pgWarehouse obtains a session — either pg.Pool.connect() or a wrapped PGlite instance. */
 export interface DbConnectionProvider {
   acquire(): Promise<DbConnection>;
 }
 
-/** node-postgres Pool이 만족하는 최소 시그니처(직접 의존 대신 구조적 타입으로 받는다). */
+/** Minimal signature satisfied by a node-postgres Pool (taken as a structural type instead of a direct dependency). */
 export interface PgPoolLike {
   connect(): Promise<{
     query<T extends Record<string, unknown>>(
@@ -64,7 +65,7 @@ export function createPgConnectionProvider(pool: PgPoolLike): DbConnectionProvid
   };
 }
 
-/** PGlite 인스턴스가 만족하는 최소 시그니처(테스트 전용). */
+/** Minimal signature satisfied by a PGlite instance (test-only). */
 export interface PgliteLike {
   query<T extends Record<string, unknown>>(
     text: string,
@@ -75,8 +76,8 @@ export interface PgliteLike {
 export function createPgliteConnectionProvider(db: PgliteLike): DbConnectionProvider {
   return {
     acquire() {
-      // PGlite는 항상 단일 세션이다 — release는 no-op이고, 여러 acquire()가 같은 세션을 공유한다
-      // (테스트 환경의 알려진 제약: 진짜 다중 커넥션 동시성은 PGlite로 검증할 수 없다).
+      // PGlite is always a single session — release is a no-op, and multiple acquire() calls share the same session
+      // (a known limitation of the test environment: real multi-connection concurrency cannot be verified with PGlite).
       return Promise.resolve({
         query: (text: string, params?: unknown[]) => db.query(text, params),
         release: () => {},
@@ -85,7 +86,7 @@ export function createPgliteConnectionProvider(db: PgliteLike): DbConnectionProv
   };
 }
 
-/** exploreSqlExecutor.ts(explore_sql 전용)가 같은 acquire/release 패턴을 재사용하려고 export한다. */
+/** Exported so that exploreSqlExecutor.ts (explore_sql only) can reuse the same acquire/release pattern. */
 export async function withSession<T>(
   provider: DbConnectionProvider,
   fn: (session: DbSession) => Promise<T>,
@@ -98,13 +99,14 @@ export async function withSession<T>(
   }
 }
 
-// ── SQL 헬퍼 ────────────────────────────────────────────────────────────
+// ── SQL helpers ─────────────────────────────────────────────────────────
 
-/** rowCount개 행 × colCount개 컬럼의 `($1,$2), ($3,$4), ...` VALUES 절을 만든다. */
+/** Builds a `($1,$2), ($3,$4), ...` VALUES clause for rowCount rows × colCount columns. */
 /**
- * `literalSuffix`(선택)는 매 행에 그대로 덧붙는 SQL 리터럴이다 — 사용자 입력이 아니라
- * 호출자가 코드에 고정으로 박아 넣는 상수(예: `, true`)에만 쓴다. 파라미터 바인딩 원칙을
- * 깨는 게 아니라, 매 행마다 파라미터를 하나씩 더 만들 필요가 없는 상수를 위한 지름길이다.
+ * `literalSuffix` (optional) is a SQL literal appended verbatim to every row — used only for
+ * constants the caller hard-codes in source (e.g. `, true`), never for user input. This does
+ * not break the parameter-binding principle; it is a shortcut for constants that would
+ * otherwise need one extra parameter per row.
  */
 function buildValuesPlaceholders(rowCount: number, colCount: number, literalSuffix = ""): string {
   const rows: string[] = [];
@@ -117,7 +119,7 @@ function buildValuesPlaceholders(rowCount: number, colCount: number, literalSuff
   return rows.join(", ");
 }
 
-// ── 리소스별 쓰기/조회 (고정된 session에 바인딩) ───────────────────────────
+// ── Per-resource writes/queries (bound to a fixed session) ─────────────────
 
 async function upsertStoresOn(session: DbSession, rows: StoreRow[]): Promise<void> {
   if (rows.length === 0) return;
@@ -132,17 +134,18 @@ async function upsertStoresOn(session: DbSession, rows: StoreRow[]): Promise<voi
 }
 
 /**
- * `low_stock_threshold`/`pack_size`는 세 상태를 구분한다(006 DATA-005, TASKS T33,
- * `core/types.ts`의 `ProductRow` 문서 참고) — `undefined`(이 upsert 배치는 이 필드에 대해
- * 아무 정보가 없음 → 기존 값 유지), `null`(명시적으로 지움 → null로 덮어씀), 값(그 값으로
- * 설정). 컬럼이 파일에 있는지는 파일 헤더 단위 속성이라 한 배치(한 파일) 안에서 행마다
- * 갈리지 않는다 — 갈린다면 전부 undefined이거나 전부 아니거나 둘 중 하나다. 그래서 배치
- * 전체에 대해 "이 필드에 대해 조금이라도 정보가 있는 행이 하나라도 있는가"만 한 번 판정해
- * SET절 자체를 고른다: 있으면 무조건 `excluded.x`로 덮어써 null도 그대로 반영되고(clear),
- * 없으면 `products.x`(자기 자신)로 둬 기존 값을 그대로 보존한다 — `coalesce`는 배치
- * 전체가 "정보 없음"일 때만 실질적으로 no-op이 되므로 이제 필요 없다(예전 방식은 null도
- * "정보 없음"으로 오인해 명시적 clear를 표현할 방법이 아예 없었다 — 006 DATA-005가 지적한
- * 결함 그 자체).
+ * `low_stock_threshold`/`pack_size` distinguish three states (006 DATA-005, TASKS T33, see the
+ * `ProductRow` docs in `core/types.ts`) — `undefined` (this upsert batch carries no information
+ * about the field → keep the existing value), `null` (explicit clear → overwrite with null), a
+ * value (set to that value). Whether a column is present in the file is a property of the file
+ * header, so it does not vary row by row within one batch (one file) — either all rows are
+ * undefined or none are. Therefore the SET clause itself is chosen once per batch by asking
+ * "is there at least one row with any information about this field": if so, always overwrite
+ * with `excluded.x`, so a null is applied as-is (clear); if not, leave `products.x` (itself) so
+ * the existing value is preserved — `coalesce` is no longer needed, since it would only be an
+ * effective no-op when the whole batch is "no information" (the old approach also mistook null
+ * for "no information", leaving no way at all to express an explicit clear — exactly the defect
+ * 006 DATA-005 pointed out).
  */
 async function upsertProductsOn(session: DbSession, rows: ProductRow[]): Promise<void> {
   if (rows.length === 0) return;
@@ -209,9 +212,10 @@ async function upsertInventoryOn(session: DbSession, rows: InventoryRow[]): Prom
   if (rows.length === 0) return;
   const params: unknown[] = [];
   for (const r of rows) params.push(r.storeId, r.variantId, r.inStock, r.updatedAt.toISOString());
-  // active(TASKS T31, DATA-002 tombstone) — upsert되는 행은 항상 active=true다. 이 upsert
-  // 경로 자체가 "지금 이 소스가 이 행을 현재 상태로 보고한다"는 뜻이라, 이전에 tombstone(비활성)
-  // 처리됐던 행이 다시 나타나면 여기서 자동 재활성화된다(별도 reactivate 메서드 불필요).
+  // active (TASKS T31, DATA-002 tombstone) — upserted rows are always active=true. This upsert
+  // path itself means "this source reports this row as current state now", so a row that was
+  // previously tombstoned (inactive) is automatically reactivated here when it reappears (no
+  // separate reactivate method needed).
   await session.query(
     `insert into inventory_levels (store_id, variant_id, in_stock, updated_at, active)
      values ${buildValuesPlaceholders(rows.length, 4, ", true")}
@@ -253,7 +257,7 @@ async function upsertSalesPeriodAggOn(
       r.soldQty,
     );
   }
-  // active(TASKS T31, DATA-002 tombstone) — upsertInventoryOn과 같은 이유로 항상 true.
+  // active (TASKS T31, DATA-002 tombstone) — always true, for the same reason as upsertInventoryOn.
   await session.query(
     `insert into sales_period_agg (store_id, variant_id, period_start, period_end, sold_qty, active)
      values ${buildValuesPlaceholders(rows.length, 5, ", true")}
@@ -267,12 +271,13 @@ async function upsertSalesPeriodAggOn(
 }
 
 /**
- * tombstone(TASKS T31, DATA-002) — `storeIds` 범위 안에서 이번 스캔에 없는 (매장,SKU)
- * `inventory_levels`/`sales_period_agg` 행을 `active=false`로만 표시한다(물리 삭제 없음).
- * `unnest($2::text[], $3::text[])`로 "이번 스캔에 있는 (매장,SKU) 키 집합"을 만들어 그 안에
- * 없는 행만 골라낸다 — present 목록이 비어 있으면(예: 판매이력 있는 행이 이번 스캔에 하나도
- * 없음) `storeIds` 범위의 기존 active 행 전부가 대상이 된다(그 매장들에 대해 이 스캔이
- * "판매이력 없음"을 authoritative하게 보고했다는 뜻이라 올바른 동작이다).
+ * tombstone (TASKS T31, DATA-002) — within the `storeIds` range, only marks the
+ * `inventory_levels`/`sales_period_agg` rows for (store, SKU) pairs absent from this scan as
+ * `active=false` (no physical deletion). `unnest($2::text[], $3::text[])` builds the "set of
+ * (store, SKU) keys present in this scan" and only rows not in it are selected — if the present
+ * list is empty (e.g. not a single row with sales history in this scan), every existing active
+ * row in the `storeIds` range becomes a target (correct behaviour, because it means this scan
+ * authoritatively reported "no sales history" for those stores).
  */
 async function deactivateMissingCsvRowsOn(
   session: DbSession,
@@ -320,12 +325,13 @@ async function deactivateMissingCsvRowsOn(
 }
 
 /**
- * PK가 `(store_id, variant_id, received_at)`뿐이라 여기 자체는 여전히 "같은 날짜 두 번째
- * upsert가 첫 번째를 덮어쓴다"는 계약이다(migrations/004 주석) — 같은 매장·SKU·날짜의 여러
- * 입고를 합산 없이 그대로 이 함수에 넘기면 수량이 조용히 축소된다. 실제 소실 방지는 호출자
- * (`core/scmSchema.ts`의 `mapScmRowsToPurchaseReceipts`)가 import 전에 같은 날짜 행을
- * 합산해서 넘기는 쪽에서 이뤄진다(006 DATA-008, TASKS T33) — 이 함수는 그 계약을 강제하지
- * 않으므로, 다른 호출자를 추가할 땐 반드시 같은 방식으로 미리 합산해야 한다.
+ * Because the PK is only `(store_id, variant_id, received_at)`, this function itself still has
+ * the contract "a second upsert for the same date overwrites the first" (migrations/004
+ * comment) — passing several receipts for the same store/SKU/date to this function without
+ * summing them silently shrinks the quantity. The actual loss prevention happens on the caller
+ * side (`mapScmRowsToPurchaseReceipts` in `core/scmSchema.ts`), which sums same-date rows
+ * before import (006 DATA-008, TASKS T33) — this function does not enforce that contract, so any
+ * new caller must pre-aggregate the same way.
  */
 async function upsertPurchaseReceiptsOn(
   session: DbSession,
@@ -337,7 +343,7 @@ async function upsertPurchaseReceiptsOn(
     params.push(
       r.storeId,
       r.variantId,
-      // date 컬럼 — received_at은 시각이 아니라 "그 날짜"라 시간 성분을 버린다(UTC 기준 날짜).
+      // date column — received_at is "that date", not a timestamp, so the time component is dropped (UTC date).
       r.receivedAt.toISOString().slice(0, 10),
       r.receivedQty,
       r.unitCost ?? null,
@@ -359,9 +365,9 @@ async function upsertPurchaseReceiptsOn(
 }
 
 /**
- * querySalesAggOn과 대칭 — SalesAggQuery를 그대로 받는다. received_at은 date 컬럼이라
- * `::date`로 캐스트해 기간 경계와 비교한다(SPEC §13 — 사업장 타임존 인지 경계 변환은 이번
- * 스코프 밖, 알려진 단순화로 문서화).
+ * Symmetric with querySalesAggOn — takes a SalesAggQuery as-is. received_at is a date column,
+ * so the period boundaries are cast with `::date` for comparison (SPEC §13 — business-timezone-
+ * aware boundary conversion is out of scope for now, documented as a known simplification).
  */
 async function queryPurchaseAggOn(session: DbSession, q: SalesAggQuery): Promise<PurchaseAgg[]> {
   const { rows } = await session.query<{
@@ -456,11 +462,13 @@ async function querySalesAggOn(session: DbSession, q: SalesAggQuery): Promise<Sa
 }
 
 /**
- * sales_period_agg는 (store,variant)당 한 행 — 그 행의 period_start/period_end가 곧 "가장
- * 최근 스캔이 CSV에서 읽은 기간"이다(재집계가 아니라 저장된 합계를 그대로 반환). 질의 기간과
- * 저장된 기간이 겹치는 행만 반환한다 — 완전히 다른(겹치지 않는) 기간을 물어봤는데 오래된
- * 스캔 값을 마치 그 기간 데이터인 것처럼 조용히 돌려주지 않기 위해서다. windowDays 등 호출자
- * 쪽 기간 가정과 저장된 기간 길이가 다를 수 있다는 점은 이 함수가 책임지지 않는다(TASKS T17).
+ * sales_period_agg has one row per (store, variant) — that row's period_start/period_end is
+ * "the period the most recent scan read from the CSV" (the stored total is returned as-is, not
+ * re-aggregated). Only rows whose stored period overlaps the queried period are returned — so
+ * that a query for a completely different (non-overlapping) period does not silently get an old
+ * scan's value as if it were data for that period. This function is not responsible for the
+ * fact that the caller's period assumptions (windowDays etc.) may differ from the stored period
+ * length (TASKS T17).
  */
 async function querySalesPeriodAggOn(session: DbSession, q: SalesAggQuery): Promise<SalesAgg[]> {
   const { rows } = await session.query<{
@@ -533,8 +541,8 @@ async function queryStoresOn(session: DbSession, storeId?: string): Promise<Stor
 }
 
 /**
- * `variantIds`를 생략하면(undefined) 전체, 빈 배열을 주면 빈 결과(`= any('{}')`가 자연스럽게
- * 그렇게 동작한다 — 별도 분기 불필요).
+ * Omitting `variantIds` (undefined) returns everything; an empty array returns an empty result
+ * (`= any('{}')` naturally behaves that way — no separate branch needed).
  */
 async function queryProductsOn(session: DbSession, variantIds?: string[]): Promise<ProductRow[]> {
   const { rows } = await session.query<{
@@ -564,14 +572,15 @@ async function queryProductsOn(session: DbSession, variantIds?: string[]): Promi
 }
 
 /**
- * 이중 발송 방지 예약 패턴(DESIGN §11.5): status='sending'은 **항상 새 INSERT로만** 시도한다.
- * `agent_send_log_run_id_active_idx`(run_id당 sending/sent 최대 1건)가 이 INSERT를 원자적
- * 잠금으로 만든다 — 같은 run_id로 이미 sending/sent 행이 있으면 unique violation으로 실패하고,
- * 그걸 원인이 담긴 에러로 다시 던져 재발송을 막는다. status='sent'/'failed'는 이번 실행이 방금
- * 예약한 그 sending 행을 run_id+status='sending'으로 찾아 "같은 행"을 갱신한다 — 그래서
- * status만 보고 아무 기존 행이나 덮어쓰지 않는다(이미 sent인 행을 sending으로 되돌리는 결함을
- * 피한다). status='no_suggestions'/'dry_run'은 발송이 없으므로 예약 대상이 아니며, 실행마다
- * 감사 로그로 새 행을 남긴다.
+ * Double-send prevention reservation pattern (DESIGN §11.5): status='sending' is **always
+ * attempted only as a new INSERT**. `agent_send_log_run_id_active_idx` (at most one sending/sent
+ * per run_id) turns this INSERT into an atomic lock — if a sending/sent row already exists for
+ * the same run_id, it fails with a unique violation, which is rethrown as an error carrying the
+ * cause, blocking the resend. status='sent'/'failed' look up the sending row this run just
+ * reserved by run_id+status='sending' and update "that same row" — so no arbitrary existing row
+ * is overwritten based on status alone (avoiding the defect of reverting an already-sent row to
+ * sending). status='no_suggestions'/'dry_run' involve no send, so they are not reservations and
+ * leave a new audit-log row per run.
  */
 async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<void> {
   const insertParams = [
@@ -586,10 +595,11 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
     e.errorCode,
   ];
 
-  // OPS-004(TASKS T34) — "unknown"도 "sending" 예약을 마무리 짓는 최종 상태다(성공/실패
-  // 여부를 못 밝혔을 뿐, 그 시도 자체는 끝났다) — "sent"/"failed"와 같은 행을 갱신해야
-  // 한다. 여기 빠뜨리면 sending 예약 행은 그대로 남고 별도 insert 행이 새로 생겨(아래
-  // catch-all insert 경로) 같은 run_id에 행이 두 개 남는다.
+  // OPS-004 (TASKS T34) — "unknown" is also a final state that closes a "sending" reservation
+  // (success/failure simply could not be determined, but the attempt itself is over) — it must
+  // update the same row as "sent"/"failed". If it were left out here, the sending reservation
+  // row would remain and a separate insert row would be created (the catch-all insert path
+  // below), leaving two rows for the same run_id.
   if (e.status === "sent" || e.status === "failed" || e.status === "unknown") {
     const { rows } = await session.query<{ id: string }>(
       "select id from agent_send_log where run_id = $1 and status = 'sending' order by id desc limit 1",
@@ -598,8 +608,8 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
     const sendingId = rows[0]?.id;
     if (sendingId === undefined) {
       throw new Error(
-        `run_id="${e.runId}"에 대한 sending 예약 행이 없어 status='${e.status}'로 갱신할 수 ` +
-          "없습니다. logAgentSend()를 status='sending'으로 먼저 호출했는지 확인하세요.",
+        `No sending reservation row exists for run_id="${e.runId}", so it cannot be updated to ` +
+          `status='${e.status}'. Check that logAgentSend() was called with status='sending' first.`,
       );
     }
     await session.query(
@@ -622,8 +632,8 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
   } catch (err) {
     if (e.status === "sending") {
       throw new Error(
-        `run_id="${e.runId}"는 이미 발송 중이거나 발송 완료된 실행입니다 — 중복 발송을 막기 위해 ` +
-          "새 예약을 거부합니다. 같은 run_id로 재시도하지 마세요.",
+        `run_id="${e.runId}" is a run that is already sending or has already been sent — the new ` +
+          "reservation is refused to prevent a duplicate send. Do not retry with the same run_id.",
         { cause: err },
       );
     }
@@ -631,7 +641,7 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
   }
 }
 
-// type alias(인터페이스 아님) — DbSession.query<T extends Record<string, unknown>> 제약을 만족시키기 위해.
+// type alias (not an interface) — to satisfy the DbSession.query<T extends Record<string, unknown>> constraint.
 type AgentSendLogRow = {
   run_id: string;
   sent_at: string | Date;
@@ -644,8 +654,8 @@ type AgentSendLogRow = {
   error_code: string | null;
 };
 
-/** SR2-MAIL-003 — 같은 run_id 재시도 정책(`core/sendRetryPolicy.ts`)의 읽기 재료. id 오름차순 =
- * 기록 순서. `sent_at`은 드라이버에 따라 Date 또는 문자열로 오므로 경계에서 Date로 통일한다. */
+/** SR2-MAIL-003 — read input for the same-run_id retry policy (`core/sendRetryPolicy.ts`). Ascending
+ * id = record order. `sent_at` arrives as a Date or a string depending on the driver, so it is normalised to Date at the boundary. */
 async function listAgentSendAttemptsOn(
   session: DbSession,
   runId: string,
@@ -668,9 +678,9 @@ async function listAgentSendAttemptsOn(
   }));
 }
 
-/** SR2-MAIL-003 — `sending`에 멈춘 행을 `unknown`(stale_sending)으로 마감한다. `sent_at`은 의도적으로
- * 유지한다(중복 방지 보존 기간 계산의 기준 시각, core/types.ts Warehouse 주석 참고). 조건 판정은
- * 호출자(`agent/sendRetryGate.ts`)가 이미 끝냈다 — 여기서는 무조건 마감만 한다. */
+/** SR2-MAIL-003 — closes a row stuck in `sending` as `unknown` (stale_sending). `sent_at` is deliberately
+ * kept (it is the reference time for the duplicate-prevention retention window, see the Warehouse comment in core/types.ts).
+ * The condition check has already been done by the caller (`agent/sendRetryGate.ts`) — here it just closes unconditionally. */
 async function markStaleSendingUnknownOn(session: DbSession, runId: string): Promise<number> {
   const { rows } = await session.query<{ id: string }>(
     `update agent_send_log set status = 'unknown', error_code = 'stale_sending'
@@ -681,10 +691,11 @@ async function markStaleSendingUnknownOn(session: DbSession, runId: string): Pro
 }
 
 /**
- * 007 OPS-005(TASKS T34) — `scripts/cleanup.ts`(사람 전용) 전용. `dryRun`이면 실제로
- * 지우지 않고 대상 행 수만 센다(삭제는 되돌릴 수 없어 기본은 항상 dry-run이 되도록 스크립트
- * 쪽에서 `--confirm` 이중 게이트를 둔다 — SEND_MODE와 같은 패턴). `DbSession.query`가
- * `rowCount`를 노출하지 않아 실제 삭제는 `returning`으로 지운 행 수를 센다.
+ * 007 OPS-005 (TASKS T34) — for `scripts/cleanup.ts` (humans only) exclusively. With `dryRun`
+ * nothing is actually deleted; only the target rows are counted (deletion is irreversible, so
+ * the script side keeps a `--confirm` double gate so the default is always dry-run — same
+ * pattern as SEND_MODE). `DbSession.query` does not expose `rowCount`, so the real delete
+ * counts the removed rows via `returning`.
  */
 async function deleteOldInventorySnapshotsOn(
   session: DbSession,
@@ -724,11 +735,11 @@ async function deleteOldAgentSendLogOn(
   return rows.length;
 }
 
-// ── 고정 session에 바인딩된 Warehouse (transaction() 안에서 재사용) ─────────
+// ── Warehouse bound to a fixed session (reused inside transaction()) ─────────
 
 function buildWarehouseOnSession(session: DbSession): Warehouse {
   return {
-    // 이미 트랜잭션 안이므로 새 BEGIN 없이 같은 session으로 fn을 그대로 실행한다.
+    // Already inside a transaction, so fn runs as-is on the same session without a new BEGIN.
     transaction: (fn) => fn(buildWarehouseOnSession(session)),
     upsertStores: (rows) => upsertStoresOn(session, rows),
     upsertProducts: (rows) => upsertProductsOn(session, rows),
@@ -758,7 +769,7 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
   };
 }
 
-// ── 공개 팩토리 ─────────────────────────────────────────────────────────
+// ── Public factory ──────────────────────────────────────────────────────
 
 export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
   return {
@@ -774,7 +785,7 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
           try {
             await session.query("rollback");
           } catch {
-            // rollback 자체 실패는 무시 — 아래에서 원본 에러를 던져 원인을 보존한다.
+            // A failure of the rollback itself is ignored — the original error is thrown below to preserve the cause.
           }
           throw err;
         }

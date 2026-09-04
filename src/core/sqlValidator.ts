@@ -1,13 +1,15 @@
 /**
- * `explore_sql`(v0.2 대기열, DESIGN §6이 이름으로 미리 예고해둔 가드레일 4의 사전 승인된
- * 예외)이 실행 전 사용자 SQL을 걸러내는 **1차 방어선**이다. **진짜 방어선이 아니다** — 진짜
- * 방어선은 `adapters/exploreSqlExecutor.ts`가 이 SQL을 `BEGIN READ ONLY` 트랜잭션 안에서만
- * 실행하는 것이다(Postgres 엔진 자체가 그 안의 모든 쓰기 — 시퀀스 진행 포함 — 를 거부한다).
- * 여기 검증은 블록리스트 기반이라 완벽하지 않다는 걸 안다 — 목적은 "명백히 잘못된 요청"을
- * 실행 전에 빠르고 명확한 에러로 걸러 UX를 개선하는 것이지, 유일한 안전장치인 척하지 않는다
- * (심층 방어 원칙 — CLAUDE.md 에러 메시지 컨벤션과 같은 정신으로 원인을 구체적으로 알려준다).
+ * The **first line of defense** with which `explore_sql` (v0.2 backlog, the pre-approved
+ * guardrail 4 exception that DESIGN §6 announced by name) filters user SQL before execution.
+ * **It is not the real line of defense** — that is `adapters/exploreSqlExecutor.ts` running the
+ * SQL only inside a `BEGIN READ ONLY` transaction (the Postgres engine itself rejects every
+ * write in it, including advancing sequences). The validation here is blocklist-based and known
+ * to be imperfect — its purpose is to improve UX by rejecting "obviously wrong requests" with a
+ * fast, clear error before execution, not to pretend to be the only safeguard (defense in depth
+ * — in the same spirit as the CLAUDE.md error message convention, it states the cause
+ * specifically).
  *
- * 외부 IO 없음 — 순수 문자열 검사만 한다(core/ 원칙).
+ * No external IO — pure string inspection only (core/ principle).
  */
 
 const FORBIDDEN_KEYWORDS = [
@@ -41,26 +43,30 @@ const FORBIDDEN_KEYWORDS = [
 ] as const;
 
 /**
- * 세션 부수효과가 있는 **함수 호출**을 함수명 단위로 막는다(TASKS T30, SEC-001/002 대응).
- * `FORBIDDEN_KEYWORDS`의 `\b단어\b` 매칭은 `pg_advisory_lock`처럼 언더스코어로 이어진 이름의
- * "lock" 앞뒤에 단어 경계가 안 생겨(`_`도 정규식 `\w`다) 통과시킨다는 걸 005가 실증했다 — 여기는
- * 함수 전체 이름을 정확히 매치해 그 우회를 막는다.
+ * Blocks **function calls** with session side effects by full function name (TASKS T30,
+ * SEC-001/002 response). Review 005 demonstrated that the `\bword\b` matching of
+ * `FORBIDDEN_KEYWORDS` lets names joined by underscores such as `pg_advisory_lock` through —
+ * no word boundary forms around "lock" (`_` is also regex `\w`). Here the full function name
+ * is matched exactly to block that bypass.
  *
- * - advisory lock류: `BEGIN READ ONLY`가 테이블/시퀀스 쓰기는 막지만 이 세션 수준 부수효과는
- *   막지 않는다(005 실증 — rollback 후에도 lock이 남았다). READ ONLY만으로는 안전하지 않다는
- *   뜻이라 여기서 막는다.
- * - `set_config`: executor 자신이 `statement_timeout`을 이걸로 설정한다(exploreSqlExecutor.ts) —
- *   사용자 SQL이 같은 함수를 다시 호출하면 그 값을 되돌릴 수 있다(005 SEC-002). 사용자에게는
- *   이 함수를 아예 막는다 — 읽기 전용 조회에 필요한 함수가 아니다.
- * - 파일/원격 접근류(`lo_import`/`lo_export`/`dblink*`/`pg_read_file`류): READ ONLY 트랜잭션
- *   범위 밖의 부수효과(디스크 IO, 네트워크 연결)라 막는다.
- * - 백엔드 제어류(`pg_terminate_backend`/`pg_cancel_backend`/`pg_reload_conf`/`pg_rotate_logfile`):
- *   다른 세션·서버 프로세스에 영향을 준다.
+ * - advisory lock family: `BEGIN READ ONLY` blocks table/sequence writes but not this
+ *   session-level side effect (demonstrated in 005 — the lock remained after rollback). READ
+ *   ONLY alone is therefore not safe, so it is blocked here.
+ * - `set_config`: the executor itself uses it to set `statement_timeout`
+ *   (exploreSqlExecutor.ts) — user SQL calling the same function again could revert that value
+ *   (005 SEC-002). The function is blocked for users entirely — it is not needed for read-only
+ *   queries.
+ * - file/remote access family (`lo_import`/`lo_export`/`dblink*`/`pg_read_file` etc.): side
+ *   effects outside the scope of a READ ONLY transaction (disk IO, network connections), so
+ *   blocked.
+ * - backend control family (`pg_terminate_backend`/`pg_cancel_backend`/`pg_reload_conf`/
+ *   `pg_rotate_logfile`): affects other sessions/server processes.
  *
- * **이 목록도 완전하지 않다** — 여기 없는 volatile 함수(예: `nextval`)는 여전히 통과하고,
- * 그 경우 `BEGIN READ ONLY`가 최종 방어선이 된다(테스트로 실증, `tests/exploreSqlExecutor.test.ts`).
- * 진짜 방어선은 이 블록리스트가 아니라 위험 함수 실행 권한이 없는 전용 DB role이다(SPEC §18,
- * DESIGN §12.4) — 이 목록은 알려진 구체적 우회 두 가지를 막는 저비용 추가 계층일 뿐이다.
+ * **This list is not complete either** — volatile functions not listed here (e.g. `nextval`)
+ * still pass, and in that case `BEGIN READ ONLY` is the final line of defense (demonstrated by
+ * test, `tests/exploreSqlExecutor.test.ts`). The real line of defense is not this blocklist but a
+ * dedicated DB role without permission to execute dangerous functions (SPEC §18, DESIGN §12.4)
+ * — this list is merely a low-cost extra layer that blocks two known concrete bypasses.
  */
 const FORBIDDEN_FUNCTION_CALLS = [
   "pg_advisory_lock",
@@ -89,19 +95,19 @@ const FORBIDDEN_FUNCTION_CALLS = [
   "pg_ls_dir",
 ] as const;
 
-/** 검증용으로만 주석을 지운다 — 실제 실행에 쓰는 SQL 텍스트는 그대로 보존한다(원본 반환). */
+/** Strips comments for validation only — the SQL text used for actual execution is preserved as-is (the original is returned). */
 function stripSqlComments(sql: string): string {
   return sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
 }
 
 /**
- * `sql`이 단일 SELECT/WITH(CTE) 조회문인지 검증한다. 통과하면 트레일링 세미콜론을 뗀 SQL을
- * 반환하고, 위반이면 원인을 담은 에러를 던진다.
+ * Validates that `sql` is a single SELECT/WITH (CTE) query statement. On success returns the
+ * SQL with any trailing semicolon removed; on violation throws an error carrying the cause.
  */
 export function validateReadOnlySql(sql: string): string {
   const trimmed = sql.trim();
   if (trimmed === "") {
-    throw new Error("SQL이 비어 있습니다. select 또는 with로 시작하는 조회문을 입력하세요.");
+    throw new Error("SQL is empty. Enter a query statement starting with select or with.");
   }
 
   const analyzed = stripSqlComments(trimmed).trim();
@@ -109,23 +115,23 @@ export function validateReadOnlySql(sql: string): string {
 
   if (withoutTrailingSemicolon.includes(";")) {
     throw new Error(
-      "SQL은 한 문장만 허용됩니다 — 세미콜론으로 여러 문장을 이어붙일 수 없습니다. " +
-        "문장을 하나만 남기고 다시 실행하세요.",
+      "Only a single SQL statement is allowed — multiple statements cannot be chained with " +
+        "semicolons. Keep only one statement and run again.",
     );
   }
 
   if (!/^(select|with)\b/i.test(withoutTrailingSemicolon)) {
     throw new Error(
-      'SQL은 "select" 또는 "with"(CTE)로 시작하는 조회문만 허용됩니다 — explore_sql은 읽기 ' +
-        "전용입니다.",
+      'Only query statements starting with "select" or "with" (CTE) are allowed — explore_sql ' +
+        "is read-only.",
     );
   }
 
   for (const keyword of FORBIDDEN_KEYWORDS) {
     if (new RegExp(`\\b${keyword}\\b`, "i").test(withoutTrailingSemicolon)) {
       throw new Error(
-        `SQL에 허용되지 않는 키워드("${keyword}")가 포함돼 있습니다 — explore_sql은 데이터를 ` +
-          "바꾸지 않는 SELECT/WITH 조회만 허용합니다. 그 부분을 지우고 다시 실행하세요.",
+        `The SQL contains a forbidden keyword ("${keyword}") — explore_sql allows only ` +
+          "SELECT/WITH queries that do not change data. Remove that part and run again.",
       );
     }
   }
@@ -133,9 +139,9 @@ export function validateReadOnlySql(sql: string): string {
   for (const fn of FORBIDDEN_FUNCTION_CALLS) {
     if (new RegExp(`\\b${fn}\\s*\\(`, "i").test(withoutTrailingSemicolon)) {
       throw new Error(
-        `SQL에 보안상 금지된 함수 호출("${fn}(...)")이 포함돼 있습니다 — advisory lock·세션 ` +
-          "설정 변경·파일/원격 접근 함수는 explore_sql에서 호출할 수 없습니다(TASKS T30, " +
-          "SEC-001/002). 그 부분을 지우고 다시 실행하세요.",
+        `The SQL contains a function call forbidden for security reasons ("${fn}(...)") — ` +
+          "advisory lock, session setting and file/remote access functions cannot be called " +
+          "from explore_sql (TASKS T30, SEC-001/002). Remove that part and run again.",
       );
     }
   }

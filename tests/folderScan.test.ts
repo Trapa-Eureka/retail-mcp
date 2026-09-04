@@ -12,13 +12,13 @@ import type { Warehouse } from "../src/core/types.js";
 
 const NOW_ISO = "2026-09-03T00:00:00Z";
 
-// 본점/SKU-COLA: 28일 560개 판매(일평균 20) + 재고 10 → daysOfCover=0.5 → 품절 위험(history 모드).
-// 본점/SKU-CHIPS: 판매이력 없음, 재고 1 → 기본 임계치(5) 미만(no_history 모드).
-// 마카티점/SKU-WATER: 28일 28개 판매(일평균 1) + 재고 100 → daysOfCover=100 → 안전(알림 대상 아님).
-const HAPPY_CSV = `매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일
-본점,코카콜라 500ml,SKU-COLA,10,560,2026-08-01,2026-08-29
-본점,Piattos,SKU-CHIPS,1,,,
-마카티점,생수 500ml,SKU-WATER,100,28,2026-08-01,2026-08-29
+// Main Store/SKU-COLA: 560 sold in 28 days (daily avg 20) + stock 10 → daysOfCover=0.5 → stockout risk (history mode).
+// Main Store/SKU-CHIPS: no sales history, stock 1 → below default threshold (5) (no_history mode).
+// North Branch/SKU-WATER: 28 sold in 28 days (daily avg 1) + stock 100 → daysOfCover=100 → safe (not an alert target).
+const HAPPY_CSV = `store,product,sku,stock_qty,sales_qty,period_start,period_end
+Main Store,Cola 500ml,SKU-COLA,10,560,2026-08-01,2026-08-29
+Main Store,Piattos,SKU-CHIPS,1,,,
+North Branch,Water 500ml,SKU-WATER,100,28,2026-08-01,2026-08-29
 `;
 
 async function makeWarehouse(): Promise<{ db: PGlite; warehouse: Warehouse }> {
@@ -43,7 +43,7 @@ describe("runFolderScan", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("watchDir과 snapshotDir이 같으면 명확한 에러로 거부한다", async () => {
+  it("rejects with a clear error when watchDir and snapshotDir are the same", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
 
@@ -56,10 +56,10 @@ describe("runFolderScan", () => {
         },
         { watchDir, snapshotDir: watchDir },
       ),
-    ).rejects.toThrow(/같은 폴더/);
+    ).rejects.toThrow(/same folder/);
   });
 
-  it("픽스처 CSV 1회 스캔 → 적재 → 알림 판정 → 스냅샷 갱신까지 e2e(dry_run)", async () => {
+  it("one scan of the fixture CSV → load → alert decision → snapshot refresh, e2e (dry_run)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const notificationProvider = createMockNotificationProvider();
@@ -70,26 +70,26 @@ describe("runFolderScan", () => {
     );
 
     expect(result.itemCount).toBe(3);
-    expect(result.alertCount).toBe(2); // SKU-COLA(품절위험) + SKU-CHIPS(임계치 미만), WATER는 안전
+    expect(result.alertCount).toBe(2); // SKU-COLA (stockout risk) + SKU-CHIPS (below threshold), WATER is safe
     expect(result.alerts.map((a) => a.variantId).sort()).toEqual(["SKU-CHIPS", "SKU-COLA"]);
     expect(result.status).toBe("dry_run");
     expect(result.sent).toBe(false);
-    expect(notificationProvider.sent).toHaveLength(0); // dry_run이라 실제 발송 안 함
+    expect(notificationProvider.sent).toHaveLength(0); // dry_run, so nothing actually sent
 
-    // 적재 확인 — queryStock으로 3개 품목 전부 확인.
+    // Load check — all 3 items via queryStock.
     const stock = await warehouse.queryStock({});
     expect(stock).toHaveLength(3);
 
-    // 스냅샷 파일이 실제로 쓰였는지 확인.
+    // Check the snapshot file was really written.
     const snapshotContent = await readFile(result.snapshotPath, "utf8");
-    expect(snapshotContent).toContain("본점");
-    expect(snapshotContent).toContain("마카티점");
+    expect(snapshotContent).toContain("Main Store");
+    expect(snapshotContent).toContain("North Branch");
   });
 
-  it("포장수량(SPEC §14/TASKS T25)이 있으면 알림에 최종 발주량·발주 팩수가 포함된다", async () => {
+  it("with pack_size (SPEC §14/TASKS T25) the alert includes the final order qty and pack count", async () => {
     const { warehouse } = await makeWarehouse();
-    const csvWithPackSize = `매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일,포장수량
-본점,코카콜라 500ml,SKU-COLA,10,560,2026-08-01,2026-08-29,24
+    const csvWithPackSize = `store,product,sku,stock_qty,sales_qty,period_start,period_end,pack_size
+Main Store,Cola 500ml,SKU-COLA,10,560,2026-08-01,2026-08-29,24
 `;
     await writeFile(join(watchDir, "inventory.csv"), csvWithPackSize, "utf8");
 
@@ -104,15 +104,15 @@ describe("runFolderScan", () => {
 
     expect(result.alertCount).toBe(1);
     const [alert] = result.alerts;
-    // avgDailySales=20(560/28일), inStock=10 → reorderQty=ceil(21*20-10)=410 → 24개입 팩으로
-    // 올리면 ceil(410/24)=18팩=432개.
+    // avgDailySales=20 (560/28 days), inStock=10 → reorderQty=ceil(21*20-10)=410 → rounded up to
+    // packs of 24: ceil(410/24)=18 packs=432 units.
     expect(alert?.reorderQty).toBe(410);
     expect(alert?.finalOrderQty).toBe(432);
     expect(alert?.packCount).toBe(18);
-    expect(alert?.reason).toContain("최종 발주량 432(18팩)");
+    expect(alert?.reason).toContain("final order qty 432 (18 packs)");
   });
 
-  it("포장수량이 없으면(낱개 매입) 알림에 제안수량만 표시되고 finalOrderQty는 undefined다", async () => {
+  it("without pack_size (single-unit purchase) the alert shows only the suggested qty and finalOrderQty is undefined", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
 
@@ -128,19 +128,19 @@ describe("runFolderScan", () => {
     const cola = result.alerts.find((a) => a.variantId === "SKU-COLA");
     expect(cola?.packCount).toBeNull();
     expect(cola?.finalOrderQty).toBe(cola?.reorderQty);
-    expect(cola?.reason).not.toContain("최종 발주량");
+    expect(cola?.reason).not.toContain("final order qty");
 
-    // no_history 모드(SKU-CHIPS)는 애초에 reorderQty 개념이 없다.
+    // no_history mode (SKU-CHIPS) has no reorderQty concept in the first place.
     const chips = result.alerts.find((a) => a.variantId === "SKU-CHIPS");
     expect(chips?.reorderQty).toBeUndefined();
   });
 
-  it("SEND_MODE=live && confirm 둘 다일 때만 실제 발송한다(가드레일 1)", async () => {
+  it("sends for real only when both SEND_MODE=live and confirm are set (guardrail 1)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const notificationProvider = createMockNotificationProvider();
 
-    // live인데 confirm 없음 — 발송 안 됨.
+    // live but no confirm — not sent.
     const withoutConfirm = await runFolderScan(
       { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider },
       { watchDir, snapshotDir, sendMode: "live", confirm: false, recipient: "owner@example.com" },
@@ -148,7 +148,7 @@ describe("runFolderScan", () => {
     expect(withoutConfirm.sent).toBe(false);
     expect(notificationProvider.sent).toHaveLength(0);
 
-    // live && confirm 둘 다 — 발송됨.
+    // live && confirm both — sent.
     const withConfirm = await runFolderScan(
       { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider },
       {
@@ -165,10 +165,10 @@ describe("runFolderScan", () => {
     expect(notificationProvider.sent[0]?.to).toBe("owner@example.com");
   });
 
-  it("알림 대상이 0건이면 발송하지 않고 no_suggestions로 끝난다", async () => {
+  it("with 0 alert targets it does not send and ends as no_suggestions", async () => {
     const { warehouse } = await makeWarehouse();
-    const safeCsv = `매장명,상품명,SKU,재고수량,판매수량,판매기간시작일,판매기간종료일
-본점,생수 500ml,SKU-WATER,100,28,2026-08-01,2026-08-29
+    const safeCsv = `store,product,sku,stock_qty,sales_qty,period_start,period_end
+Main Store,Water 500ml,SKU-WATER,100,28,2026-08-01,2026-08-29
 `;
     await writeFile(join(watchDir, "inventory.csv"), safeCsv, "utf8");
     const notificationProvider = createMockNotificationProvider();
@@ -183,9 +183,9 @@ describe("runFolderScan", () => {
     expect(notificationProvider.sent).toHaveLength(0);
   });
 
-  it("파싱 실패 시 부분 적재 없이 명확한 에러로 중단한다", async () => {
+  it("on a parse failure it stops with a clear error and no partial load", async () => {
     const { warehouse } = await makeWarehouse();
-    const brokenCsv = `매장명,상품명,SKU,재고수량\n,콜라,SKU-COLA,10\n`; // 매장명 비어 있음(필수)
+    const brokenCsv = `store,product,sku,stock_qty\n,Cola,SKU-COLA,10\n`; // store is empty (required)
     await writeFile(join(watchDir, "inventory.csv"), brokenCsv, "utf8");
 
     await expect(
@@ -200,14 +200,14 @@ describe("runFolderScan", () => {
     ).rejects.toThrow();
 
     const stock = await warehouse.queryStock({});
-    expect(stock).toHaveLength(0); // 아무것도 적재되지 않았어야 한다.
+    expect(stock).toHaveLength(0); // Nothing should have been loaded.
   });
 
-  it("감시 폴더에 파일이 여러 개면 가장 최근 파일만 사용한다", async () => {
+  it("with several files in the watch folder only the most recent one is used", async () => {
     const { warehouse } = await makeWarehouse();
-    const oldCsv = `매장명,상품명,SKU,재고수량\n본점,오래된상품,SKU-OLD,99\n`;
+    const oldCsv = `store,product,sku,stock_qty\nMain Store,Old Product,SKU-OLD,99\n`;
     await writeFile(join(watchDir, "old.csv"), oldCsv, "utf8");
-    await new Promise((r) => setTimeout(r, 20)); // mtime 차이를 확실히 만든다.
+    await new Promise((r) => setTimeout(r, 20)); // Make sure the mtimes differ.
     await writeFile(join(watchDir, "new.csv"), HAPPY_CSV, "utf8");
 
     const result = await runFolderScan(
@@ -224,21 +224,22 @@ describe("runFolderScan", () => {
     expect(stock.some((s) => s.variantId === "SKU-OLD")).toBe(false);
   });
 
-  it("mtime이 동일한 파일이 여럿이면 파일명 기준으로 결정론적으로 고른다(OPS-003, 006 검수, TASKS T34)", async () => {
+  it("with several files sharing the same mtime it picks deterministically by file name (OPS-003, 006 review, TASKS T34)", async () => {
     const { warehouse } = await makeWarehouse();
-    const aCsv = `매장명,상품명,SKU,재고수량\n본점,A상품,SKU-A,1\n`;
-    const zCsv = `매장명,상품명,SKU,재고수량\n본점,Z상품,SKU-Z,1\n`;
+    const aCsv = `store,product,sku,stock_qty\nMain Store,Product A,SKU-A,1\n`;
+    const zCsv = `store,product,sku,stock_qty\nMain Store,Product Z,SKU-Z,1\n`;
     await writeFile(join(watchDir, "a-inventory.csv"), aCsv, "utf8");
     await writeFile(join(watchDir, "z-inventory.csv"), zCsv, "utf8");
-    // 두 파일의 mtime을 완전히 동일하게 맞춘다 — OS readdir 순서에 의존하면 실행마다 다른
-    // 파일이 선택될 수 있는 상황을 실제로 재현한다.
+    // Make both files' mtimes exactly identical — actually reproduces the situation where relying
+    // on the OS readdir order could pick a different file on each run.
     const { utimes } = await import("node:fs/promises");
     const tiedMtime = new Date("2026-08-01T00:00:00Z");
     await utimes(join(watchDir, "a-inventory.csv"), tiedMtime, tiedMtime);
     await utimes(join(watchDir, "z-inventory.csv"), tiedMtime, tiedMtime);
 
-    // 동시 실행이 아니라 순차 반복 — 이 테스트가 재현하려는 건 "OS readdir 순서에 의존하지
-    // 않고 매번 같은 파일을 고른다"는 것이지 동시성 자체가 아니다(동시 스캔은 다른 관심사).
+    // Sequential repetition, not concurrency — what this test reproduces is "picks the same file
+    // every time without depending on the OS readdir order", not concurrency itself (concurrent
+    // scans are a separate concern).
     for (let i = 0; i < 3; i++) {
       const result = await runFolderScan(
         {
@@ -248,12 +249,12 @@ describe("runFolderScan", () => {
         },
         { watchDir, snapshotDir },
       );
-      // 경로 역순 정렬 — "z-inventory.csv"가 "a-inventory.csv"보다 사전순으로 뒤라 먼저 온다.
+      // Path sorted descending — "z-inventory.csv" comes first because it sorts after "a-inventory.csv".
       expect(result.sourceFile).toContain("z-inventory.csv");
     }
   });
 
-  it("XLSX 파일도 스캔할 수 있다(T16 픽스처 재사용)", async () => {
+  it("can also scan an XLSX file (reusing the T16 fixture)", async () => {
     const { warehouse } = await makeWarehouse();
     await copyFile("tests/fixtures/csvExcel/inventory.xlsx", join(watchDir, "inventory.xlsx"));
 
@@ -267,12 +268,12 @@ describe("runFolderScan", () => {
     );
 
     expect(result.itemCount).toBe(3);
-    // 본점/SKU-CHIPS(재고 2 < 기본임계치 5)만 알림 대상 — 나머지는 안전권.
+    // Only Main Store/SKU-CHIPS (stock 2 < default threshold 5) is an alert target — the rest are safe.
     expect(result.alertCount).toBe(1);
     expect(result.alerts[0]?.variantId).toBe("SKU-CHIPS");
   });
 
-  it("두 번 연속 스캔해도 upsert가 멱등하다(중복 적재 없음)", async () => {
+  it("scanning twice in a row keeps the upsert idempotent (no duplicate load)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
 
@@ -294,11 +295,11 @@ describe("runFolderScan", () => {
     );
 
     const stock = await warehouse.queryStock({});
-    expect(stock).toHaveLength(3); // 6이 아니라 3 — 재적재돼도 행이 늘지 않는다.
+    expect(stock).toHaveLength(3); // 3, not 6 — reloading does not add rows.
   });
 });
 
-describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (SPEC §16, TASKS T26)", () => {
+describe("runFolderScan — SCM receipts absorption + stock consistency verification (SPEC §16, TASKS T26)", () => {
   let dir: string;
   let watchDir: string;
   let snapshotDir: string;
@@ -318,11 +319,11 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("scmReceiptsDir을 안 주면(기존 동작) reconciliation은 항상 빈 배열이다", async () => {
+  it("without scmReceiptsDir (previous behaviour) reconciliation is always an empty array", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,9\n",
       "utf8",
     );
     const result = await runFolderScan(
@@ -337,21 +338,21 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
     expect(result.scmStatus).toEqual({ kind: "not_configured" });
   });
 
-  it("SCM 입고 CSV를 흡수해 purchase_receipts에 적재한다 — 대사는 기초재고 미확인으로 insufficientData다(006 DATA-006, TASKS T33)", async () => {
+  it("absorbs the SCM receipts CSV into purchase_receipts — the reconciliation is insufficientData because opening stock is unverified (006 DATA-006, TASKS T33)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,9\n",
       "utf8",
     );
-    // 구글시트를 "파일 > 다운로드 > CSV"로 내보낸 것을 흉내낸다(SPEC §16). 온보딩 실사값
-    // 입력 흐름이 아직 없어(SPEC §16) 기초재고를 모른다 — 겉보기엔 입고 30 대비 재고 9로
-    // 불일치처럼 보이지만, 이 가정(기초재고=0) 자체를 신뢰할 수 없으니 "확정 불일치"로
-    // 취급하지 않는다.
+    // Mimics a Google Sheet exported with "File > Download > CSV" (SPEC §16). There is no
+    // onboarding stock-count input flow yet (SPEC §16), so opening stock is unknown — on the surface
+    // 30 received vs 9 in stock looks like a discrepancy, but the assumption itself (opening
+    // stock=0) cannot be trusted, so it is not treated as a "confirmed discrepancy".
     await writeFile(
       join(scmReceiptsDir, "receipts.csv"),
-      "일자,구분,상품코드,상품명,수량,단가,거래처\n" +
-        "2026-07-01,입고,SKU-COLA,코카콜라 500ml,30,12000,스마트유통\n",
+      "date,type,sku,product,qty,unit_price,vendor\n" +
+        "2026-07-01,inbound,SKU-COLA,Cola 500ml,30,12000,Smart Distribution\n",
       "utf8",
     );
 
@@ -364,39 +365,42 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
       { watchDir, snapshotDir, scmReceiptsDir },
     );
 
-    // 확정 불일치 목록(reconciliation)은 비어 있다 — insufficientData 행은 여기 안 들어간다.
+    // The confirmed-discrepancy list (reconciliation) is empty — insufficientData rows do not go in here.
     expect(result.reconciliation).toEqual([]);
-    // 대신 scmStatus가 "SCM은 적재됐지만 대사는 참고용"이라는 사실을 구조화된 결과로 남긴다
-    // (006 DATA-007 — SCM 처리 결과가 결과에서 사라지지 않는다).
+    // Instead scmStatus records, as a structured result, that "SCM was loaded but the reconciliation
+    // is reference only" (006 DATA-007 — the SCM processing outcome does not vanish from the result).
     expect(result.scmStatus).toMatchObject({
       kind: "ok",
       receiptCount: 1,
       insufficientData: true,
     });
 
-    // 재고 자체는 기본 임계치(5) 이상이라 저재고 알림 0건, 확정 불일치도 0건이라 report할
-    // 이슈가 없다 — "정상 결과인 척 SCM 문제를 숨긴다"가 아니라 애초에 확정 이슈가 없다.
+    // The stock itself is at or above the default threshold (5) so 0 low-stock alerts, and 0
+    // confirmed discrepancies, so there is no issue to report — not "hiding an SCM problem behind a
+    // normal-looking result", there simply is no confirmed issue.
     expect(result.alertCount).toBe(0);
     expect(result.status).toBe("no_suggestions");
 
     const purchases = await warehouse.queryPurchaseAgg({
-      storeId: "본점",
+      storeId: "Main Store",
       periodStart: new Date("2026-01-01T00:00:00Z"),
       periodEnd: new Date("2027-01-01T00:00:00Z"),
     });
-    expect(purchases).toEqual([{ storeId: "본점", variantId: "SKU-COLA", receivedQtyRaw: "30" }]);
+    expect(purchases).toEqual([
+      { storeId: "Main Store", variantId: "SKU-COLA", receivedQtyRaw: "30" },
+    ]);
   });
 
-  it("매장이 여러 개인 재고 파일에서 scmReceiptsStoreId 없이는 명확한 에러를 던진다", async () => {
+  it("with an inventory file containing several stores it throws a clear error without scmReceiptsStoreId", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n마카티점,생수 500ml,SKU-WATER,20\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,9\nNorth Branch,Water 500ml,SKU-WATER,20\n",
       "utf8",
     );
     await writeFile(
       join(scmReceiptsDir, "receipts.csv"),
-      "일자,구분,상품코드,상품명,수량\n2026-07-01,입고,SKU-COLA,코카콜라 500ml,30\n",
+      "date,type,sku,product,qty\n2026-07-01,inbound,SKU-COLA,Cola 500ml,30\n",
       "utf8",
     );
 
@@ -412,10 +416,10 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
     ).rejects.toThrow(/scmReceiptsStoreId/);
   });
 
-  it("SCM 파일 파싱이 실패해도 저재고 알림 판정은 계속 진행한다(격리)", async () => {
+  it("even if SCM file parsing fails, the low-stock alert decision continues (isolation)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
-    await writeFile(join(scmReceiptsDir, "broken.csv"), "이건,SCM,형식이,아님\n1,2,3,4\n", "utf8");
+    await writeFile(join(scmReceiptsDir, "broken.csv"), "this,is,not,scm\n1,2,3,4\n", "utf8");
 
     const result = await runFolderScan(
       {
@@ -423,35 +427,36 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
         clock: createFixedClock(NOW_ISO),
         notificationProvider: createMockNotificationProvider(),
       },
-      // HAPPY_CSV엔 매장이 2개라 store 자동추론이 안 된다 — 이 테스트의 초점은 store 결정이
-      // 아니라 "SCM 파싱 실패가 알림 판정을 막지 않는다"이므로 명시해서 그 경로만 검증한다.
-      { watchDir, snapshotDir, scmReceiptsDir, scmReceiptsStoreId: "본점" },
+      // HAPPY_CSV has 2 stores so the store cannot be auto-inferred — the focus of this test is not
+      // the store decision but "an SCM parse failure does not block the alert decision", so it is
+      // given explicitly to verify only that path.
+      { watchDir, snapshotDir, scmReceiptsDir, scmReceiptsStoreId: "Main Store" },
     );
 
-    // SCM 파싱은 실패했지만(경고만 남김) 기존 HAPPY_CSV의 저재고 알림 2건은 그대로 처리된다.
+    // SCM parsing failed (only a warning) but HAPPY_CSV's 2 low-stock alerts are processed as usual.
     expect(result.alertCount).toBe(2);
     expect(result.reconciliation).toEqual([]);
-    // 006 DATA-007 — "실패"와 "데이터 없음"이 구분된다. 조용히 삼키지 않고 결과에 남는다.
+    // 006 DATA-007 — "failed" and "no data" are distinguished. Not swallowed silently; it stays in the result.
     expect(result.scmStatus.kind).toBe("failed");
     if (result.scmStatus.kind === "failed") {
       expect(result.scmStatus.error.length).toBeGreaterThan(0);
     }
   });
 
-  it("확정 저재고 알림이 있을 때 SCM insufficientData 요약이 발송 이메일 본문에 포함된다(006 DATA-006/007, TASKS T33)", async () => {
+  it("when there is a confirmed low-stock alert, the SCM insufficientData summary is included in the sent email body (006 DATA-006/007, TASKS T33)", async () => {
     const { warehouse } = await makeWarehouse();
     const notificationProvider = createMockNotificationProvider();
-    // SKU-CHIPS는 기본 임계치(5) 아래라 확정 저재고 알림이 발생한다 — 이슈가 있어야 실제
-    // report가 발송되고, 그 안에 SCM 상태 줄이 들어가는지 검증할 수 있다.
+    // SKU-CHIPS is below the default threshold (5) so a confirmed low-stock alert fires — there must
+    // be an issue for a report to actually be sent, so we can verify the SCM status line inside it.
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,Piattos,SKU-CHIPS,2\n",
+      "store,product,sku,stock_qty\nMain Store,Piattos,SKU-CHIPS,2\n",
       "utf8",
     );
     await writeFile(
       join(scmReceiptsDir, "receipts.csv"),
-      "일자,구분,상품코드,상품명,수량,단가,거래처\n" +
-        "2026-07-01,입고,SKU-CHIPS,Piattos,10,1000,과자유통\n",
+      "date,type,sku,product,qty,unit_price,vendor\n" +
+        "2026-07-01,inbound,SKU-CHIPS,Piattos,10,1000,Snack Distribution\n",
       "utf8",
     );
 
@@ -470,17 +475,17 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
     expect(result.status).toBe("sent");
     expect(result.scmStatus).toMatchObject({ kind: "ok", insufficientData: true });
     expect(notificationProvider.sent).toHaveLength(1);
-    expect(notificationProvider.sent[0]?.text).toContain("[SCM 재고 정합성 참고]");
-    expect(notificationProvider.sent[0]?.text).toContain("확정 대사가 아닙니다");
-    // 확정 불일치로 단정하는 문구("도난·파손·실사오차 확인 필요")는 나오지 않는다.
-    expect(notificationProvider.sent[0]?.text).not.toContain("확인 필요");
+    expect(notificationProvider.sent[0]?.text).toContain("[SCM stock consistency note]");
+    expect(notificationProvider.sent[0]?.text).toContain("not a confirmed reconciliation");
+    // The wording asserting a confirmed discrepancy ("check for theft, damage or count error") must not appear.
+    expect(notificationProvider.sent[0]?.text).not.toContain("check for theft");
   });
 
-  it("scmReceiptsDir에 파일이 아직 없으면 조용히 건너뛴다(에러 아님) — scmStatus는 no_file", async () => {
+  it("if scmReceiptsDir has no file yet it is skipped quietly (not an error) — scmStatus is no_file", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,9\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,9\n",
       "utf8",
     );
 
@@ -490,7 +495,7 @@ describe("runFolderScan — SCM 입고 실적 흡수 + 재고 정합성 검증 (
         clock: createFixedClock(NOW_ISO),
         notificationProvider: createMockNotificationProvider(),
       },
-      { watchDir, snapshotDir, scmReceiptsDir }, // 폴더는 있지만 안이 비어 있음
+      { watchDir, snapshotDir, scmReceiptsDir }, // The folder exists but is empty
     );
     expect(result.reconciliation).toEqual([]);
     expect(result.scmStatus).toEqual({ kind: "no_file" });
@@ -514,7 +519,7 @@ describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("두 번째 스캔 파일에서 사라진 SKU는 DB에서 비활성화되고 조회에서 빠진다", async () => {
+  it("a SKU missing from the second scan file is deactivated in the DB and disappears from queries", async () => {
     const { warehouse } = await makeWarehouse();
     const deps = {
       warehouse,
@@ -524,30 +529,30 @@ describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
 
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,10\nMain Store,Piattos,SKU-CHIPS,3\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
     expect(
-      (await warehouse.queryStock({ storeId: "본점" })).map((s) => s.variantId).sort(),
+      (await warehouse.queryStock({ storeId: "Main Store" })).map((s) => s.variantId).sort(),
     ).toEqual(["SKU-CHIPS", "SKU-COLA"]);
 
-    // 두 번째 스캔 — SKU-CHIPS가 파일에서 사라졌다(판매 중단/폐기 흉내).
+    // Second scan — SKU-CHIPS disappeared from the file (mimics discontinuation/disposal).
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,8\n",
       "utf8",
     );
     const second = await runFolderScan(deps, { watchDir, snapshotDir });
 
-    const stock = await warehouse.queryStock({ storeId: "본점" });
+    const stock = await warehouse.queryStock({ storeId: "Main Store" });
     expect(stock.map((s) => s.variantId)).toEqual(["SKU-COLA"]);
-    // 알림 판정도 비활성화된 SKU-CHIPS를 더 이상 보지 않는다(itemCount는 이번 파일의 행
-    // 수만 센다 — DB 전체 상태가 아니라 이번 스캔이 실제로 처리한 행 수).
+    // The alert decision no longer sees the deactivated SKU-CHIPS either (itemCount counts only
+    // this file's rows — the rows this scan actually processed, not the whole DB state).
     expect(second.itemCount).toBe(1);
   });
 
-  it("사라졌던 SKU가 다시 나타나면 다음 스캔에서 자동으로 재활성화된다", async () => {
+  it("a SKU that had disappeared is automatically reactivated on the next scan when it reappears", async () => {
     const { warehouse } = await makeWarehouse();
     const deps = {
       warehouse,
@@ -557,34 +562,34 @@ describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
 
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,10\nMain Store,Piattos,SKU-CHIPS,3\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
 
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,8\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
-    expect((await warehouse.queryStock({ storeId: "본점" })).map((s) => s.variantId)).toEqual([
-      "SKU-COLA",
-    ]);
+    expect((await warehouse.queryStock({ storeId: "Main Store" })).map((s) => s.variantId)).toEqual(
+      ["SKU-COLA"],
+    );
 
-    // 세 번째 스캔 — SKU-CHIPS가 다시 나타났다(재입고 흉내).
+    // Third scan — SKU-CHIPS reappeared (mimics restocking).
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,7\n본점,Piattos,SKU-CHIPS,5\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,7\nMain Store,Piattos,SKU-CHIPS,5\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
 
-    const stock = await warehouse.queryStock({ storeId: "본점" });
+    const stock = await warehouse.queryStock({ storeId: "Main Store" });
     expect(stock.map((s) => s.variantId).sort()).toEqual(["SKU-CHIPS", "SKU-COLA"]);
   });
 
-  it("비활성화된 행도 물리 삭제되지 않고 DB에 남아 있다(감사 목적)", async () => {
+  it("deactivated rows are not physically deleted and remain in the DB (for audit)", async () => {
     const { warehouse, db } = await makeWarehouse();
     const deps = {
       warehouse,
@@ -594,14 +599,14 @@ describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
 
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n본점,Piattos,SKU-CHIPS,3\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,10\nMain Store,Piattos,SKU-CHIPS,3\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
 
     await writeFile(
       join(watchDir, "inventory.csv"),
-      "매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,8\n",
+      "store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,8\n",
       "utf8",
     );
     await runFolderScan(deps, { watchDir, snapshotDir });
@@ -613,7 +618,7 @@ describe("runFolderScan — tombstone (DATA-002, TASKS T31)", () => {
   });
 });
 
-describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () => {
+describe("runFolderScan — daily digest (DATA-003, TASKS T31)", () => {
   let dir: string;
   let watchDir: string;
   let snapshotDir: string;
@@ -630,7 +635,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("파일이 안 바뀌었고 같은 날이면 두 번째 live 실행은 재발송하지 않는다(status=unchanged)", async () => {
+  it("if the file is unchanged on the same day, the second live run does not resend (status=unchanged)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const notificationProvider = createMockNotificationProvider();
@@ -650,12 +655,12 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     const second = await runFolderScan(deps, { ...opts, runId: "run-2" });
     expect(second.status).toBe("unchanged");
     expect(second.sent).toBe(false);
-    // 이번 스캔이 실제로 계산한 alerts는 그대로 결과에 담겨 있다 — 무엇이 억제됐는지 알 수 있다.
+    // The alerts this scan actually computed are still in the result — you can see what was suppressed.
     expect(second.alerts.map((a) => a.variantId).sort()).toEqual(["SKU-CHIPS", "SKU-COLA"]);
-    expect(notificationProvider.sent).toHaveLength(1); // 두 번째는 실제로 안 나감
+    expect(notificationProvider.sent).toHaveLength(1); // The second one did not actually go out
   });
 
-  it("파일이 안 바뀌었어도 하루(24시간)가 지나면 같은 내용으로 다이제스트를 다시 보낸다", async () => {
+  it("even if the file is unchanged, once a day (24 hours) has passed the digest is sent again with the same content", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const notificationProvider = createMockNotificationProvider();
@@ -684,7 +689,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     expect(notificationProvider.sent).toHaveLength(2);
   });
 
-  it("파일 내용이 바뀌면 같은 날 안에도 억제하지 않고 다시 보낸다", async () => {
+  it("if the file content changes it is sent again without suppression, even within the same day", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const notificationProvider = createMockNotificationProvider();
@@ -699,7 +704,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
 
     await runFolderScan(deps, { ...opts, runId: "run-1" });
 
-    // 재고수량이 바뀐 새 내용 — content hash가 달라진다.
+    // New content with a changed stock_qty — the content hash differs.
     await writeFile(
       join(watchDir, "inventory.csv"),
       HAPPY_CSV.replace("SKU-COLA,10,560", "SKU-COLA,3,560"),
@@ -710,7 +715,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     expect(notificationProvider.sent).toHaveLength(2);
   });
 
-  it("발송 실패(failed)는 워터마크를 갱신하지 않아 같은 날 바로 재시도할 수 있다", async () => {
+  it("a send failure (failed) does not refresh the watermark, so it can be retried right away on the same day", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const failingProvider = createMockNotificationProvider({ failFor: ["owner@example.com"] });
@@ -729,19 +734,19 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
 
     await expect(runFolderScan(deps, { ...opts, runId: "run-1" })).rejects.toThrow();
 
-    // 같은 파일, 같은 날짜, 실패 직후 재시도 — 억제되지 않고 다시 시도해야 한다(그리고
-    // 여전히 실패한다, failFor가 유지되므로).
+    // Same file, same date, retry right after the failure — must not be suppressed and must try
+    // again (and still fail, since failFor is kept).
     await expect(runFolderScan(deps, { ...opts, runId: "run-2" })).rejects.toThrow();
   });
 
-  it("발송 결과가 불확실하면(AmbiguousSendError) failed가 아니라 unknown으로 기록된다(OPS-004, TASKS T34)", async () => {
+  it("an ambiguous send result (AmbiguousSendError) is recorded as unknown, not failed (OPS-004, TASKS T34)", async () => {
     const { db, warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
-    // 실제 resendProvider.ts가 타임아웃 시 던지는 것과 같은 모양(.name)의 에러를 흉내낸다.
+    // Mimics an error with the same shape (.name) as the one the real resendProvider.ts throws on timeout.
     const ambiguousProvider = {
       channel: "email" as const,
       send: () => {
-        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        const err = new Error("Resend request timed out (simulated).");
         err.name = "AmbiguousSendError";
         return Promise.reject(err);
       },
@@ -760,24 +765,24 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
       runId: "run-ambiguous",
     };
 
-    await expect(runFolderScan(deps, opts)).rejects.toThrow(/타임아웃/);
+    await expect(runFolderScan(deps, opts)).rejects.toThrow(/timed out/);
 
     const { rows } = await db.query<{ status: string }>(
       "select status from agent_send_log where run_id = $1",
       ["run-ambiguous"],
     );
-    // 'sending' 예약 행이 'unknown'으로 갱신된다(행이 늘지 않는다 — pgWarehouse.ts의
-    // logAgentSendOn이 "unknown"도 "sent"/"failed"와 같이 update 대상으로 처리해야 한다).
+    // The 'sending' reservation row is updated to 'unknown' (no extra row — pgWarehouse.ts's
+    // logAgentSendOn must treat "unknown" as an update target just like "sent"/"failed").
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("unknown");
   });
 
-  describe("같은 run_id 재시도 — provider dedupe TTL(2차 적대적 검수 SR2-MAIL-003, reorder.ts와 동일 게이트)", () => {
+  describe("same run_id retry — provider dedupe TTL (second adversarial review SR2-MAIL-003, same gate as reorder.ts)", () => {
     const ambiguousProvider = {
       channel: "email" as const,
       dedupeTtlMs: 24 * 60 * 60 * 1000,
       send: () => {
-        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        const err = new Error("Resend request timed out (simulated).");
         err.name = "AmbiguousSendError";
         return Promise.reject(err);
       },
@@ -789,13 +794,13 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
       confirm: true,
       recipient: "owner@example.com",
     });
-    // 재시도 시각은 이 파일의 NOW_ISO 기준으로 계산한다(고정 문자열을 쓰면 NOW_ISO가 바뀌었을 때
-    // TTL 안/밖 판정이 조용히 뒤집힌다 — 실제로 착수 중 한 번 그렇게 실패했다).
+    // Retry times are computed relative to this file's NOW_ISO (with fixed strings the inside/outside
+    // TTL decision silently flips when NOW_ISO changes — it actually failed that way once during work).
     const HOUR = 60 * 60 * 1000;
     const RETRY_1H_LATER = new Date(new Date(NOW_ISO).getTime() + 1 * HOUR).toISOString();
     const RETRY_25H_LATER = new Date(new Date(NOW_ISO).getTime() + 25 * HOUR).toISOString();
 
-    it("unknown 뒤 TTL 안(1시간 뒤) 재시도는 발송되고 로그는 unknown → sent 두 행이 된다", async () => {
+    it("a retry within the TTL (1 hour later) after unknown is sent and the log becomes two rows: unknown → sent", async () => {
       const { db, warehouse } = await makeWarehouse();
       await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
       const opts = { ...liveOpts(), runId: "run-retry-ok" };
@@ -805,7 +810,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
           { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider: ambiguousProvider },
           opts,
         ),
-      ).rejects.toThrow(/타임아웃/);
+      ).rejects.toThrow(/timed out/);
 
       const provider = createMockNotificationProvider();
       const retried = await runFolderScan(
@@ -823,7 +828,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
       expect(rows.map((r) => r.status)).toEqual(["unknown", "sent"]);
     });
 
-    it("unknown 뒤 TTL이 지난(25시간 뒤) 재시도는 거부되고 provider는 호출되지 않는다", async () => {
+    it("a retry after the TTL has passed (25 hours later) after unknown is refused and the provider is not called", async () => {
       const { db, warehouse } = await makeWarehouse();
       await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
       const opts = { ...liveOpts(), runId: "run-retry-late" };
@@ -833,7 +838,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
           { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider: ambiguousProvider },
           opts,
         ),
-      ).rejects.toThrow(/타임아웃/);
+      ).rejects.toThrow(/timed out/);
 
       const provider = createMockNotificationProvider();
       await expect(
@@ -852,7 +857,7 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     });
   });
 
-  it("dry_run 반복 실행은 다이제스트 판정과 무관하다 — 매번 같은 리포트를 그대로 다시 보여준다", async () => {
+  it("repeated dry_run runs are unrelated to the digest decision — the same report is shown again every time", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
     const deps = {
@@ -865,12 +870,12 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     const first = await runFolderScan(deps, { ...opts, runId: "run-1" });
     const second = await runFolderScan(deps, { ...opts, runId: "run-2" });
     expect(first.status).toBe("dry_run");
-    expect(second.status).toBe("dry_run"); // "unchanged"가 아니다 — dry_run은 억제 대상이 아님.
+    expect(second.status).toBe("dry_run"); // Not "unchanged" — dry_run is not subject to suppression.
     expect(second.alerts).toEqual(first.alerts);
   });
 });
 
-describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
+describe("runConsolidatedScan (HQ consolidated mode, TASKS T20)", () => {
   let dir: string;
   let collectDir: string;
 
@@ -885,16 +890,16 @@ describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("지점 2개 스냅샷을 매장명으로 필터링해 통합 조회할 수 있다(SPEC §5 '본점만' 예시와 동일 동작)", async () => {
+  it("2 branch snapshots can be queried consolidated, filtered by store name (same behaviour as the SPEC §5 'Main Store only' example)", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(
-      join(collectDir, "본점.csv"),
-      `매장명,상품명,SKU,재고수량\n본점,코카콜라 500ml,SKU-COLA,10\n`,
+      join(collectDir, "main-store.csv"),
+      `store,product,sku,stock_qty\nMain Store,Cola 500ml,SKU-COLA,10\n`,
       "utf8",
     );
     await writeFile(
-      join(collectDir, "마카티점.csv"),
-      `매장명,상품명,SKU,재고수량\n마카티점,생수 500ml,SKU-WATER,20\n`,
+      join(collectDir, "north-branch.csv"),
+      `store,product,sku,stock_qty\nNorth Branch,Water 500ml,SKU-WATER,20\n`,
       "utf8",
     );
 
@@ -907,8 +912,8 @@ describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
     expect(result.files).toHaveLength(2);
     expect(result.files.every((f) => f.status === "success")).toBe(true);
 
-    // 기존 MCP 도구가 쓰는 것과 같은 queryStock({storeId}) 필터링이 스키마 변경 없이 그대로 된다.
-    const mainStoreOnly = await warehouse.queryStock({ storeId: "본점" });
+    // The same queryStock({storeId}) filtering the existing MCP tools use works as-is, no schema change.
+    const mainStoreOnly = await warehouse.queryStock({ storeId: "Main Store" });
     expect(mainStoreOnly).toHaveLength(1);
     expect(mainStoreOnly[0]?.variantId).toBe("SKU-COLA");
 
@@ -916,17 +921,17 @@ describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
     expect(all).toHaveLength(2);
   });
 
-  it("한 지점 스냅샷이 파싱 실패해도 다른 지점 데이터·watermark에는 영향이 없다", async () => {
+  it("one branch snapshot failing to parse does not affect the other branch's data or watermark", async () => {
     const { warehouse } = await makeWarehouse();
-    // 본점: 매장명이 비어 있어 T15 검증에서 실패한다.
+    // Main Store: the store name is empty, so it fails T15 validation.
     await writeFile(
-      join(collectDir, "본점.csv"),
-      `매장명,상품명,SKU,재고수량\n,코카콜라 500ml,SKU-COLA,10\n`,
+      join(collectDir, "main-store.csv"),
+      `store,product,sku,stock_qty\n,Cola 500ml,SKU-COLA,10\n`,
       "utf8",
     );
     await writeFile(
-      join(collectDir, "마카티점.csv"),
-      `매장명,상품명,SKU,재고수량\n마카티점,생수 500ml,SKU-WATER,20\n`,
+      join(collectDir, "north-branch.csv"),
+      `store,product,sku,stock_qty\nNorth Branch,Water 500ml,SKU-WATER,20\n`,
       "utf8",
     );
 
@@ -936,28 +941,28 @@ describe("runConsolidatedScan (본사 통합 모드, TASKS T20)", () => {
     );
 
     expect(result.ok).toBe(false);
-    const failed = result.files.find((f) => f.file === "본점.csv");
-    const succeeded = result.files.find((f) => f.file === "마카티점.csv");
+    const failed = result.files.find((f) => f.file === "main-store.csv");
+    const succeeded = result.files.find((f) => f.file === "north-branch.csv");
     expect(failed?.status).toBe("failed");
     expect(failed?.error).toBeTruthy();
     expect(succeeded?.status).toBe("success");
 
-    // 실패한 지점의 데이터는 전혀 적재되지 않았다 — 성공한 지점만 있다.
+    // The failed branch's data was not loaded at all — only the successful branch is present.
     const stock = await warehouse.queryStock({});
     expect(stock).toHaveLength(1);
-    expect(stock[0]?.storeId).toBe("마카티점");
+    expect(stock[0]?.storeId).toBe("North Branch");
 
-    // watermark(sync_state)도 성공한 지점만 기록된다.
+    // The watermark (sync_state) is recorded only for the successful branch too.
     const syncState = await warehouse.getSyncState();
     const resources = syncState.map((s) => s.resource);
-    expect(resources).toContain("csv_branch:마카티점.csv");
-    expect(resources).not.toContain("csv_branch:본점.csv");
+    expect(resources).toContain("csv_branch:north-branch.csv");
+    expect(resources).not.toContain("csv_branch:main-store.csv");
   });
 
-  it("수집 폴더가 비어 있으면 명확한 에러를 던진다", async () => {
+  it("throws a clear error when the collect folder is empty", async () => {
     const { warehouse } = await makeWarehouse();
     await expect(
       runConsolidatedScan({ warehouse, clock: createFixedClock(NOW_ISO) }, { collectDir }),
-    ).rejects.toThrow(/지점 스냅샷 파일/);
+    ).rejects.toThrow(/branch snapshot file/);
   });
 });

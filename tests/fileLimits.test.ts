@@ -11,25 +11,27 @@ import {
   assertRowCountWithinLimit,
 } from "../src/adapters/fileLimits.js";
 
-describe("assertRowCountWithinLimit / assertCellLengthWithinLimit (순수, SEC-003)", () => {
-  it("상한 이하 행 수는 통과한다", () => {
+describe("assertRowCountWithinLimit / assertCellLengthWithinLimit (pure, SEC-003)", () => {
+  it("passes a row count at or below the limit", () => {
     expect(() => assertRowCountWithinLimit(MAX_ROWS, "f.csv")).not.toThrow();
   });
 
-  it("상한을 넘는 행 수는 원인이 담긴 에러를 던진다", () => {
-    expect(() => assertRowCountWithinLimit(MAX_ROWS + 1, "f.csv")).toThrow(/행.*상한|상한.*행/);
+  it("throws an error naming the cause for a row count over the limit", () => {
+    expect(() => assertRowCountWithinLimit(MAX_ROWS + 1, "f.csv")).toThrow(
+      /rows.*limit|limit.*rows/,
+    );
   });
 
-  it("상한 이하 셀 길이는 통과한다", () => {
+  it("passes a cell length at or below the limit", () => {
     expect(() =>
-      assertCellLengthWithinLimit("a".repeat(MAX_CELL_LENGTH), "f.csv 1행 상품명열"),
+      assertCellLengthWithinLimit("a".repeat(MAX_CELL_LENGTH), "f.csv row 1 column product"),
     ).not.toThrow();
   });
 
-  it("상한을 넘는 셀 길이는 원인(파일·행·열)이 담긴 에러를 던진다", () => {
+  it("throws an error naming the cause (file, row, column) for a cell length over the limit", () => {
     expect(() =>
-      assertCellLengthWithinLimit("a".repeat(MAX_CELL_LENGTH + 1), "f.csv 3행 상품명열"),
-    ).toThrow(/f\.csv 3행 상품명열/);
+      assertCellLengthWithinLimit("a".repeat(MAX_CELL_LENGTH + 1), "f.csv row 3 column product"),
+    ).toThrow(/f\.csv row 3 column product/);
   });
 });
 
@@ -44,15 +46,15 @@ describe("assertFileSizeWithinLimit (IO, SEC-003)", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("상한 이하 파일은 통과한다", async () => {
+  it("passes a file at or below the limit", async () => {
     const p = join(dir, "small.csv");
     await writeFile(p, "a,b\n1,2\n");
     await expect(assertFileSizeWithinLimit(p)).resolves.toBeUndefined();
   });
 
-  it("상한을 넘는 파일은 내용을 읽기 전에(stat만으로) 거부한다", async () => {
+  it("rejects a file over the limit before reading its content (stat only)", async () => {
     const p = join(dir, "huge.csv");
     await writeFile(p, Buffer.alloc(MAX_FILE_BYTES + 1, "a"));
-    await expect(assertFileSizeWithinLimit(p)).rejects.toThrow(/너무 큽니다/);
+    await expect(assertFileSizeWithinLimit(p)).rejects.toThrow(/too large/);
   });
 });

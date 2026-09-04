@@ -18,28 +18,28 @@ import { AdvisoryLockBusyError } from "../src/adapters/advisoryLock.js";
 import { createExploreSqlExecutor } from "../src/adapters/exploreSqlExecutor.js";
 import type { LoyverseClient, LvStore, StoreRow, Warehouse } from "../src/core/types.js";
 
-const STORE_MAIN: StoreRow = { id: "store_main", name: "본점" };
-const STORE_MAKATI: StoreRow = { id: "store_makati", name: "마카티점" };
+const STORE_MAIN: StoreRow = { id: "store_main", name: "Main Store" };
+const STORE_MAKATI: StoreRow = { id: "store_makati", name: "Makati Branch" };
 const PRODUCT_COLA = {
   variantId: "var_cola",
   itemId: "itm_cola",
-  name: "코카콜라 500ml",
+  name: "Cola 500ml",
   sku: "SKU-COLA",
-  category: "음료",
+  category: "Beverages",
 };
 const PRODUCT_CHIPS = {
   variantId: "var_chips",
   itemId: "itm_chips",
   name: "Piattos",
   sku: "SKU-CHIPS",
-  category: "스낵",
+  category: "Snacks",
 };
 
-// FixedClock "지금" — Asia/Manila(UTC+8) 기준 오늘 자정 = 2026-08-31T16:00:00Z.
+// FixedClock "now" — today's midnight in Asia/Manila (UTC+8) = 2026-08-31T16:00:00Z.
 const NOW_ISO = "2026-09-01T09:00:00Z";
 const BUSINESS_TIMEZONE = "Asia/Manila";
 
-describe("MCP 도구 (src/mcp/tools.ts)", () => {
+describe("MCP tools (src/mcp/tools.ts)", () => {
   let db: PGlite;
   let warehouse: Warehouse;
   let deps: QueryToolDeps;
@@ -53,7 +53,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
   });
 
   describe("sell_through", () => {
-    it("골든 케이스 값과 일치하고 근사식 각주를 포함한다 (30일 판매 60개, 기말재고 40 → 0.60)", async () => {
+    it("matches the golden case values and includes the approximate-formula note (60 sold in 30 days, ending stock 40 → 0.60)", async () => {
       await warehouse.upsertSalesLines([
         {
           receiptId: "R-1",
@@ -85,13 +85,13 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       expect(row?.sold_qty).toBe(60);
       expect(row?.end_stock).toBe(40);
       expect(row?.sell_through).toBeCloseTo(0.6, 10);
-      expect(result.note).toMatch(/근사식/);
+      expect(result.note).toMatch(/Approximate formula/);
       expect(result.meta.timezone).toBe(BUSINESS_TIMEZONE);
       expect(result.meta.filters["period_days"]).toBe(30);
     });
 
-    it("category 필터가 판매 없는 다른 카테고리 재고를 새지 않게 한다(회귀)", async () => {
-      // var_cola(음료)만 판매/재고 있고, var_chips(스낵)는 재고만 있음.
+    it("the category filter does not leak stock of another category with no sales (regression)", async () => {
+      // Only var_cola (Beverages) has sales/stock; var_chips (Snacks) has stock only.
       await warehouse.upsertInventory([
         {
           storeId: "store_main",
@@ -108,7 +108,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       ]);
 
       const result = await sellThroughTool(deps, {
-        category: "음료",
+        category: "Beverages",
         periodDays: 30,
         order: "desc",
         top: 20,
@@ -118,13 +118,13 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       expect(result.rows[0]?.variant_id).toBe("var_cola");
     });
 
-    it("존재하지 않는 store_id면 원인이 담긴 에러를 던진다", async () => {
+    it("throws an error carrying the cause for a non-existent store_id", async () => {
       await expect(
         sellThroughTool(deps, { storeId: "store_nope", periodDays: 30, order: "desc", top: 20 }),
-      ).rejects.toThrow(/존재하지 않는 store_id/);
+      ).rejects.toThrow(/Unknown store_id/);
     });
 
-    it("store_id 필터가 정확히 적용된다", async () => {
+    it("applies the store_id filter exactly", async () => {
       await warehouse.upsertInventory([
         {
           storeId: "store_main",
@@ -149,26 +149,26 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
     });
   });
 
-  describe("신선도(stale) 경고 — SPEC §9, TESTING §7", () => {
-    it("동기화 이력이 전혀 없으면 data_last_synced_at=null이고 미동기화 경고가 붙는다", async () => {
-      // beforeEach에서 stores/products만 seed하고 sync_state는 건드리지 않는다.
+  describe("freshness (stale) warnings — SPEC §9, TESTING §7", () => {
+    it("with no sync history at all, data_last_synced_at=null and a never-synced warning is attached", async () => {
+      // beforeEach seeds only stores/products and does not touch sync_state.
       const result = await sellThroughTool(deps, { periodDays: 30, order: "desc", top: 20 });
       expect(result.meta.data_last_synced_at).toBeNull();
-      expect(result.meta.warnings.some((w) => w.includes("한 번도 동기화되지"))).toBe(true);
+      expect(result.meta.warnings.some((w) => /never been synced/.test(w))).toBe(true);
     });
 
-    it("임계값을 넘겨 오래된 동기화면 stale 경고가 붙는다", async () => {
-      const oldSyncAt = new Date("2026-08-01T00:00:00Z"); // NOW_ISO(9/1)로부터 31일 전
+    it("attaches a stale warning when the last sync is older than the threshold", async () => {
+      const oldSyncAt = new Date("2026-08-01T00:00:00Z"); // 31 days before NOW_ISO (9/1)
       await warehouse.setCursor("receipts", oldSyncAt.toISOString(), oldSyncAt);
       await warehouse.setCursor("inventory", oldSyncAt.toISOString(), oldSyncAt);
 
       const staleDeps: QueryToolDeps = { ...deps, staleThresholdHours: 1 };
       const result = await sellThroughTool(staleDeps, { periodDays: 30, order: "desc", top: 20 });
       expect(result.meta.data_last_synced_at).toBe(oldSyncAt.toISOString());
-      expect(result.meta.warnings.some((w) => w.includes("stale 상태일 수 있습니다"))).toBe(true);
+      expect(result.meta.warnings.some((w) => /may be stale/.test(w))).toBe(true);
     });
 
-    it("reorder_suggestions(에이전트 리포트와 공유하는 buildReorderReport)도 같은 stale 경고를 낸다", async () => {
+    it("reorder_suggestions (buildReorderReport shared with the agent report) emits the same stale warning", async () => {
       const oldSyncAt = new Date("2026-08-01T00:00:00Z");
       await warehouse.setCursor("receipts", oldSyncAt.toISOString(), oldSyncAt);
       await warehouse.setCursor("inventory", oldSyncAt.toISOString(), oldSyncAt);
@@ -179,12 +179,12 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
         leadTimeDays: 7,
       });
       expect(report.dataLastSyncedAt).toEqual(oldSyncAt);
-      expect(report.warnings.some((w) => w.includes("stale 상태일 수 있습니다"))).toBe(true);
+      expect(report.warnings.some((w) => /may be stale/.test(w))).toBe(true);
     });
   });
 
   describe("inventory_status", () => {
-    it("현재고와 재고커버일수를 반환한다", async () => {
+    it("returns current stock and days of cover", async () => {
       await warehouse.upsertSalesLines([
         {
           receiptId: "R-1",
@@ -212,7 +212,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       expect(row?.days_of_cover).toBe(7.5);
     });
 
-    it("below_days_cover로 필터링하면 ∞(null) 커버 품목은 제외된다", async () => {
+    it("filtering by below_days_cover excludes items with ∞ (null) cover", async () => {
       await warehouse.upsertInventory([
         {
           storeId: "store_main",
@@ -222,12 +222,12 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
         },
       ]);
       const result = await inventoryStatusTool(deps, { belowDaysCover: 100 });
-      expect(result.rows).toHaveLength(0); // 판매 없음 → avgDaily 0 → daysOfCover null(∞)
+      expect(result.rows).toHaveLength(0); // no sales → avgDaily 0 → daysOfCover null (∞)
     });
   });
 
   describe("stockout_risk", () => {
-    it("위험 품목만 반환하고 예상 소진일을 포함한다", async () => {
+    it("returns only at-risk items and includes the expected stockout date", async () => {
       await warehouse.upsertSalesLines([
         {
           receiptId: "R-1",
@@ -240,7 +240,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
           soldAt: new Date("2026-08-25T09:00:00Z"),
         },
       ]);
-      // 일평균 2, 재고 5 → 커버 2.5일 < 7+3=10 → 위험.
+      // Daily average 2, stock 5 → 2.5 days of cover < 7+3=10 → at risk.
       await warehouse.upsertInventory([
         {
           storeId: "store_main",
@@ -256,8 +256,8 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
     });
   });
 
-  describe("reorder_suggestions — 에이전트와 완전 동일 (TESTING §4 회귀 가드)", () => {
-    it("buildReorderReport()를 직접 호출한 결과와 완전히 같다", async () => {
+  describe("reorder_suggestions — identical to the agent (TESTING §4 regression guard)", () => {
+    it("is exactly equal to the result of calling buildReorderReport() directly", async () => {
       await warehouse.upsertSalesLines([
         {
           receiptId: "R-1",
@@ -296,7 +296,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
   });
 
   describe("sync_status", () => {
-    it("리소스별 커서와 마지막 동기화 시각을 반환한다", async () => {
+    it("returns the cursor and last sync time per resource", async () => {
       await warehouse.setCursor("inventory", "wm-inv", new Date("2026-09-01T06:00:00Z"));
       const result = await syncStatusTool({ warehouse, clock: createFixedClock(NOW_ISO) });
       const inv = result.resources.find((r) => r.resource === "inventory");
@@ -307,7 +307,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
 
   describe("sync_now", () => {
     function fakeLoyverseClient(): LoyverseClient {
-      const stores: LvStore[] = [{ id: "store_main", name: "본점" }];
+      const stores: LvStore[] = [{ id: "store_main", name: "Main Store" }];
       return {
         listStores: () => Promise.resolve(stores),
         listItems: () => Promise.resolve({ items: [], cursor: null }),
@@ -327,7 +327,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       };
     }
 
-    it("정상 실행되면 run_id와 리소스별 결과를 반환한다", async () => {
+    it("returns run_id and per-resource results on a successful run", async () => {
       const runExclusively = async <T>(fn: () => Promise<T>): Promise<T> => fn();
       const result = await syncNowTool(
         {
@@ -347,7 +347,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       ]);
     });
 
-    it("runExclusively가 거부하면(다른 실행 중) AdvisoryLockBusyError가 전파된다", async () => {
+    it("propagates AdvisoryLockBusyError when runExclusively rejects (another run in progress)", async () => {
       const runExclusively = <T>(): Promise<T> => Promise.reject(new AdvisoryLockBusyError(1));
       await expect(
         syncNowTool(
@@ -363,8 +363,8 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
     });
   });
 
-  describe("explore_sql (TASKS T27, 가드레일 4 예외 — 얇은 조립 계층)", () => {
-    it("input을 그대로 executor.execute에 넘기고 결과를 그대로 반환한다", async () => {
+  describe("explore_sql (TASKS T27, guardrail 4 exception — thin assembly layer)", () => {
+    it("passes the input to executor.execute as-is and returns the result as-is", async () => {
       const calls: Array<[string, unknown]> = [];
       const executor = {
         execute: (sql: string, opts?: unknown) => {
@@ -386,7 +386,7 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       expect(result.rows).toEqual([{ id: "store_main" }]);
     });
 
-    it("limit/timeoutMs를 생략하면 executor에 undefined 필드를 안 넘긴다", async () => {
+    it("does not pass undefined fields to the executor when limit/timeoutMs are omitted", async () => {
       const calls: unknown[] = [];
       const executor = {
         execute: (_sql: string, opts?: unknown) => {
@@ -404,15 +404,15 @@ describe("MCP 도구 (src/mcp/tools.ts)", () => {
       expect(calls).toEqual([{}]);
     });
 
-    it("실제 웨어하우스 대상으로 골든 케이스를 실행한다(검증→READ ONLY 실행 전체 경로)", async () => {
+    it("runs the golden case against the real warehouse (full path: validation → READ ONLY execution)", async () => {
       const executor = createExploreSqlExecutor(createPgliteConnectionProvider(db));
       const result = await exploreSqlTool(
         { executor },
         { sql: "select id, name from stores order by id" },
       );
       expect(result.rows).toEqual([
-        { id: "store_main", name: "본점" },
-        { id: "store_makati", name: "마카티점" },
+        { id: "store_main", name: "Main Store" },
+        { id: "store_makati", name: "Makati Branch" },
       ]);
     });
   });

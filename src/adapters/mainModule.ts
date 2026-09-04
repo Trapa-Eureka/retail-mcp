@@ -1,14 +1,16 @@
 /**
- * "이 파일이 직접 실행됐는가"(CLI 진입점 vs import된 모듈) 판정 — `src/server.ts`/
- * `src/cli/onboard.ts`가 공유한다(TASKS T29).
+ * Decides "was this file executed directly" (CLI entry point vs imported module) — shared by
+ * `src/server.ts` and `src/cli/onboard.ts` (TASKS T29).
  *
- * 착수 중 발견(QA-001 tarball smoke test, `scripts/verifyPack.ts`): `process.argv[1] ===
- * fileURLToPath(import.meta.url)`는 저장소에서 `tsx src/server.ts`로 직접 실행할 때는
- * 맞지만, npm이 `node_modules/.bin/`에 만드는 **심볼릭 링크**를 통해 실행하면 깨진다 —
- * `process.argv[1]`은 실행에 쓰인 심볼릭 링크 경로 그대로인 반면 `import.meta.url`은
- * Node 모듈 시스템이 이미 실제 경로(realpath)로 해석한 뒤라 둘이 문자열로 다르다. 그
- * 결과 `main()`이 전혀 호출되지 않고 프로세스가 즉시 종료 코드 0으로 조용히 끝났다 —
- * 에러도 없어 눈에 띄지 않는 결함이었다. `process.argv[1]`도 realpath로 맞춰 비교한다.
+ * Found during the work (QA-001 tarball smoke test, `scripts/verifyPack.ts`):
+ * `process.argv[1] === fileURLToPath(import.meta.url)` holds when run directly from the
+ * repository with `tsx src/server.ts`, but breaks when run through the **symbolic link** npm
+ * creates in `node_modules/.bin/` — `process.argv[1]` is the symlink path used for execution
+ * as-is, while `import.meta.url` has already been resolved to the real path (realpath) by the
+ * Node module system, so the two strings differ. As a result `main()` was never called and the
+ * process silently exited immediately with code 0 — a defect that went unnoticed because there
+ * was no error either. `process.argv[1]` is therefore also resolved with realpath before
+ * comparing.
  */
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";

@@ -1,15 +1,17 @@
 /**
- * ETL 동기화 오케스트레이션 (DESIGN §5, §11.1, §11.2).
- * 순서: stores → items → receipts → inventory (FK 의존 때문에 이 순서를 유지한다 — sales_lines/
- * inventory_levels/inventory_snapshots는 stores·products를 참조한다).
- * 리소스 하나의 모든 페이지 처리 + upsert + watermark 갱신은 Warehouse.transaction()으로
- * 하나의 트랜잭션에 묶는다 — 중간 페이지 실패 시 그 리소스의 데이터와 watermark가 함께
- * 롤백되고, 이전 watermark부터 안전하게 재시도된다. 조립 계층이라 LLM 개입 없음 — 전 과정 결정론.
+ * ETL sync orchestration (DESIGN §5, §11.1, §11.2).
+ * Order: stores → items → receipts → inventory (this order is kept because of FK dependencies —
+ * sales_lines/inventory_levels/inventory_snapshots reference stores and products).
+ * Processing all pages of one resource + upsert + watermark update are wrapped in a single
+ * Warehouse.transaction() — if a page fails midway, that resource's data and watermark roll back
+ * together and the next run safely retries from the previous watermark. This is an assembly layer
+ * with no LLM involvement — the whole process is deterministic.
  *
- * 이 파일은 **Loyverse 전용 경로**다(TASKS T12) — `LoyverseClient`의 영수증 단위 증분 동기화
- * 모델을 그대로 전제한다. CSV/Excel 채널은 `syncAll()`을 재사용하지 않고 별도 오케스트레이션
- * (`folderScan.ts`, TASKS T18)에서 `Warehouse`에 직접 쓴다 — 폴더 스캔은 "현재 파일 전체를
- * 매번 다시 읽는 스냅샷" 모델이라 여기의 watermark/커서 기반 증분 동기화와 맞지 않는다.
+ * This file is the **Loyverse-only path** (TASKS T12) — it assumes `LoyverseClient`'s
+ * receipt-level incremental sync model as-is. The CSV/Excel channel does not reuse `syncAll()`;
+ * it writes to `Warehouse` directly from its own orchestration (`folderScan.ts`, TASKS T18) —
+ * folder scanning is a "re-read the whole current file every time as a snapshot" model, which
+ * does not fit the watermark/cursor based incremental sync here.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -28,10 +30,10 @@ export type SyncResource = "stores" | "items" | "receipts" | "inventory";
 export interface ResourceSyncResult {
   resource: SyncResource;
   status: "success" | "failed" | "skipped";
-  /** 이번 실행에서 적재를 시도한 행 수(성공 시). 실패/건너뜀이면 0. */
+  /** Number of rows this run attempted to load (on success). 0 if failed/skipped. */
   itemCount: number;
   error?: string;
-  /** 성공했을 때만 채워진다 — 실패/건너뜀은 null(이전 성공 시각은 sync_status가 DB에서 조회). */
+  /** Filled only on success — null if failed/skipped (the previous success time is read from sync_status in the DB). */
   lastSyncedAt: Date | null;
 }
 
@@ -40,14 +42,14 @@ export interface SyncResult {
   startedAt: Date;
   finishedAt: Date;
   resources: ResourceSyncResult[];
-  /** 리소스 중 하나라도 success가 아니면 false — 앞 리소스 성공을 뒤 리소스 실패 뒤에 숨기지 않는다. */
+  /** false if any resource is not success — an earlier resource's success is not hidden behind a later failure. */
   ok: boolean;
 }
 
 export interface SyncOptions {
-  /** 기본값: clock.now().toISOString() — 재고 스냅샷과 로그를 한 실행으로 묶는 식별자. */
+  /** Default: clock.now().toISOString() — identifier that ties inventory snapshots and logs to one run. */
   runId?: string;
-  /** 기본값: 4종 전부. 부분 동기화(예: 스모크에서 stores만) 테스트용. */
+  /** Default: all four. For partial-sync tests (e.g. stores only in the smoke script). */
   resources?: SyncResource[];
 }
 
@@ -58,7 +60,7 @@ export interface SyncDeps {
 }
 
 const RECEIPTS_EPOCH_ISO = "1970-01-01T00:00:00.000Z";
-/** 한 upsert 호출당 최대 행 수 — Postgres 파라미터 상한(65535)을 넉넉히 피한다(T10 50k행 대비). */
+/** Maximum rows per upsert call — stays well below the Postgres parameter cap (65535) (T10 prepared for 50k rows). */
 const UPSERT_CHUNK_SIZE = 1000;
 
 function errorMessage(err: unknown): string {
@@ -108,8 +110,8 @@ async function syncItems(deps: SyncDeps): Promise<ResourceSyncResult> {
         itemId: item.id,
         name: item.item_name,
         sku: v.sku,
-        // 카테고리 "이름" 해석(Categories API)은 DESIGN §4 LoyverseClient 계약 밖이다 —
-        // v0.1은 category_id를 그대로 저장한다(이름 해석은 v0.2 대기열).
+        // Resolving the category "name" (Categories API) is outside the DESIGN §4 LoyverseClient
+        // contract — v0.1 stores category_id as-is (name resolution is queued for v0.2).
         category: item.category_id,
       })),
     );
@@ -135,8 +137,9 @@ async function syncReceipts(deps: SyncDeps): Promise<ResourceSyncResult> {
   try {
     const previousWatermark = await deps.warehouse.getCursor("receipts");
     const sinceISO = previousWatermark ?? RECEIPTS_EPOCH_ISO;
-    // watermark보다 크거나 "같은" updated_at도 다시 조회한다(동률 안정 재조회, DESIGN §11.1) —
-    // 이미 적재된 영수증이 다시 와도 PK(receipt_id, line_no) upsert라 안전하다.
+    // Receipts whose updated_at is greater than OR "equal to" the watermark are queried again
+    // (stable re-query on ties, DESIGN §11.1) — receiving an already-loaded receipt again is safe
+    // thanks to the PK(receipt_id, line_no) upsert.
     let maxUpdatedAt: string | null = previousWatermark;
     let itemCount = 0;
 
@@ -150,10 +153,11 @@ async function syncReceipts(deps: SyncDeps): Promise<ResourceSyncResult> {
           if (maxUpdatedAt === null || receipt.updated_at > maxUpdatedAt) {
             maxUpdatedAt = receipt.updated_at;
           }
-          // 취소된 영수증은 완결되지 않은 거래로 보고 집계에서 제외한다(SPEC §9, DESIGN §11.3).
-          // 주의(알려진 한계, v0.1): 과거에 이미 적재된 영수증이 나중에 취소되면 그 라인은
-          // 여기서 새로 적재/갱신되지 않는다 — 기존에 적재된 sales_lines를 지우는 로직은
-          // v0.1 범위 밖이다(취소가 흔히 생성 직후 일어난다는 전제). v0.2에서 보완한다.
+          // Cancelled receipts are treated as incomplete transactions and excluded from aggregation (SPEC §9, DESIGN §11.3).
+          // Note (known limitation, v0.1): if a receipt that was already loaded earlier is cancelled
+          // later, its lines are not reloaded/updated here — logic that deletes already-loaded
+          // sales_lines is out of v0.1 scope (assuming cancellations usually happen right after
+          // creation). To be addressed in v0.2.
           if (receipt.cancelled_at !== null) continue;
 
           const sign = receipt.receipt_type === "REFUND" ? -1 : 1;
@@ -208,14 +212,14 @@ async function syncInventory(deps: SyncDeps, runId: string): Promise<ResourceSyn
       cursor = page.cursor ?? undefined;
     } while (cursor !== undefined);
 
-    // 빈 재고 응답은 기존 현재고를 조용히 방치하지 않고 동기화 오류로 취급한다(DESIGN §11.2) —
-    // 업서트는 삭제를 하지 않으므로 데이터를 파괴하진 않지만, 응답이 진짜로 비어 있다는 것
-    // 자체가 토큰 권한·API 이상의 신호일 가능성이 높다.
+    // An empty inventory response is treated as a sync error rather than silently leaving the
+    // existing stock in place (DESIGN §11.2) — upserts never delete, so no data is destroyed, but
+    // a genuinely empty response is itself most likely a sign of a token permission/API problem.
     if (rawLevels.length === 0) {
       throw new Error(
-        "Loyverse inventory 응답이 비어 있습니다. 기존 재고는 변경하지 않고 동기화 오류로 " +
-          "처리합니다. Loyverse 토큰에 INVENTORY_READ 권한이 있는지, 계정에 실제 재고 데이터가 " +
-          "있는지 확인하세요.",
+        "Loyverse inventory response is empty. Existing stock is left unchanged and this is " +
+          "treated as a sync error. Check that the Loyverse token has the INVENTORY_READ permission " +
+          "and that the account actually has inventory data.",
       );
     }
 
@@ -252,15 +256,16 @@ function skipped(resource: SyncResource, reason: string): ResourceSyncResult {
 }
 
 /**
- * 4종 리소스를 순서대로 동기화한다. stores/items 동기화를 이번 실행에서 시도했는데 실패하면
- * receipts/inventory는 FK 의존 때문에 시도조차 하지 않고 "skipped"로 보고한다(둘 다 stores·
- * products를 참조하므로 시도해도 FK 위반으로 실패할 뿐이다) — 실행하지 않은 리소스와 실패한
- * 리소스를 구분해서 보고한다.
+ * Syncs the four resources in order. If the stores/items sync was attempted in this run and
+ * failed, receipts/inventory are not even attempted and are reported as "skipped" because of the
+ * FK dependency (both reference stores and products, so attempting them would only fail with an
+ * FK violation) — resources that were not run are reported separately from resources that failed.
  */
 export async function syncAll(deps: SyncDeps, opts: SyncOptions = {}): Promise<SyncResult> {
   const startedAt = deps.clock.now();
-  // FixedClock으로 여러 번 실행해도 실행마다 구분돼야 하므로 clock이 아니라 randomUUID로 만든다
-  // (TESTING §7: 동일 시각 FixedClock 2회 동기화에도 스냅샷 PK 충돌 없이 실행별 구분 가능해야 함).
+  // Generated with randomUUID rather than the clock so that repeated runs with a FixedClock are
+  // still distinguishable per run (TESTING §7: two syncs with a same-time FixedClock must be
+  // distinguishable per run without snapshot PK collisions).
   const runId = opts.runId ?? randomUUID();
   const wanted = new Set<SyncResource>(
     opts.resources ?? ["stores", "items", "receipts", "inventory"],
@@ -282,7 +287,7 @@ export async function syncAll(deps: SyncDeps, opts: SyncOptions = {}): Promise<S
   }
 
   const dependenciesOk = storesOk && itemsOk;
-  const skipReason = "stores/items 동기화 실패로 FK 의존 리소스를 건너뜀";
+  const skipReason = "skipped FK-dependent resource because the stores/items sync failed";
 
   if (wanted.has("receipts")) {
     results.push(dependenciesOk ? await syncReceipts(deps) : skipped("receipts", skipReason));

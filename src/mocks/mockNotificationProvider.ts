@@ -1,27 +1,27 @@
 /**
- * NotificationProvider 목 구현 — 발송 기록 + failFor 강제 실패 (TESTING.md §2).
- * 원본: sheet_mcp `src/mocks/mockNotificationProvider.ts` (2026-09-02 기준 이식).
- * 원본과의 차이: sheet_mcp는 시트 행(rowKey) 단위로 failFor를 매칭하지만, retail-mcp에는
- * rowKey 개념이 없으므로(실행당 리포트 메일 한 통) 수신자 주소(msg.to)로 매칭한다. 또한
- * core/types.ts의 send()는 실패를 {ok:false}로 반환하지 않고 던지므로 그에 맞춘다.
+ * Mock NotificationProvider — records sends + forces failures via failFor (TESTING.md §2).
+ * Origin: sheet_mcp `src/mocks/mockNotificationProvider.ts` (ported as of 2026-09-02).
+ * Difference from the origin: sheet_mcp matches failFor per sheet row (rowKey), but retail-mcp has
+ * no rowKey concept (one report email per run), so it matches on the recipient address (msg.to).
+ * Also, core/types.ts's send() throws on failure instead of returning {ok:false}, so this follows suit.
  */
 import type { NotificationProvider, OutboundMessage, SendResult } from "../core/types.js";
 
-/** 기본값은 실 Resend와 같은 24시간 — 에이전트 테스트가 실제 운영 설정과 같은 조건으로 돈다. */
+/** Default is the same 24 hours as real Resend — agent tests run under the same conditions as production settings. */
 export const MOCK_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface MockNotificationProviderOptions {
-  /** 이 수신자로 보내려 하면 send()가 강제로 reject된다(sheet_mcp의 failFor와 동일 패턴). */
+  /** Attempting to send to one of these recipients makes send() reject (same pattern as sheet_mcp's failFor). */
   failFor?: string[];
   /**
-   * SR2-MAIL-003 — `NotificationProvider.dedupeTtlMs`로 노출할 값. 기본 MOCK_DEDUPE_TTL_MS(24시간).
-   * `null`이면 필드 자체를 생략해 "idempotency dedupe를 지원하지 않는 provider"를 흉내낸다.
+   * SR2-MAIL-003 — the value to expose as `NotificationProvider.dedupeTtlMs`. Default MOCK_DEDUPE_TTL_MS (24 hours).
+   * `null` omits the field entirely to mimic a "provider that does not support idempotency dedupe".
    */
   dedupeTtlMs?: number | null;
 }
 
 export interface MockNotificationProvider extends NotificationProvider {
-  /** 성공으로 처리된 메시지만 호출 순서대로 기록된다. */
+  /** Only messages handled as successful are recorded, in call order. */
   readonly sent: readonly OutboundMessage[];
 }
 
@@ -35,15 +35,13 @@ export function createMockNotificationProvider(
 
   return {
     channel: "email",
-    // exactOptionalPropertyTypes: null(미지원)이면 `dedupeTtlMs: undefined`를 넣지 않고 필드를 뺀다.
+    // exactOptionalPropertyTypes: when null (unsupported), omit the field instead of setting `dedupeTtlMs: undefined`.
     ...(dedupeTtlMs !== null ? { dedupeTtlMs } : {}),
     sent,
     send(msg: OutboundMessage): Promise<SendResult> {
       if (failFor.has(msg.to)) {
         return Promise.reject(
-          new Error(
-            `MockNotificationProvider: ${msg.to}로의 발송이 failFor에 의해 강제 실패했습니다.`,
-          ),
+          new Error(`MockNotificationProvider: send to ${msg.to} was forced to fail by failFor.`),
         );
       }
       sent.push(msg);

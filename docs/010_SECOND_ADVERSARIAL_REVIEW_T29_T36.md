@@ -69,7 +69,7 @@
 - Bypass example:
 
 ```ts
-const productionKey = "sk-ant-실제키값"; // example
+const productionKey = "sk-ant-<real key>"; // example
 ```
 
 - Impact: It misses not only malicious PRs but exactly the human mistake of "a real key that was meant to be used as an example".

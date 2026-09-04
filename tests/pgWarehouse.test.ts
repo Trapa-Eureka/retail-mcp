@@ -11,21 +11,21 @@ import type {
   Warehouse,
 } from "../src/core/types.js";
 
-const STORE_MAIN: StoreRow = { id: "store_main", name: "본점" };
-const STORE_MAKATI: StoreRow = { id: "store_makati", name: "마카티점" };
+const STORE_MAIN: StoreRow = { id: "store_main", name: "Main Store" };
+const STORE_MAKATI: StoreRow = { id: "store_makati", name: "South Branch" };
 const PRODUCT_COLA = {
   variantId: "var_cola",
   itemId: "itm_cola",
-  name: "코카콜라 500ml",
+  name: "Cola 500ml",
   sku: "SKU-COLA",
-  category: "음료",
+  category: "Beverages",
 };
 const PRODUCT_CHIPS = {
   variantId: "var_chips",
   itemId: "itm_chips",
   name: "Piattos",
   sku: "SKU-CHIPS",
-  category: "스낵",
+  category: "Snacks",
 };
 
 describe("pgWarehouse (PGlite)", () => {
@@ -39,18 +39,18 @@ describe("pgWarehouse (PGlite)", () => {
     await warehouse.upsertProducts([PRODUCT_COLA, PRODUCT_CHIPS]);
   });
 
-  describe("upsert 멱등성", () => {
-    it("upsertStores를 같은 id로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
-      await warehouse.upsertStores([{ id: "store_main", name: "본점(개명)" }]);
+  describe("upsert idempotency", () => {
+    it("calling upsertStores twice with the same id updates and does not add rows", async () => {
+      await warehouse.upsertStores([{ id: "store_main", name: "Main Store (renamed)" }]);
 
       const { rows } = await db.query<{ count: string; name: string }>(
         "select count(*)::text as count, max(name) as name from stores where id = 'store_main'",
       );
       expect(rows[0]?.count).toBe("1");
-      expect(rows[0]?.name).toBe("본점(개명)");
+      expect(rows[0]?.name).toBe("Main Store (renamed)");
     });
 
-    it("upsertProducts로 packSize(포장수량, SPEC §14)를 저장·갱신할 수 있다", async () => {
+    it("can store and update packSize (pack size, SPEC §14) via upsertProducts", async () => {
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
       const { rows } = await db.query<{ pack_size: string | null }>(
         "select pack_size from products where variant_id = 'var_cola'",
@@ -64,21 +64,21 @@ describe("pgWarehouse (PGlite)", () => {
       expect(after.rows[0]?.pack_size).toBe("12");
     });
 
-    it("packSize를 안 주는(undefined) upsert는 이미 저장된 값을 지우지 않는다(coalesce)", async () => {
+    it("an upsert without packSize (undefined) does not clear the already stored value (coalesce)", async () => {
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
-      // 다른 채널(예: Loyverse 동기화)이 packSize 없이 다시 upsert해도 값이 유지돼야 한다.
-      await warehouse.upsertProducts([{ ...PRODUCT_COLA, name: "코카콜라 500ml(갱신)" }]);
+      // The value must survive even if another channel (e.g. Loyverse sync) upserts again without packSize.
+      await warehouse.upsertProducts([{ ...PRODUCT_COLA, name: "Cola 500ml (updated)" }]);
 
       const { rows } = await db.query<{ pack_size: string | null; name: string }>(
         "select pack_size, name from products where variant_id = 'var_cola'",
       );
       expect(rows[0]?.pack_size).toBe("24");
-      expect(rows[0]?.name).toBe("코카콜라 500ml(갱신)");
+      expect(rows[0]?.name).toBe("Cola 500ml (updated)");
     });
   });
 
-  describe("upsertProducts — nullable 필드 명시적 clear(006 DATA-005, TASKS T33)", () => {
-    it("packSize를 null로 주는 upsert는 이미 저장된 값을 지운다(undefined와 다름)", async () => {
+  describe("upsertProducts — explicit clear of nullable fields (006 DATA-005, TASKS T33)", () => {
+    it("an upsert with packSize null clears the already stored value (unlike undefined)", async () => {
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: null }]);
 
@@ -88,7 +88,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.pack_size).toBeNull();
     });
 
-    it("lowStockThreshold를 null로 주는 upsert는 이미 저장된 값을 지운다", async () => {
+    it("an upsert with lowStockThreshold null clears the already stored value", async () => {
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, lowStockThreshold: "10" }]);
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, lowStockThreshold: null }]);
 
@@ -98,12 +98,12 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.low_stock_threshold).toBeNull();
     });
 
-    it("한 배치 안에서 다른 SKU가 packSize를 지워도(null) 이 upsert가 안 건드리는 다른 필드(threshold)는 그대로다", async () => {
+    it("even when a SKU clears packSize (null) in a batch, other fields this upsert does not touch (threshold) stay as they are", async () => {
       await warehouse.upsertProducts([
         { ...PRODUCT_COLA, lowStockThreshold: "10", packSize: "24" },
       ]);
-      // 이 upsert 배치는 packSize에 대해서만 정보가 있다(null=clear) — threshold는 undefined라
-      // 손대지 않는다.
+      // This upsert batch only carries information about packSize (null=clear) — threshold is
+      // undefined, so it is left alone.
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: null }]);
 
       const { rows } = await db.query<{
@@ -114,14 +114,14 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.low_stock_threshold).toBe("10");
     });
 
-    it("배치 안 여러 행이 서로 다른 SKU를 다뤄도 각자 정확히 반영된다(배치 판정은 필드 단위, 행 단위 아님)", async () => {
+    it("multiple rows in a batch handling different SKUs are each applied precisely (the batch decision is per field, not per row)", async () => {
       await warehouse.upsertProducts([
         { ...PRODUCT_COLA, packSize: "24" },
         { ...PRODUCT_CHIPS, packSize: "12" },
       ]);
-      // 같은 배치 안에서 COLA는 값을 지우고, CHIPS는 새 값을 준다 — 배치 판정("이 필드에
-      // 대해 조금이라도 정보가 있는 행이 하나라도 있는가")이 true이므로 두 행 다
-      // excluded.pack_size로 덮어써야 한다(null이든 값이든).
+      // In the same batch COLA clears the value and CHIPS gives a new one — the batch decision
+      // ("is there at least one row with any information about this field") is true, so both
+      // rows must be overwritten with excluded.pack_size (whether null or a value).
       await warehouse.upsertProducts([
         { ...PRODUCT_COLA, packSize: null },
         { ...PRODUCT_CHIPS, packSize: "6" },
@@ -135,7 +135,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(byId["var_chips"]).toBe("6");
     });
 
-    it("upsertSalesLines를 같은 PK로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+    it("calling upsertSalesLines twice with the same PK updates and does not add rows", async () => {
       const line: SalesLineRow = {
         receiptId: "R-1",
         lineNo: 1,
@@ -156,7 +156,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.qty).toBe("99");
     });
 
-    it("upsertInventory를 같은 (store,variant)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+    it("calling upsertInventory twice with the same (store,variant) updates and does not add rows", async () => {
       const row: InventoryRow = {
         storeId: "store_main",
         variantId: "var_cola",
@@ -173,7 +173,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.in_stock).toBe("5");
     });
 
-    it("appendInventorySnapshot을 같은 (run_id,store,variant)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+    it("calling appendInventorySnapshot twice with the same (run_id,store,variant) updates and does not add rows", async () => {
       const row: InventoryRow = {
         storeId: "store_main",
         variantId: "var_cola",
@@ -191,7 +191,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.in_stock).toBe("7");
     });
 
-    it("appendInventorySnapshot은 존재하지 않는 매장/상품을 참조하면 거부한다 (FK)", async () => {
+    it("appendInventorySnapshot rejects references to a non-existent store/product (FK)", async () => {
       await expect(
         warehouse.appendInventorySnapshot("run1", new Date(), [
           {
@@ -204,7 +204,7 @@ describe("pgWarehouse (PGlite)", () => {
       ).rejects.toThrow();
     });
 
-    it("upsertSalesPeriodAgg를 같은 (store,variant)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+    it("calling upsertSalesPeriodAgg twice with the same (store,variant) updates and does not add rows", async () => {
       const row: SalesPeriodAggRow = {
         storeId: "store_main",
         variantId: "var_cola",
@@ -222,7 +222,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.sold_qty).toBe("99");
     });
 
-    it("upsertPurchaseReceipts를 같은 (store,variant,received_at)로 두 번 호출하면 갱신되고 행이 늘지 않는다", async () => {
+    it("calling upsertPurchaseReceipts twice with the same (store,variant,received_at) updates and does not add rows", async () => {
       const row: PurchaseReceiptRow = {
         storeId: "store_main",
         variantId: "var_cola",
@@ -230,7 +230,7 @@ describe("pgWarehouse (PGlite)", () => {
         receivedQty: "30",
         unitCost: "12000",
         currency: "KRW",
-        vendor: "스마트유통",
+        vendor: "Smart Distribution",
       };
       await warehouse.upsertPurchaseReceipts([row]);
       await warehouse.upsertPurchaseReceipts([{ ...row, receivedQty: "99" }]);
@@ -242,7 +242,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.received_qty).toBe("99");
     });
 
-    it("upsertPurchaseReceipts는 존재하지 않는 매장/상품을 참조하면 거부한다 (FK)", async () => {
+    it("upsertPurchaseReceipts rejects references to a non-existent store/product (FK)", async () => {
       await expect(
         warehouse.upsertPurchaseReceipts([
           {
@@ -255,7 +255,7 @@ describe("pgWarehouse (PGlite)", () => {
       ).rejects.toThrow();
     });
 
-    it("unit_cost만 있고 currency가 없으면(또는 반대) DB 제약으로 거부한다", async () => {
+    it("rejects via DB constraint when only unit_cost is present without currency (or vice versa)", async () => {
       await expect(
         warehouse.upsertPurchaseReceipts([
           {
@@ -271,7 +271,7 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("purchase_receipts / queryPurchaseAgg (SCM 시트 연동, SPEC §13)", () => {
+  describe("purchase_receipts / queryPurchaseAgg (SCM sheet integration, SPEC §13)", () => {
     beforeEach(async () => {
       const rows: PurchaseReceiptRow[] = [
         {
@@ -281,7 +281,7 @@ describe("pgWarehouse (PGlite)", () => {
           receivedQty: "30",
           unitCost: "12000",
           currency: "KRW",
-          vendor: "스마트유통",
+          vendor: "Smart Distribution",
         },
         {
           storeId: "store_main",
@@ -299,7 +299,7 @@ describe("pgWarehouse (PGlite)", () => {
       await warehouse.upsertPurchaseReceipts(rows);
     });
 
-    it("기간·매장 내 입고수량을 querySalesAgg와 대칭인 모양으로 합산해 반환한다", async () => {
+    it("returns the received quantity within the period and store summed in a shape symmetric with querySalesAgg", async () => {
       const result = await warehouse.queryPurchaseAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -310,7 +310,7 @@ describe("pgWarehouse (PGlite)", () => {
       ]);
     });
 
-    it("매장 필터가 적용된다", async () => {
+    it("applies the store filter", async () => {
       const result = await warehouse.queryPurchaseAgg({
         periodStart: new Date("2026-08-01T00:00:00Z"),
         periodEnd: new Date("2026-08-29T00:00:00Z"),
@@ -321,11 +321,11 @@ describe("pgWarehouse (PGlite)", () => {
       ]);
     });
 
-    it("질의 기간 밖의 입고는 제외한다", async () => {
+    it("excludes receipts outside the queried period", async () => {
       const result = await warehouse.queryPurchaseAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
-        periodEnd: new Date("2026-08-10T00:00:00Z"), // 08-20 입고는 범위 밖
+        periodEnd: new Date("2026-08-10T00:00:00Z"), // the 08-20 receipt is out of range
       });
       expect(result).toEqual([
         { storeId: "store_main", variantId: "var_cola", receivedQtyRaw: "30" },
@@ -333,9 +333,9 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("sales_period_agg (CSV/Excel 기간합계, TASKS T12)", () => {
+  describe("sales_period_agg (CSV/Excel period totals, TASKS T12)", () => {
     beforeEach(async () => {
-      // CSV 스캔이 매장당 한 기간(2026-08-01 ~ 2026-08-29)으로 올린 기간합계.
+      // Period totals uploaded by the CSV scan as one period per store (2026-08-01 ~ 2026-08-29).
       const rows: SalesPeriodAggRow[] = [
         {
           storeId: "store_main",
@@ -362,7 +362,7 @@ describe("pgWarehouse (PGlite)", () => {
       await warehouse.upsertSalesPeriodAgg(rows);
     });
 
-    it("querySalesAgg와 동일한 SalesAgg 형태로 반환한다(core/metrics.ts가 그대로 소비 가능)", async () => {
+    it("returns the same SalesAgg shape as querySalesAgg (core/metrics.ts can consume it as-is)", async () => {
       const result = await warehouse.querySalesPeriodAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -372,13 +372,13 @@ describe("pgWarehouse (PGlite)", () => {
       expect(cola).toEqual({
         storeId: "store_main",
         variantId: "var_cola",
-        name: "코카콜라 500ml",
-        category: "음료",
+        name: "Cola 500ml",
+        category: "Beverages",
         soldQtyRaw: "56",
       });
     });
 
-    it("매장 필터가 적용된다", async () => {
+    it("applies the store filter", async () => {
       const result = await warehouse.querySalesPeriodAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -390,7 +390,7 @@ describe("pgWarehouse (PGlite)", () => {
       );
     });
 
-    it("질의 기간이 저장된 기간과 전혀 겹치지 않으면 제외한다", async () => {
+    it("excludes rows whose stored period does not overlap the queried period at all", async () => {
       const result = await warehouse.querySalesPeriodAgg({
         storeId: "store_main",
         periodStart: new Date("2026-01-01T00:00:00Z"),
@@ -400,10 +400,10 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("고정 집계 쿼리 — 골든 값", () => {
+  describe("fixed aggregate queries — golden values", () => {
     beforeEach(async () => {
       const lines: SalesLineRow[] = [
-        // store_main / var_cola: 기간 내 10 + 20 + 30 = 60
+        // store_main / var_cola: within the period 10 + 20 + 30 = 60
         {
           receiptId: "R-1",
           lineNo: 1,
@@ -434,7 +434,7 @@ describe("pgWarehouse (PGlite)", () => {
           discount: "0",
           soldAt: new Date("2026-08-20T09:00:00Z"),
         },
-        // 기간 밖 — 집계에서 제외되어야 한다
+        // Outside the period — must be excluded from the aggregate
         {
           receiptId: "R-4",
           lineNo: 1,
@@ -445,7 +445,7 @@ describe("pgWarehouse (PGlite)", () => {
           discount: "0",
           soldAt: new Date("2026-06-01T00:00:00Z"),
         },
-        // 다른 매장 — store_main만 조회하면 제외되어야 한다
+        // Another store — must be excluded when querying only store_main
         {
           receiptId: "R-5",
           lineNo: 1,
@@ -456,7 +456,7 @@ describe("pgWarehouse (PGlite)", () => {
           discount: "0",
           soldAt: new Date("2026-08-05T09:00:00Z"),
         },
-        // 환불 포함 — 원시 순판매량 그대로 합산(음수 정규화는 core/metrics.ts 몫)
+        // Includes a refund — raw net sales summed as-is (negative normalisation is core/metrics.ts's job)
         {
           receiptId: "R-6",
           lineNo: 1,
@@ -481,7 +481,7 @@ describe("pgWarehouse (PGlite)", () => {
       await warehouse.upsertSalesLines(lines);
     });
 
-    it("querySalesAgg: 기간·매장 필터 적용 시 골든 합계(60)와 일치한다", async () => {
+    it("querySalesAgg: matches the golden total (60) with period and store filters applied", async () => {
       const result = await warehouse.querySalesAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -490,11 +490,11 @@ describe("pgWarehouse (PGlite)", () => {
 
       const cola = result.find((r) => r.variantId === "var_cola");
       expect(cola?.soldQtyRaw).toBe("60");
-      expect(cola?.name).toBe("코카콜라 500ml");
-      expect(cola?.category).toBe("음료");
+      expect(cola?.name).toBe("Cola 500ml");
+      expect(cola?.category).toBe("Beverages");
     });
 
-    it("querySalesAgg: 환불 포함 원시 순판매량 = 10 + (-2) = 8", async () => {
+    it("querySalesAgg: raw net sales including the refund = 10 + (-2) = 8", async () => {
       const result = await warehouse.querySalesAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -505,17 +505,17 @@ describe("pgWarehouse (PGlite)", () => {
       expect(chips?.soldQtyRaw).toBe("8");
     });
 
-    it("querySalesAgg: category 필터가 적용된다", async () => {
+    it("querySalesAgg: applies the category filter", async () => {
       const result = await warehouse.querySalesAgg({
-        category: "스낵",
+        category: "Snacks",
         periodStart: new Date("2026-08-01T00:00:00Z"),
         periodEnd: new Date("2026-09-01T00:00:00Z"),
       });
-      expect(result.every((r) => r.category === "스낵")).toBe(true);
+      expect(result.every((r) => r.category === "Snacks")).toBe(true);
       expect(result.some((r) => r.variantId === "var_cola")).toBe(false);
     });
 
-    it("querySalesAgg: 기간 밖(반개방 경계 밖)과 다른 매장은 제외된다", async () => {
+    it("querySalesAgg: excludes rows outside the period (outside the half-open boundary) and other stores", async () => {
       const result = await warehouse.querySalesAgg({
         storeId: "store_main",
         periodStart: new Date("2026-08-01T00:00:00Z"),
@@ -524,7 +524,7 @@ describe("pgWarehouse (PGlite)", () => {
       const total = result
         .filter((r) => r.variantId === "var_cola")
         .reduce((sum, r) => sum + Number(r.soldQtyRaw), 0);
-      expect(total).toBe(60); // 999(기간 밖)와 5(다른 매장)는 포함되지 않는다
+      expect(total).toBe(60); // 999 (outside the period) and 5 (another store) are not included
     });
   });
 
@@ -552,7 +552,7 @@ describe("pgWarehouse (PGlite)", () => {
       ]);
     });
 
-    it("storeId로 필터링한다", async () => {
+    it("filters by storeId", async () => {
       const result = await warehouse.queryStock({ storeId: "store_main" });
       expect(result).toHaveLength(2);
       expect(result.every((r) => r.storeId === "store_main")).toBe(true);
@@ -561,31 +561,31 @@ describe("pgWarehouse (PGlite)", () => {
       expect(cola?.updatedAt).toBeInstanceOf(Date);
     });
 
-    it("variantIds로 필터링한다", async () => {
+    it("filters by variantIds", async () => {
       const result = await warehouse.queryStock({ variantIds: ["var_cola"] });
-      expect(result).toHaveLength(2); // store_main + store_makati의 var_cola
+      expect(result).toHaveLength(2); // var_cola of store_main + store_makati
       expect(result.every((r) => r.variantId === "var_cola")).toBe(true);
     });
 
-    it("필터 없이 호출하면 전부 반환한다", async () => {
+    it("returns everything when called without filters", async () => {
       const result = await warehouse.queryStock({});
       expect(result).toHaveLength(3);
     });
 
-    it("category로 필터링한다 — 판매 없이 재고만 있는 다른 카테고리 품목이 새지 않는다", async () => {
-      // PRODUCT_COLA 카테고리="음료", PRODUCT_CHIPS 카테고리="스낵"(beforeEach 상단 상수).
-      const result = await warehouse.queryStock({ storeId: "store_main", category: "음료" });
+    it("filters by category — items of another category with stock but no sales do not leak", async () => {
+      // PRODUCT_COLA category="Beverages", PRODUCT_CHIPS category="Snacks" (constants at the top, above beforeEach).
+      const result = await warehouse.queryStock({ storeId: "store_main", category: "Beverages" });
       expect(result).toHaveLength(1);
       expect(result[0]?.variantId).toBe("var_cola");
     });
   });
 
   describe("getCursor / setCursor", () => {
-    it("설정 전에는 null을 반환한다", async () => {
+    it("returns null before it is set", async () => {
       expect(await warehouse.getCursor("receipts")).toBeNull();
     });
 
-    it("설정 후 그대로 조회된다 (watermark 왕복)", async () => {
+    it("reads back as-is after being set (watermark round trip)", async () => {
       await warehouse.setCursor(
         "receipts",
         "2026-08-01T00:00:00Z",
@@ -593,7 +593,7 @@ describe("pgWarehouse (PGlite)", () => {
       );
       expect(await warehouse.getCursor("receipts")).toBe("2026-08-01T00:00:00Z");
 
-      // 재설정 시 갱신된다
+      // Updated when set again
       await warehouse.setCursor(
         "receipts",
         "2026-08-15T00:00:00Z",
@@ -603,12 +603,12 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("getSyncState (T9 sync_status 도구용)", () => {
-    it("설정 전에는 빈 배열을 반환한다", async () => {
+  describe("getSyncState (for the T9 sync_status tool)", () => {
+    it("returns an empty array before anything is set", async () => {
       expect(await warehouse.getSyncState()).toEqual([]);
     });
 
-    it("리소스별 cursor+last_synced_at을 resource 오름차순으로 반환한다", async () => {
+    it("returns cursor+last_synced_at per resource in ascending resource order", async () => {
       await warehouse.setCursor("inventory", "wm-inv", new Date("2026-09-01T06:00:00Z"));
       await warehouse.setCursor(
         "receipts",
@@ -632,8 +632,8 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("transaction — 원자적 커밋/롤백 (DESIGN §11.1)", () => {
-    it("성공하면 data + watermark가 함께 커밋된다", async () => {
+  describe("transaction — atomic commit/rollback (DESIGN §11.1)", () => {
+    it("commits data + watermark together on success", async () => {
       await warehouse.transaction(async (tx) => {
         await tx.upsertInventory([
           {
@@ -651,7 +651,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(await warehouse.getCursor("inventory")).toBe("wm-committed");
     });
 
-    it("중간에 실패하면 data와 watermark 둘 다 롤백된다", async () => {
+    it("rolls back both data and watermark on a failure midway", async () => {
       await expect(
         warehouse.transaction(async (tx) => {
           await tx.upsertInventory([
@@ -671,13 +671,13 @@ describe("pgWarehouse (PGlite)", () => {
         }),
       ).rejects.toThrow("boom");
 
-      // 트랜잭션 전 상태(재고 upsert 없음, cursor 없음)로 남아 있어야 한다
+      // Must remain in the pre-transaction state (no inventory upsert, no cursor)
       const stock = await warehouse.queryStock({ storeId: "store_main", variantIds: ["var_cola"] });
       expect(stock).toHaveLength(0);
       expect(await warehouse.getCursor("inventory")).toBeNull();
     });
 
-    it("롤백 후에도 같은 warehouse로 정상적인 후속 쓰기를 할 수 있다", async () => {
+    it("can perform normal follow-up writes on the same warehouse after the rollback", async () => {
       await expect(
         warehouse.transaction(async (tx) => {
           await tx.setCursor("receipts", "wm-fail", new Date());
@@ -690,8 +690,8 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("logAgentSend — 예약 패턴 (DESIGN §11.5)", () => {
-    it("sending으로 예약한 뒤 sent로 갱신하면 같은 행이 갱신되고 행이 늘지 않는다", async () => {
+  describe("logAgentSend — reservation pattern (DESIGN §11.5)", () => {
+    it("reserving with sending then updating to sent updates the same row and does not add rows", async () => {
       const base = {
         runId: "run-1",
         sentAt: new Date("2026-09-01T07:00:00Z"),
@@ -707,7 +707,7 @@ describe("pgWarehouse (PGlite)", () => {
         ...base,
         status: "sent",
         recipient: "owner@example.com",
-        subject: "재주문 제안",
+        subject: "Reorder suggestion",
         messageId: "msg-123",
       });
 
@@ -719,12 +719,12 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.message_id).toBe("msg-123");
     });
 
-    it("sending으로 예약한 뒤 unknown으로 갱신하면 같은 행이 갱신되고 행이 늘지 않는다(OPS-004, TASKS T34)", async () => {
+    it("reserving with sending then updating to unknown updates the same row and does not add rows (OPS-004, TASKS T34)", async () => {
       const base = {
         runId: "run-unknown",
         sentAt: new Date("2026-09-01T07:00:00Z"),
         recipient: "owner@example.com",
-        subject: "저재고 알림",
+        subject: "Low stock alert",
         suggestionCount: 2,
         messageId: null,
         dryRun: false,
@@ -742,7 +742,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.error_code).toBe("AmbiguousSendError");
     });
 
-    it("no_suggestions 상태는 recipient/subject 없이도 기록된다", async () => {
+    it("the no_suggestions status is recorded even without recipient/subject", async () => {
       await warehouse.logAgentSend({
         runId: "run-2",
         sentAt: new Date("2026-09-01T07:00:00Z"),
@@ -761,12 +761,12 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.status).toBe("no_suggestions");
     });
 
-    it("이미 sent인 run_id로 다시 sending을 예약하면 실패한다(이중 발송 방지)", async () => {
+    it("reserving sending again for an already sent run_id fails (double-send prevention)", async () => {
       const base = {
         runId: "run-3",
         sentAt: new Date("2026-09-01T07:00:00Z"),
         recipient: "owner@example.com",
-        subject: "재주문 제안",
+        subject: "Reorder suggestion",
         suggestionCount: 2,
         messageId: null,
         dryRun: false,
@@ -775,10 +775,10 @@ describe("pgWarehouse (PGlite)", () => {
       await warehouse.logAgentSend({ ...base, status: "sending" });
       await warehouse.logAgentSend({ ...base, status: "sent", messageId: "msg-1" });
 
-      // 같은 run_id로 재발송을 시도하면(예: 재시도 스크립트 실수) 예약(INSERT)이 부분 유니크
-      // 인덱스를 위반해 거부돼야 한다 — 이미 sent인 행을 sending으로 되돌리면 안 된다.
+      // A resend attempt with the same run_id (e.g. a retry script mistake) must be rejected because
+      // the reservation (INSERT) violates the partial unique index — an already sent row must not be reverted to sending.
       await expect(warehouse.logAgentSend({ ...base, status: "sending" })).rejects.toThrow(
-        /이미 발송 중이거나 발송 완료된 실행/,
+        /already sending or has already been sent/,
       );
 
       const { rows } = await db.query<{ status: string; message_id: string }>(
@@ -789,28 +789,28 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.message_id).toBe("msg-1");
     });
 
-    it("sending 예약 없이 sent/failed로 갱신하면 원인이 담긴 에러를 던진다", async () => {
+    it("updating to sent/failed without a sending reservation throws an error carrying the cause", async () => {
       await expect(
         warehouse.logAgentSend({
           runId: "run-4",
           sentAt: new Date("2026-09-01T07:00:00Z"),
           status: "sent",
           recipient: "owner@example.com",
-          subject: "재주문 제안",
+          subject: "Reorder suggestion",
           suggestionCount: 1,
           messageId: "msg-x",
           dryRun: false,
           errorCode: null,
         }),
-      ).rejects.toThrow(/sending 예약 행이 없어/);
+      ).rejects.toThrow(/No sending reservation row/);
     });
 
-    it("실패(failed) 후에는 같은 run_id로 새 sending 예약이 다시 가능하다(재시도)", async () => {
+    it("after failed, a new sending reservation is possible again with the same run_id (retry)", async () => {
       const base = {
         runId: "run-5",
         sentAt: new Date("2026-09-01T07:00:00Z"),
         recipient: "owner@example.com",
-        subject: "재주문 제안",
+        subject: "Reorder suggestion",
         suggestionCount: 1,
         messageId: null,
         dryRun: false,
@@ -829,7 +829,7 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("listAgentSendAttempts / markStaleSendingUnknown — 같은 run_id 재시도 정책 재료(SR2-MAIL-003)", () => {
+  describe("listAgentSendAttempts / markStaleSendingUnknown — input for the same-run_id retry policy (SR2-MAIL-003)", () => {
     const base = {
       runId: "run-attempts",
       recipient: "owner@example.com",
@@ -840,7 +840,7 @@ describe("pgWarehouse (PGlite)", () => {
       errorCode: null,
     };
 
-    it("listAgentSendAttempts는 그 run_id의 행만 기록 순서로 돌려주고 sent_at을 Date로 준다", async () => {
+    it("listAgentSendAttempts returns only that run_id's rows in record order and gives sent_at as a Date", async () => {
       await warehouse.logAgentSend({
         ...base,
         sentAt: new Date("2026-09-01T07:00:00Z"),
@@ -860,7 +860,7 @@ describe("pgWarehouse (PGlite)", () => {
       });
 
       const attempts = await warehouse.listAgentSendAttempts("run-attempts");
-      expect(attempts).toHaveLength(1); // sending 예약 행이 unknown으로 갱신됐으므로 한 행
+      expect(attempts).toHaveLength(1); // one row, because the sending reservation row was updated to unknown
       expect(attempts[0]).toMatchObject({
         runId: "run-attempts",
         status: "unknown",
@@ -874,7 +874,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(await warehouse.listAgentSendAttempts("run-none")).toEqual([]);
     });
 
-    it("markStaleSendingUnknown은 sending 행만 unknown(stale_sending)으로 바꾸고 sent_at은 유지한다", async () => {
+    it("markStaleSendingUnknown changes only sending rows to unknown (stale_sending) and keeps sent_at", async () => {
       await warehouse.logAgentSend({
         ...base,
         runId: "run-stale",
@@ -889,7 +889,7 @@ describe("pgWarehouse (PGlite)", () => {
       });
 
       expect(await warehouse.markStaleSendingUnknown("run-stale")).toBe(1);
-      expect(await warehouse.markStaleSendingUnknown("run-stale")).toBe(0); // 두 번째는 대상 없음
+      expect(await warehouse.markStaleSendingUnknown("run-stale")).toBe(0); // nothing to target the second time
 
       const attempts = await warehouse.listAgentSendAttempts("run-stale");
       expect(attempts.map((a) => [a.status, a.errorCode, a.sentAt.toISOString()])).toEqual([
@@ -897,7 +897,7 @@ describe("pgWarehouse (PGlite)", () => {
         ["dry_run", null, "2026-09-01T06:00:00.000Z"],
       ]);
 
-      // 마감 뒤에는 같은 run_id로 새 sending 예약이 가능하다(부분 unique 인덱스 대상에서 빠짐).
+      // After closing, a new sending reservation is possible with the same run_id (no longer covered by the partial unique index).
       await warehouse.logAgentSend({
         ...base,
         runId: "run-stale",
@@ -912,8 +912,8 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("deleteOldInventorySnapshots / deleteOldAgentSendLog — 보존 정책(007 OPS-005, TASKS T34)", () => {
-    it("agent_send_log — before보다 오래된 행만 지우고 최근 행은 남긴다", async () => {
+  describe("deleteOldInventorySnapshots / deleteOldAgentSendLog — retention policy (007 OPS-005, TASKS T34)", () => {
+    it("agent_send_log — deletes only rows older than before and keeps recent rows", async () => {
       await warehouse.logAgentSend({
         runId: "run-old",
         sentAt: new Date("2026-01-01T00:00:00Z"),
@@ -944,7 +944,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows.map((r) => r.run_id)).toEqual(["run-recent"]);
     });
 
-    it("agent_send_log — dryRun이면 아무것도 지우지 않고 대상 행 수만 센다", async () => {
+    it("agent_send_log — with dryRun deletes nothing and only counts the target rows", async () => {
       await warehouse.logAgentSend({
         runId: "run-old",
         sentAt: new Date("2026-01-01T00:00:00Z"),
@@ -965,10 +965,10 @@ describe("pgWarehouse (PGlite)", () => {
       const { rows } = await db.query<{ count: string }>(
         "select count(*)::text as count from agent_send_log",
       );
-      expect(rows[0]?.count).toBe("1"); // 여전히 남아 있다 — 지워지지 않았다.
+      expect(rows[0]?.count).toBe("1"); // Still there — not deleted.
     });
 
-    it("inventory_snapshots — before보다 오래된 행만 지우고 최근 행은 남긴다", async () => {
+    it("inventory_snapshots — deletes only rows older than before and keeps recent rows", async () => {
       await warehouse.appendInventorySnapshot("run-old", new Date("2026-01-01T00:00:00Z"), [
         { storeId: "store_main", variantId: "var_cola", inStock: "10", updatedAt: new Date() },
       ]);
@@ -983,7 +983,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows.map((r) => r.run_id)).toEqual(["run-recent"]);
     });
 
-    it("inventory_snapshots — dryRun이면 아무것도 지우지 않고 대상 행 수만 센다", async () => {
+    it("inventory_snapshots — with dryRun deletes nothing and only counts the target rows", async () => {
       await warehouse.appendInventorySnapshot("run-old", new Date("2026-01-01T00:00:00Z"), [
         { storeId: "store_main", variantId: "var_cola", inStock: "10", updatedAt: new Date() },
       ]);
@@ -1001,38 +1001,38 @@ describe("pgWarehouse (PGlite)", () => {
   });
 
   describe("queryStores", () => {
-    it("필터 없이 호출하면 모든 매장을 id 순으로 반환한다", async () => {
+    it("returns all stores in id order when called without a filter", async () => {
       const stores = await warehouse.queryStores();
       expect(stores).toEqual([
-        { id: "store_main", name: "본점" },
-        { id: "store_makati", name: "마카티점" },
+        { id: "store_main", name: "Main Store" },
+        { id: "store_makati", name: "South Branch" },
       ]);
     });
 
-    it("storeId를 주면 그 매장만 반환한다", async () => {
+    it("returns only that store when storeId is given", async () => {
       expect(await warehouse.queryStores("store_makati")).toEqual([
-        { id: "store_makati", name: "마카티점" },
+        { id: "store_makati", name: "South Branch" },
       ]);
     });
 
-    it("존재하지 않는 storeId면 빈 배열을 반환한다", async () => {
+    it("returns an empty array for a non-existent storeId", async () => {
       expect(await warehouse.queryStores("store_nope")).toEqual([]);
     });
   });
 
-  describe("queryProducts (SPEC §14/TASKS T25 — packSize 등 ProductRow 전체 필드 조회)", () => {
+  describe("queryProducts (SPEC §14/TASKS T25 — reads all ProductRow fields including packSize)", () => {
     beforeEach(async () => {
       await warehouse.upsertProducts([{ ...PRODUCT_COLA, packSize: "24" }]);
     });
 
-    it("variantIds를 생략하면 전체 상품을 variant_id 순으로 반환한다", async () => {
+    it("returns all products in variant_id order when variantIds is omitted", async () => {
       const products = await warehouse.queryProducts();
       expect(products.map((p) => p.variantId)).toEqual(["var_chips", "var_cola"]);
       const cola = products.find((p) => p.variantId === "var_cola");
-      expect(cola).toMatchObject({ name: "코카콜라 500ml", sku: "SKU-COLA", packSize: "24" });
+      expect(cola).toMatchObject({ name: "Cola 500ml", sku: "SKU-COLA", packSize: "24" });
     });
 
-    it("variantIds를 주면 그 상품만 반환한다(packSize 없는 상품은 null)", async () => {
+    it("returns only those products when variantIds is given (null for products without packSize)", async () => {
       const products = await warehouse.queryProducts(["var_chips"]);
       expect(products).toEqual([
         {
@@ -1040,14 +1040,14 @@ describe("pgWarehouse (PGlite)", () => {
           itemId: "itm_chips",
           name: "Piattos",
           sku: "SKU-CHIPS",
-          category: "스낵",
+          category: "Snacks",
           lowStockThreshold: null,
           packSize: null,
         },
       ]);
     });
 
-    it("빈 배열을 주면 빈 결과를 반환한다(전체 조회와 구분)", async () => {
+    it("returns an empty result for an empty array (distinct from querying everything)", async () => {
       expect(await warehouse.queryProducts([])).toEqual([]);
     });
   });
@@ -1077,8 +1077,8 @@ describe("pgWarehouse (PGlite)", () => {
       ]);
     });
 
-    it("이번 스캔에 없는 (매장,SKU)는 비활성화되고 queryStock/querySalesPeriodAgg 기본 결과에서 빠진다", async () => {
-      // store_main 스캔인데 var_chips가 이번 파일에 더 이상 없다고 가정.
+    it("(store,SKU) pairs absent from this scan are deactivated and drop out of the default queryStock/querySalesPeriodAgg results", async () => {
+      // Assume a store_main scan where var_chips is no longer in this file.
       await warehouse.deactivateMissingCsvRows({
         storeIds: ["store_main"],
         presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
@@ -1095,7 +1095,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(sales.map((s) => s.variantId)).toEqual(["var_cola"]);
     });
 
-    it("물리 삭제가 아니다 — 비활성화된 행도 DB에는 그대로 남아 있다", async () => {
+    it("not a physical delete — deactivated rows remain in the DB as they are", async () => {
       await warehouse.deactivateMissingCsvRows({
         storeIds: ["store_main"],
         presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
@@ -1108,7 +1108,7 @@ describe("pgWarehouse (PGlite)", () => {
       expect(rows[0]?.count).toBe("1");
     });
 
-    it("다시 파일에 나타나면 일반 upsert 경로가 자동으로 재활성화한다", async () => {
+    it("the normal upsert path automatically reactivates when it reappears in the file", async () => {
       await warehouse.deactivateMissingCsvRows({
         storeIds: ["store_main"],
         presentInventory: [{ storeId: "store_main", variantId: "var_cola" }],
@@ -1124,19 +1124,19 @@ describe("pgWarehouse (PGlite)", () => {
       expect(stock.map((s) => s.variantId).sort()).toEqual(["var_chips", "var_cola"]);
     });
 
-    it("storeIds 범위 밖의 다른 매장 데이터는 건드리지 않는다(본사 통합 모드의 지점별 독립)", async () => {
+    it("does not touch other stores' data outside the storeIds range (per-branch independence in HQ consolidated mode)", async () => {
       await warehouse.deactivateMissingCsvRows({
         storeIds: ["store_main"],
-        presentInventory: [], // store_main엔 아무것도 없다고 극단적으로 가정
+        presentInventory: [], // Assume the extreme case that store_main has nothing at all
         presentSales: [],
       });
 
-      // store_makati의 var_cola는 storeIds 범위 밖이라 그대로 active여야 한다.
+      // store_makati's var_cola is outside the storeIds range, so it must stay active.
       const makatiStock = await warehouse.queryStock({ storeId: "store_makati" });
       expect(makatiStock.map((s) => s.variantId)).toEqual(["var_cola"]);
     });
 
-    it("presentSales가 비어 있으면 그 매장의 기존 sales_period_agg 전부가 비활성화된다(이 스캔이 판매이력 없음을 authoritative하게 보고)", async () => {
+    it("when presentSales is empty, all of that store's existing sales_period_agg rows are deactivated (this scan authoritatively reports no sales history)", async () => {
       await warehouse.deactivateMissingCsvRows({
         storeIds: ["store_main"],
         presentInventory: [
@@ -1151,11 +1151,11 @@ describe("pgWarehouse (PGlite)", () => {
         periodEnd: new Date("2026-08-29T00:00:00Z"),
       });
       expect(sales).toEqual([]);
-      // inventory는 여전히 active(재고는 이번 스캔에 있었다) — 판매만 없어진 것과 구분된다.
+      // inventory is still active (stock was in this scan) — distinguished from only sales disappearing.
       expect(await warehouse.queryStock({ storeId: "store_main" })).toHaveLength(2);
     });
 
-    it("storeIds가 빈 배열이면 아무것도 건드리지 않는다", async () => {
+    it("touches nothing when storeIds is an empty array", async () => {
       await warehouse.deactivateMissingCsvRows({
         storeIds: [],
         presentInventory: [],
@@ -1166,7 +1166,7 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
-  describe("읽기 전용 역할 분리", () => {
+  describe("read-only role separation", () => {
     beforeEach(async () => {
       await db.exec("create role app_readonly");
       await db.exec(
@@ -1174,7 +1174,7 @@ describe("pgWarehouse (PGlite)", () => {
       );
     });
 
-    it("읽기 전용 role로는 조회 도구 5종이 성공한다(T9 MCP 조회 도구 전부)", async () => {
+    it("the 5 query tools succeed with the read-only role (all T9 MCP query tools)", async () => {
       await db.exec("set role app_readonly");
       try {
         await expect(warehouse.queryStock({})).resolves.toBeDefined();
@@ -1192,11 +1192,11 @@ describe("pgWarehouse (PGlite)", () => {
       }
     });
 
-    it("읽기 전용 role로는 쓰기가 실패한다", async () => {
+    it("writes fail with the read-only role", async () => {
       await db.exec("set role app_readonly");
       try {
         await expect(
-          warehouse.upsertStores([{ id: "store_new", name: "신규매장" }]),
+          warehouse.upsertStores([{ id: "store_new", name: "New Store" }]),
         ).rejects.toThrow(/permission denied/);
         await expect(
           warehouse.setCursor("receipts", "wm", new Date("2026-09-01T00:00:00Z")),
@@ -1206,7 +1206,7 @@ describe("pgWarehouse (PGlite)", () => {
       }
     });
 
-    it("explore_sql(TASKS T27)도 읽기 전용 role로 정상 동작한다", async () => {
+    it("explore_sql (TASKS T27) also works normally with the read-only role", async () => {
       const { createExploreSqlExecutor } = await import("../src/adapters/exploreSqlExecutor.js");
       const executor = createExploreSqlExecutor(createPgliteConnectionProvider(db));
       await db.exec("set role app_readonly");

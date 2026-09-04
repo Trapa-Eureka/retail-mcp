@@ -1,20 +1,21 @@
 /**
- * 마이그레이션 러너 CLI 진입점.
+ * Migration runner CLI entry point.
  *
- * `npm run migrate`로 실행하면 DATABASE_URL 대상 Postgres에 migrations/*.sql을
- * 파일명 순서대로, 아직 적용되지 않은 것만 적용한다. 적용 이력은 schema_migrations
- * 테이블에 기록하며, 이미 적용된 마이그레이션은 건너뛰므로 여러 번 실행해도 안전하다(멱등).
+ * Running `npm run migrate` applies migrations/*.sql to the DATABASE_URL Postgres in file-name
+ * order, only those not yet applied. The history is recorded in the schema_migrations table,
+ * and already applied migrations are skipped, so running it several times is safe (idempotent).
  *
- * 동시 실행 안전성: 실행 전체를 advisory lock(pg_advisory_lock)으로 감싼다(두 프로세스가
- * 동시에 시작해도 한쪽만 실제로 DDL을 적용) — 실제 배선(pool/client/lock)은
- * `src/adapters/migratePg.ts`에 있다(`src/cli/migrate.ts`, npm 배포 bin
- * `retail-mcp-migrate`, SR2-REL-001과 공유 — 같은 lock key가 두 파일에 따로 하드코딩돼
- * 있으면 한쪽만 고치고 다른 쪽을 잊는 사고가 난다).
+ * Concurrency safety: the whole run is wrapped in an advisory lock (pg_advisory_lock) (even if
+ * two processes start at the same time, only one actually applies the DDL) — the actual wiring
+ * (pool/client/lock) lives in `src/adapters/migratePg.ts` (shared with `src/cli/migrate.ts`,
+ * the npm-published bin `retail-mcp-migrate`, SR2-REL-001 — if the same lock key were
+ * hard-coded separately in two files, someone would fix one and forget the other).
  *
- * 프로덕션 DATABASE_URL 대상 실행은 사람만 한다 (CLAUDE.md 가드레일 5).
+ * Runs against a production DATABASE_URL are done by humans only (CLAUDE.md guardrail 5).
  *
- * 러너 핵심 로직(loadMigrations/runMigrations/executor)은 `src/adapters/migrationRunner.ts`에
- * 있다(T14 — 프로덕션 코드도 필요해지며 옮겼다). 이 파일은 그걸 가져다 쓰는 CLI 껍데기다.
+ * The runner core logic (loadMigrations/runMigrations/executor) lives in
+ * `src/adapters/migrationRunner.ts` (T14 — moved when production code needed it too). This file
+ * is the CLI shell that consumes it.
  */
 import { fileURLToPath } from "node:url";
 import { applyMigrationsToDatabaseUrl } from "../src/adapters/migratePg.js";
@@ -43,14 +44,14 @@ async function main(): Promise<void> {
   const databaseUrl = process.env["DATABASE_URL"];
   if (!databaseUrl) {
     throw new Error(
-      "DATABASE_URL이 없습니다. Neon/Supabase에서 발급한 Postgres 연결 문자열을 .env에 추가하세요.",
+      "DATABASE_URL is not set. Add the Postgres connection string issued by Neon/Supabase to .env.",
     );
   }
 
   const result = await applyMigrationsToDatabaseUrl(databaseUrl);
   console.log(
-    `마이그레이션 완료 — 적용 ${result.applied.length}건 (${result.applied.join(", ") || "없음"}), ` +
-      `건너뜀 ${result.skipped.length}건`,
+    `Migrations complete — applied ${result.applied.length} (${result.applied.join(", ") || "none"}), ` +
+      `skipped ${result.skipped.length}`,
   );
 }
 

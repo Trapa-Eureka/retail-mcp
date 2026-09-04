@@ -6,12 +6,12 @@ coverage/
 *.log
 *.tgz
 .DS_Store
-# npm sbom 로컬 실행 산출물(QA-006, TASKS T35) — CI는 아티팩트로 업로드하지 커밋하지 않는다.
+# Output of a local npm sbom run (QA-006, TASKS T35) — CI uploads it as an artifact, never commits it.
 sbom.json
-# 임베디드 PGlite 데이터(DATABASE_URL 미설정 시 기본 경로, T14) — 로컬 데이터, 커밋 금지.
+# Embedded PGlite data (default path when DATABASE_URL is unset, T14) — local data, never commit.
 .retail-mcp/
-# Claude Code 로컬 세션 아티팩트(예: 스케줄 락 파일) — 저장소 콘텐츠 아님, TASKS T36에서 발견해 추가.
+# Claude Code local session artifacts (e.g. schedule lock files) — not repository content; found and added in TASKS T36.
 .claude/
-# 설정 화면 캡처(npm 토큰 발급, GitHub secret/environment 등) — 사람이 참고용으로 docs/에 두는 파일,
-# 계정 화면이라 공개 저장소에 커밋하지 않는다(T37, 2026-09-04).
+# Settings-screen captures (npm token issuance, GitHub secret/environment etc.) — files a human keeps in docs/ for reference;
+# they show account screens, so they are not committed to the public repository (T37, 2026-09-04).
 docs/*.png

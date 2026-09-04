@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
- * MCP 서버 진입점 (DESIGN.md §6, §9). 도구 6종을 등록하는 조립만 한다 — 로직은
- * `src/mcp/tools.ts`에 있다(CLAUDE.md "server.ts는 도구 등록·조립만, 로직 없음").
+ * MCP server entry point (DESIGN.md §6, §9). Only assembles and registers the 6 tools — the
+ * logic lives in `src/mcp/tools.ts` (CLAUDE.md: "server.ts only registers/assembles tools, no
+ * logic").
  *
- * npm 패키지 `bin`(TASKS T29, DESIGN §12.1) — `package.json.bin.retail-mcp`가 빌드된
- * `dist/server.js`를 가리킨다. shebang은 tsc가 소스 첫 줄 그대로 산출물에 보존한다.
+ * npm package `bin` (TASKS T29, DESIGN §12.1) — `package.json.bin.retail-mcp` points at the
+ * built `dist/server.js`. tsc preserves the shebang from the first source line in the output.
  *
- * 조회 도구 5종(sell_through/inventory_status/stockout_risk/reorder_suggestions/sync_status)은
- * 항상 등록한다. `sync_now`(쓰기)는 `SYNC_TOOL_ENABLED=true`일 때만 등록한다 — 운영 기본값은
- * 비활성이다(DESIGN §11.4). 동시 `sync_now` 호출은 advisory lock으로 하나만 통과시키고
- * 나머지는 즉시 "실행 중" 에러를 받는다(TESTING §7).
+ * The 5 query tools (sell_through/inventory_status/stockout_risk/reorder_suggestions/sync_status)
+ * are always registered. `sync_now` (write) is registered only when `SYNC_TOOL_ENABLED=true` —
+ * the production default is disabled (DESIGN §11.4). Concurrent `sync_now` calls are serialized
+ * by an advisory lock: only one passes and the rest immediately receive an "already running"
+ * error (TESTING §7).
  */
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -47,16 +49,16 @@ import {
   type QueryToolDeps,
 } from "./mcp/tools.js";
 
-/** sync_now 전용 advisory lock 키 — scripts/migrate.ts의 MIGRATION_LOCK_KEY와 겹치지 않는 임의값. */
+/** Advisory lock key dedicated to sync_now — arbitrary value that does not collide with MIGRATION_LOCK_KEY in scripts/migrate.ts. */
 const SYNC_NOW_LOCK_KEY = 727_100_205;
 
-// ── 환경설정 파싱 (IO 없음 — 테스트 가능) ────────────────────────────────
+// ── Config parsing (no IO — testable) ────────────────────────────────────
 
 export interface ServerConfig {
   businessTimezone: string;
   staleThresholdHours: number;
   syncToolEnabled: boolean;
-  /** 운영 기본값 비활성(가드레일 4 예외, TASKS T27) — 임의 SELECT 조회 도구를 등록할지. */
+  /** Disabled by default in production (guardrail 4 exception, TASKS T27) — whether to register the arbitrary SELECT query tool. */
   exploreSqlEnabled: boolean;
 }
 
@@ -69,25 +71,25 @@ function parsePositiveNumber(
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(
-      `${envVarName} 값이 올바르지 않습니다: "${raw}". 0보다 큰 숫자를 지정하거나 .env에서 지우세요.`,
+      `${envVarName} has an invalid value: "${raw}". Set a number greater than 0 or remove it from .env.`,
     );
   }
   return n;
 }
 
 /**
- * env에서 서버 설정을 읽고 검증한다. IO 없음 — process.env만 읽는다.
+ * Reads and validates the server config from env. No IO — reads process.env only.
  *
- * `DATABASE_URL`은 더 이상 여기서 필수로 검증하지 않는다(T14) — 없으면 웨어하우스가
- * 임베디드 PGlite로 기본 동작한다(`createWarehouseFromEnv`, SPEC §12). 다만 `sync_now`는
- * advisory lock(pg 전용, DESIGN §11.4)이 필요해 `SYNC_TOOL_ENABLED=true`일 때만 예외적으로
- * `DATABASE_URL`을 요구한다.
+ * `DATABASE_URL` is no longer required here (T14) — without it the warehouse defaults to
+ * embedded PGlite (`createWarehouseFromEnv`, SPEC §12). `sync_now`, however, needs an advisory
+ * lock (pg only, DESIGN §11.4), so `DATABASE_URL` is required as an exception only when
+ * `SYNC_TOOL_ENABLED=true`.
  */
 export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const businessTimezone = env["BUSINESS_TIMEZONE"];
   if (!businessTimezone) {
     throw new Error(
-      "BUSINESS_TIMEZONE이 없습니다. 예: Asia/Manila. .env의 BUSINESS_TIMEZONE에 추가하세요.",
+      "BUSINESS_TIMEZONE is not set. Example: Asia/Manila. Add BUSINESS_TIMEZONE to .env.",
     );
   }
   const staleThresholdHours = parsePositiveNumber(
@@ -98,33 +100,34 @@ export function resolveServerConfig(env: NodeJS.ProcessEnv = process.env): Serve
   const syncToolEnabled = env["SYNC_TOOL_ENABLED"] === "true";
   if (syncToolEnabled && !env["DATABASE_URL"]) {
     throw new Error(
-      "SYNC_TOOL_ENABLED=true인데 DATABASE_URL이 없습니다. sync_now는 Loyverse 동기화용 " +
-        "advisory lock에 Postgres가 필요합니다 — Neon/Supabase 연결 문자열을 .env에 추가하거나 " +
-        "SYNC_TOOL_ENABLED를 꺼두세요(임베디드 PGlite 경로에서는 sync_now를 쓸 수 없습니다).",
+      "SYNC_TOOL_ENABLED=true but DATABASE_URL is not set. sync_now needs Postgres for the " +
+        "advisory lock that serializes Loyverse syncs — add a Neon/Supabase connection string to " +
+        ".env or turn SYNC_TOOL_ENABLED off (sync_now is not available on the embedded PGlite path).",
     );
   }
   const exploreSqlEnabled = env["EXPLORE_SQL_ENABLED"] === "true";
-  // SEC-001/002(005 검수, TASKS T30) — explore_sql의 진짜 안전장치는 위험 함수 실행 권한이
-  // 없는 전용 DB role인데, 임베디드 PGlite는 role 기반 권한 분리를 지원하지 않고
-  // statement_timeout도 집행하지 않는다(SPEC §17 기존 한계). DATABASE_URL이 없으면(=임베디드
-  // PGlite 경로, createWarehouseFromEnv와 같은 판정 기준) 두 안전장치가 전부 빠진 채로
-  // explore_sql이 켜지는 셈이라 기본적으로 거부한다 — 위험을 이해하고도 켜야 하는 운영자를
-  // 위해 EXPLORE_SQL_ALLOW_PGLITE=true로만 우회할 수 있다(SEND_MODE=live&&--confirm과 같은
-  // "명시적 위험 인지" 패턴, DESIGN §12.4).
+  // SEC-001/002 (review 005, TASKS T30) — the real safeguard for explore_sql is a dedicated DB
+  // role without permission to execute dangerous functions, but embedded PGlite supports neither
+  // role-based privilege separation nor statement_timeout enforcement (known limitation, SPEC
+  // §17). Without DATABASE_URL (= the embedded PGlite path, same criterion as
+  // createWarehouseFromEnv) explore_sql would be enabled with both safeguards missing, so it is
+  // refused by default — an operator who understands the risk and still needs it can bypass this
+  // only with EXPLORE_SQL_ALLOW_PGLITE=true (the same "explicit risk acknowledgement" pattern as
+  // SEND_MODE=live && --confirm, DESIGN §12.4).
   if (exploreSqlEnabled && !env["DATABASE_URL"] && env["EXPLORE_SQL_ALLOW_PGLITE"] !== "true") {
     throw new Error(
-      "EXPLORE_SQL_ENABLED=true인데 DATABASE_URL이 없습니다(임베디드 PGlite 경로) — PGlite는 " +
-        "역할 기반 권한 분리와 statement_timeout 집행을 지원하지 않아 explore_sql의 두 안전장치가 " +
-        "모두 빠집니다(docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md SEC-001/002). Neon/Supabase " +
-        "등 실 Postgres에 위험 함수 실행 권한이 없는 전용 role로 연결하는 걸 강력히 권장합니다 " +
-        "— 그래도 PGlite로 켜야 한다면 위험을 이해했다는 뜻으로 EXPLORE_SQL_ALLOW_PGLITE=true를 " +
-        "함께 설정하세요.",
+      "EXPLORE_SQL_ENABLED=true but DATABASE_URL is not set (embedded PGlite path) — PGlite " +
+        "supports neither role-based privilege separation nor statement_timeout enforcement, so " +
+        "both explore_sql safeguards are missing (docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md " +
+        "SEC-001/002). We strongly recommend connecting to a real Postgres (Neon/Supabase etc.) " +
+        "with a dedicated role that cannot execute dangerous functions — if you still need to " +
+        "enable it on PGlite, also set EXPLORE_SQL_ALLOW_PGLITE=true to acknowledge the risk.",
     );
   }
   return { businessTimezone, staleThresholdHours, syncToolEnabled, exploreSqlEnabled };
 }
 
-// ── 도구 결과 포장 ───────────────────────────────────────────────────────
+// ── Tool result wrapping ─────────────────────────────────────────────────
 
 function ok(payload: unknown): CallToolResult {
   return {
@@ -134,8 +137,9 @@ function ok(payload: unknown): CallToolResult {
 }
 
 function errorResult(err: unknown): CallToolResult {
-  // 시크릿·외부 응답 원문을 담지 않는다(DESIGN §11.4) — 어댑터들은 이미 원인만 담은 Error를
-  // 던지도록 만들어져 있으므로(loyverseClient/resendProvider 등) message만 그대로 노출한다.
+  // Never include secrets or raw external responses (DESIGN §11.4) — the adapters
+  // (loyverseClient/resendProvider etc.) already throw Errors carrying only the cause, so the
+  // message is exposed as-is.
   const message = err instanceof Error ? err.message : String(err);
   return { content: [{ type: "text", text: message }], isError: true };
 }
@@ -148,21 +152,21 @@ async function wrap(fn: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 
-// ── 도구 등록 (조립만) ───────────────────────────────────────────────────
+// ── Tool registration (assembly only) ────────────────────────────────────
 
 export interface RegisterToolsDeps {
   warehouse: Warehouse;
   clock: Clock;
   config: ServerConfig;
-  /** sync_now에서만 쓴다. SYNC_TOOL_ENABLED=false면 아예 참조하지 않는다. */
+  /** Used by sync_now only. Never referenced when SYNC_TOOL_ENABLED=false. */
   loyverseClient?: LoyverseClient;
-  /** sync_now의 advisory lock 실행기. SYNC_TOOL_ENABLED=false면 아예 참조하지 않는다. */
+  /** Advisory-lock runner for sync_now. Never referenced when SYNC_TOOL_ENABLED=false. */
   runExclusively?: <T>(fn: () => Promise<T>) => Promise<T>;
-  /** explore_sql에서만 쓴다. EXPLORE_SQL_ENABLED=false면 아예 참조하지 않는다(TASKS T27). */
+  /** Used by explore_sql only. Never referenced when EXPLORE_SQL_ENABLED=false (TASKS T27). */
   exploreSqlExecutor?: ExploreSqlExecutor;
 }
 
-/** 실제로 등록한 도구 이름 목록을 반환한다 — SYNC_TOOL_ENABLED 분기를 테스트로 확인하기 위함. */
+/** Returns the list of tool names actually registered — so tests can verify the SYNC_TOOL_ENABLED branch. */
 export function registerTools(server: McpServer, deps: RegisterToolsDeps): string[] {
   const registered: string[] = [];
   const queryDeps: QueryToolDeps = {
@@ -175,9 +179,9 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   server.registerTool(
     "sell_through",
     {
-      title: "셀스루(근사) 조회",
+      title: "Sell-through (approximate)",
       description:
-        "기간 판매수량 대비 기말재고로 근사 셀스루율을 계산한다(SPEC §2). 정통 정의(입고 기반)는 v0.2.",
+        "Computes the approximate sell-through rate from period sales quantity versus ending stock (SPEC §2). The canonical definition (receipt-based) comes in v0.2.",
       inputSchema: {
         store_id: z.string().optional(),
         category: z.string().optional(),
@@ -202,8 +206,8 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   server.registerTool(
     "inventory_status",
     {
-      title: "현재고 + 커버일수 조회",
-      description: "현재고와 재고커버일수(SPEC §2)를 매장·품목별로 반환한다.",
+      title: "Current stock + days of cover",
+      description: "Returns current stock and days of cover (SPEC §2) per store and item.",
       inputSchema: {
         store_id: z.string().optional(),
         below_days_cover: z.number().positive().optional(),
@@ -222,8 +226,9 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   server.registerTool(
     "stockout_risk",
     {
-      title: "품절위험 조회",
-      description: "재고커버일수 < 리드타임+안전일수인 품목과 예상 소진일을 반환한다(SPEC §2).",
+      title: "Stockout risk",
+      description:
+        "Returns items whose days of cover < lead time + safety days, with the expected stockout date (SPEC §2).",
       inputSchema: {
         store_id: z.string().optional(),
         lead_time_days: z.number().int().nonnegative().default(DEFAULT_LEAD_TIME_DAYS),
@@ -244,10 +249,10 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   server.registerTool(
     "reorder_suggestions",
     {
-      title: "재주문 제안 조회",
+      title: "Reorder suggestions",
       description:
-        "지점별 재주문 제안 수량 표를 반환한다 — 재주문 에이전트(npm run agent:reorder)와 완전히 " +
-        "동일한 계산 함수를 쓴다(DESIGN §6).",
+        "Returns the per-branch reorder suggestion table — uses exactly the same calculation " +
+        "function as the reorder agent (npm run agent:reorder) (DESIGN §6).",
       inputSchema: {
         store_id: z.string().optional(),
         target_days_cover: z.number().int().positive().default(DEFAULT_TARGET_COVER_DAYS),
@@ -268,8 +273,8 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   server.registerTool(
     "sync_status",
     {
-      title: "동기화 상태 조회",
-      description: "리소스별 watermark(cursor)와 마지막 동기화 시각을 반환한다.",
+      title: "Sync status",
+      description: "Returns the watermark (cursor) and last sync time per resource.",
       inputSchema: {},
     },
     () => wrap(() => syncStatusTool({ warehouse: deps.warehouse, clock: deps.clock })),
@@ -279,8 +284,8 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   if (deps.config.syncToolEnabled) {
     if (!deps.loyverseClient || !deps.runExclusively) {
       throw new Error(
-        "SYNC_TOOL_ENABLED=true인데 loyverseClient/runExclusively가 조립되지 않았습니다 " +
-          "(server.ts 조립 버그 — createRetailMcpServer() 호출부를 확인하세요).",
+        "SYNC_TOOL_ENABLED=true but loyverseClient/runExclusively were not assembled " +
+          "(server.ts assembly bug — check the createRetailMcpServer() call site).",
       );
     }
     const loyverseClient = deps.loyverseClient;
@@ -288,10 +293,10 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
     server.registerTool(
       "sync_now",
       {
-        title: "즉시 동기화 실행 (쓰기)",
+        title: "Run sync now (write)",
         description:
-          "Loyverse에서 즉시 증분 동기화한다. 운영 기본값은 비활성 — SYNC_TOOL_ENABLED=true일 " +
-          "때만 등록된다(DESIGN §11.4). 동시 호출은 하나만 실행되고 나머지는 즉시 오류를 받는다.",
+          "Runs an incremental sync from Loyverse immediately. Disabled by default in production — " +
+          "registered only when SYNC_TOOL_ENABLED=true (DESIGN §11.4). Of concurrent calls only one runs; the rest receive an error immediately.",
         inputSchema: {
           resources: z.array(z.enum(["stores", "items", "receipts", "inventory"])).optional(),
         },
@@ -310,21 +315,22 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   if (deps.config.exploreSqlEnabled) {
     if (!deps.exploreSqlExecutor) {
       throw new Error(
-        "EXPLORE_SQL_ENABLED=true인데 exploreSqlExecutor가 조립되지 않았습니다 " +
-          "(server.ts 조립 버그 — createRetailMcpServer() 호출부를 확인하세요).",
+        "EXPLORE_SQL_ENABLED=true but exploreSqlExecutor was not assembled " +
+          "(server.ts assembly bug — check the createRetailMcpServer() call site).",
       );
     }
     const exploreSqlExecutor = deps.exploreSqlExecutor;
     server.registerTool(
       "explore_sql",
       {
-        title: "임의 SELECT 조회 (읽기 전용)",
+        title: "Arbitrary SELECT query (read-only)",
         description:
-          "select/with(CTE)로 시작하는 단일 조회문만 BEGIN READ ONLY 트랜잭션 안에서 실행한다 " +
-          "— 데이터를 바꾸는 어떤 시도도 Postgres 엔진 자체가 거부한다. 운영 기본값은 비활성 " +
-          "— EXPLORE_SQL_ENABLED=true일 때만 등록된다(가드레일 4 예외, DESIGN §6이 이름으로 " +
-          "미리 예고해둔 도구). 주요 테이블: stores, products, sales_lines, sales_period_agg, " +
-          "inventory_levels, purchase_receipts, sync_state, agent_send_log.",
+          "Runs a single query statement starting with select/with (CTE) inside a BEGIN READ ONLY " +
+          "transaction — any attempt to change data is rejected by the Postgres engine itself. " +
+          "Disabled by default in production — registered only when EXPLORE_SQL_ENABLED=true " +
+          "(guardrail 4 exception, the tool DESIGN §6 announced by name). Main tables: stores, " +
+          "products, sales_lines, sales_period_agg, inventory_levels, purchase_receipts, " +
+          "sync_state, agent_send_log.",
         inputSchema: {
           sql: z.string().min(1),
           limit: z.number().int().positive().max(EXPLORE_SQL_MAX_LIMIT).optional(),
@@ -349,7 +355,7 @@ export function registerTools(server: McpServer, deps: RegisterToolsDeps): strin
   return registered;
 }
 
-// ── CLI 진입점 (조립만) ───────────────────────────────────────────────────
+// ── CLI entry point (assembly only) ──────────────────────────────────────
 
 export async function createRetailMcpServer(): Promise<{
   server: McpServer;
@@ -357,9 +363,9 @@ export async function createRetailMcpServer(): Promise<{
 }> {
   const config = resolveServerConfig();
   const handle = await createWarehouseFromEnv();
-  // SR2-REL-001(2차 적대적 검수) — network Postgres(DATABASE_URL) 경로에서 스키마가 없거나
-  // 일부만 적용됐으면 raw Postgres 에러 대신 여기서 명확한 안내로 즉시 멈춘다. embedded
-  // PGlite 경로는 이미 자동 마이그레이션됐으므로 no-op.
+  // SR2-REL-001 (second adversarial review) — on the network Postgres (DATABASE_URL) path, if
+  // the schema is missing or only partially applied, stop right here with clear guidance instead
+  // of a raw Postgres error. The embedded PGlite path is already auto-migrated, so this is a no-op.
   await ensureNetworkMigrationsApplied(handle);
   const clock = createSystemClock();
 
@@ -367,12 +373,12 @@ export async function createRetailMcpServer(): Promise<{
 
   const registerDeps: RegisterToolsDeps = { warehouse: handle.warehouse, clock, config };
   if (config.syncToolEnabled) {
-    // resolveServerConfig가 SYNC_TOOL_ENABLED=true면 DATABASE_URL을 이미 요구했으므로
-    // handle.kind는 항상 "pg"이고 pgPool이 존재한다.
+    // resolveServerConfig already required DATABASE_URL when SYNC_TOOL_ENABLED=true, so
+    // handle.kind is always "pg" and pgPool exists.
     const pool = handle.pgPool;
     if (!pool) {
       throw new Error(
-        "SYNC_TOOL_ENABLED=true인데 pg.Pool이 없습니다(내부 불변조건 위반) — DATABASE_URL 설정을 확인하세요.",
+        "SYNC_TOOL_ENABLED=true but there is no pg.Pool (internal invariant violated) — check the DATABASE_URL setting.",
       );
     }
     registerDeps.loyverseClient = createLoyverseClientFromEnv();
@@ -387,13 +393,14 @@ export async function createRetailMcpServer(): Promise<{
   }
   if (config.exploreSqlEnabled) {
     registerDeps.exploreSqlExecutor = createExploreSqlExecutor(handle.connectionProvider);
-    // 시크릿·연결 정보는 로그에 남기지 않는다(CLAUDE.md 구현 해석 보충) — kind만 언급한다.
-    // stdout은 MCP JSON-RPC 프로토콜 전용이라 stderr로만 쓴다(console.warn 기본 동작).
+    // Never log secrets or connection details (CLAUDE.md implementation notes) — mention only
+    // the kind. stdout is reserved for the MCP JSON-RPC protocol, so write to stderr only
+    // (console.warn's default behaviour).
     console.warn(
-      `[retail-mcp] explore_sql이 활성화됐습니다(웨어하우스: ${handle.kind}). 위험 함수 실행 ` +
-        "권한이 없는 전용 DB role로 운영하는 걸 강력히 권장합니다 — BEGIN READ ONLY는 테이블/" +
-        "시퀀스 쓰기만 막고 advisory lock 같은 세션 부수효과까지 막지는 않습니다(SEC-001/002, " +
-        "docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md).",
+      `[retail-mcp] explore_sql is enabled (warehouse: ${handle.kind}). We strongly recommend ` +
+        "operating with a dedicated DB role that cannot execute dangerous functions — BEGIN READ " +
+        "ONLY only blocks table/sequence writes and does not block session side effects such as " +
+        "advisory locks (SEC-001/002, docs/005_SECURITY_AND_DEPENDENCY_REVIEW.md).",
     );
   }
   registerTools(server, registerDeps);

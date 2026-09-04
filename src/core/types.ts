@@ -1,25 +1,25 @@
 /**
- * 도메인 타입 + 핵심 인터페이스 (DESIGN.md §4).
- * `core/`는 인터페이스와 순수 계산만 정의한다 — 이 파일에서 외부 IO를 수행하지 않는다.
+ * Domain types + core interfaces (DESIGN.md §4).
+ * `core/` defines only interfaces and pure calculations — this file performs no external IO.
  */
 
 /**
- * Postgres `numeric` 컬럼의 경계값 표현. pg/PGlite 드라이버는 numeric을 문자열로 반환하며,
- * JS number로 암묵 변환하면 정밀도 손실이 생길 수 있다. 파싱은 core 계산 직전 경계에서
- * 명시적으로 수행한다(CLAUDE.md 구현 해석 보충).
+ * Boundary representation of a Postgres `numeric` column. The pg/PGlite drivers return numeric as a
+ * string, and an implicit conversion to a JS number can lose precision. Parsing is done explicitly
+ * at the boundary right before the core calculation (CLAUDE.md implementation notes).
  */
 export type Numeric = string;
 
-/** ISO 8601 문자열로 다루는 시각. Loyverse API 원시 응답 경계에서만 사용하고, 이후는 Date로 변환한다. */
+/** A point in time handled as an ISO 8601 string. Used only at the raw Loyverse API response boundary; converted to Date afterwards. */
 export type IsoDateTimeString = string;
 
-// ── 시계 ────────────────────────────────────────────────────────────────
+// ── Clock ────────────────────────────────────────────────────────────────
 
 export interface Clock {
   now(): Date;
 }
 
-// ── Loyverse API 원시 응답 형태 (LoyverseClient 경계) ─────────────────────
+// ── Raw Loyverse API response shapes (LoyverseClient boundary) ────────────
 
 export interface LvStore {
   id: string;
@@ -49,15 +49,15 @@ export interface LvReceiptLineItem {
 export interface LvReceipt {
   receipt_number: string;
   store_id: string;
-  /** "SALE" | "REFUND". 환불 라인의 quantity는 양수(환불한 수량) — 부호 반전은 ETL에서 한다. */
+  /** "SALE" | "REFUND". A refund line's quantity is positive (the refunded qty) — the sign flip happens in the ETL. */
   receipt_type: "SALE" | "REFUND";
-  /** REFUND 영수증에서만 원 판매 영수증 번호. SALE에서는 null. */
+  /** The original sale receipt number, only on REFUND receipts. null on SALE. */
   refund_for: string | null;
   created_at: IsoDateTimeString;
-  /** 증분 동기화 watermark의 기준(DESIGN §11.1). receipt_date가 아니라 이 필드로 필터링한다. */
+  /** Basis of the incremental-sync watermark (DESIGN §11.1). Filtering uses this field, not receipt_date. */
   updated_at: IsoDateTimeString;
   receipt_date: IsoDateTimeString;
-  /** 취소되지 않았으면 null. 취소된 영수증은 집계에서 제외한다(ETL 정책, SPEC §9). */
+  /** null unless cancelled. Cancelled receipts are excluded from aggregation (ETL policy, SPEC §9). */
   cancelled_at: IsoDateTimeString | null;
   line_items: LvReceiptLineItem[];
 }
@@ -72,36 +72,37 @@ export interface LvInventoryLevel {
 export interface Page<T> {
   items: T[];
   /**
-   * API 페이지네이션 토큰(pageCursor). 한 리소스의 모든 페이지를 처리하는 동안만
-   * 메모리에서 사용하고 DB(sync_state)에는 저장하지 않는다 — watermark와 다른 개념이다.
+   * API pagination token (pageCursor). Used in memory only while processing all pages of one
+   * resource and never stored in the DB (sync_state) — a different concept from the watermark.
    */
   cursor: string | null;
 }
 
 /**
- * Loyverse REST API 전용 경계 — 이름뿐 아니라 반환 타입(LvReceipt의 receipt_number/
- * cancelled_at/receipt_type 등)까지 Loyverse 고유 구조다. `etl/sync.ts`의 영수증 단위
- * 증분 동기화(watermark = 마지막 영수증 updated_at) 모델 전체가 이 계약을 전제한다.
+ * Boundary dedicated to the Loyverse REST API — not just the name but the return types
+ * (receipt_number/cancelled_at/receipt_type of LvReceipt, etc.) are Loyverse-specific structures.
+ * The whole receipt-level incremental sync model in `etl/sync.ts` (watermark = last receipt
+ * updated_at) presupposes this contract.
  *
- * CSV/Excel 채널(TASKS T12 이후)은 이 인터페이스를 구현하지 않는다 — CSV 파일에는 영수증이
- * 없고 "기간 합계 판매수량" 하나만 있어 이 계약에 억지로 맞지 않는다. 대신 CSV 경로
- * (`folderScan.ts`, TASKS T18)는 `Warehouse`에 직접 쓴다(SalesPeriodAggRow 등 도메인
- * 행 타입으로). `LoyverseClient`를 소스 중립적 이름으로 일반화하지 않은 것은 의도적이다 —
- * Loyverse 고유 구조를 정직하게 반영하는 이름이 오히려 명확하다.
+ * The CSV/Excel channel (TASKS T12 onwards) does not implement this interface — CSV files have no
+ * receipts, only a single "period total sold qty", which does not fit this contract. Instead the
+ * CSV path (`folderScan.ts`, TASKS T18) writes to the `Warehouse` directly (with domain row types
+ * such as SalesPeriodAggRow). Not generalising `LoyverseClient` into a source-neutral name is
+ * deliberate — a name that honestly reflects the Loyverse-specific structure is clearer.
  */
 export interface LoyverseClient {
   listStores(): Promise<LvStore[]>;
   listItems(cursor?: string): Promise<Page<LvItem>>;
   /**
-   * sinceISO는 실제 API의 `updated_at_min` 질의 파라미터에 대응한다 — `receipt_date`가
-   * 아니라 `updated_at` 기준으로 필터링한다. 과거 영수증이 나중에 환불·취소되어 갱신돼도
-   * 다음 증분 동기화가 이를 놓치지 않는다(DESIGN §11.1).
+   * sinceISO corresponds to the real API's `updated_at_min` query parameter — filtering is by
+   * `updated_at`, not `receipt_date`. When an old receipt is later refunded or cancelled and thus
+   * updated, the next incremental sync does not miss it (DESIGN §11.1).
    */
   listReceipts(sinceISO: string, cursor?: string): Promise<Page<LvReceipt>>;
   listInventory(cursor?: string): Promise<Page<LvInventoryLevel>>;
 }
 
-// ── 웨어하우스 도메인 행 (migrations/001_init.sql과 대응) ──────────────────
+// ── Warehouse domain rows (correspond to migrations/001_init.sql) ──────────
 
 export interface StoreRow {
   id: string;
@@ -115,31 +116,34 @@ export interface ProductRow {
   sku: string | null;
   category: string | null;
   /**
-   * 품목별 저재고 임계치 override(SPEC §12, TASKS T16) — CSV/Excel 채널 전용, Loyverse
-   * 경로는 항상 undefined다. 실제로 읽어 임계치 판정에 쓰는 것은 T17의 몫이다.
+   * Per-item low-stock threshold override (SPEC §12, TASKS T16) — CSV/Excel channel only; the
+   * Loyverse path always leaves it undefined. Actually reading it for the threshold judgement is
+   * T17's job.
    *
-   * **세 값의 의미가 서로 다르다(006 DATA-005, TASKS T33)** — upsert가 어떻게 반영할지가
-   * 값마다 다르므로 셋을 섞어 쓰지 않는다:
-   * - `undefined` = "이 upsert는 이 필드에 대해 아무 정보가 없다"(CSV/Excel이면 파일에 이
-   *   컬럼 자체가 없음, 구버전 템플릿과의 하위 호환) → 기존 DB 값을 그대로 둔다.
-   * - `null` = "명시적으로 지운다"(CSV/Excel이면 컬럼은 있지만 이 행의 셀이 비어 있음) →
-   *   기존 값이 있어도 null로 덮어쓴다.
-   * - 값 = 이 값으로 설정.
+   * **The three values mean different things (006 DATA-005, TASKS T33)** — the upsert applies each
+   * differently, so they must not be mixed up:
+   * - `undefined` = "this upsert carries no information about this field" (for CSV/Excel: the file
+   *   has no such column at all, backward compatibility with older templates) → keep the existing
+   *   DB value.
+   * - `null` = "explicitly clear it" (for CSV/Excel: the column exists but this row's cell is
+   *   empty) → overwrite with null even if a value exists.
+   * - a value = set to this value.
    *
-   * `pgWarehouse.ts`의 `upsertProductsOn`이 이 구분을 실제로 반영한다 — 배치(한 파일) 전체에
-   * 걸쳐 "어느 한 행이라도 undefined가 아니면" 그 필드는 이번 upsert가 소유권을 가진 것으로
-   * 보고 컬럼 전체를 덮어쓴다(컬럼 존재 여부는 파일 헤더 단위 속성이라 한 파일 안에서
-   * 행마다 갈리지 않는다 — 갈린다면 전부 undefined이거나 전부 아니거나 둘 중 하나).
+   * `upsertProductsOn` in `pgWarehouse.ts` actually implements this distinction — across the whole
+   * batch (one file), "if any row is not undefined" the field is considered owned by this upsert and
+   * the entire column is overwritten (column presence is a per-file-header property, so it does not
+   * vary row by row within one file — it is either all undefined or all not).
    */
   lowStockThreshold?: Numeric | null;
   /**
-   * 공급자가 출고하는 최소 팩/박스 단위(SPEC §14, "팩 단위 반올림"). 없으면 낱개 매입이
-   * 가능하다는 뜻 — 재주문 제안량을 반올림하지 않는다. lowStockThreshold와 달리 CSV/Excel
-   * 채널 전용이 아니다(소스 중립적) — 어느 채널이 채우든 상관없다. 실제로 이 값을 채워
-   * 반올림에 쓰는 것은 core/metrics.ts의 roundToPackMultiple/applyPackRounding 몫이다.
+   * The minimum pack/box unit the supplier ships (SPEC §14, "pack-multiple rounding"). Absent means
+   * single units can be purchased — the reorder suggestion is not rounded. Unlike
+   * lowStockThreshold it is not CSV/Excel-only (source-neutral) — any channel may fill it. Actually
+   * filling and using it for rounding is the job of roundToPackMultiple/applyPackRounding in
+   * core/metrics.ts.
    *
-   * `undefined`/`null`/값 세 상태의 의미는 `lowStockThreshold`와 동일하다(006 DATA-005,
-   * TASKS T33) — 위 문서 참고.
+   * The meaning of the three states `undefined`/`null`/value is the same as for
+   * `lowStockThreshold` (006 DATA-005, TASKS T33) — see the doc above.
    */
   packSize?: Numeric | null;
 }
@@ -149,7 +153,7 @@ export interface SalesLineRow {
   lineNo: number;
   storeId: string;
   variantId: string;
-  /** 환불은 음수. 원시 순판매량 — max(0, ·) 정규화는 core/metrics.ts에서 계산 직전에 적용한다. */
+  /** Refunds are negative. Raw net sold qty — the max(0, ·) normalisation is applied in core/metrics.ts right before calculation. */
   qty: Numeric;
   gross: Numeric;
   discount: Numeric;
@@ -159,36 +163,38 @@ export interface SalesLineRow {
 export interface InventoryRow {
   storeId: string;
   variantId: string;
-  /** 원시 현재고. 음수는 데이터 품질 경고 대상 — 계산 시 0으로 clamp(SPEC §9), 저장은 원시값. */
+  /** Raw current stock. Negative values are a data-quality warning — clamped to 0 in calculations (SPEC §9), stored raw. */
   inStock: Numeric;
   updatedAt: Date;
 }
 
 /**
- * CSV/Excel 채널의 기간합계 판매 데이터(SPEC §12, TASKS T12). Loyverse의 SalesLineRow(영수증
- * 라인 단위)와 달리 "이 기간 동안 총 N개 팔렸다"는 집계값 하나뿐이다 — CSV 파일에는 영수증이
- * 없다. sales_lines에 가짜 영수증으로 끼워 넣지 않고 별도로 저장한다.
+ * Period-total sales data of the CSV/Excel channel (SPEC §12, TASKS T12). Unlike Loyverse's
+ * SalesLineRow (receipt-line level) there is only one aggregate value, "N units sold during this
+ * period" — CSV files have no receipts. Stored separately rather than squeezed into sales_lines as
+ * fake receipts.
  */
 export interface SalesPeriodAggRow {
   storeId: string;
   variantId: string;
-  /** 이 판매수량이 어느 기간의 합인지 — 반개방 구간이 아니라 CSV가 준 값 그대로(포함 경계). */
+  /** Which period this sold qty sums over — the CSV's values as given (inclusive boundaries), not a half-open interval. */
   periodStart: Date;
   periodEnd: Date;
-  /** 기간 내 판매수량 합계. CSV는 환불을 별도 표현하지 않으므로 음수 불가. */
+  /** Sum of sold qty within the period. CSV does not represent refunds separately, so it cannot be negative. */
   soldQty: Numeric;
 }
 
 /**
- * SCM 시트 연동(SPEC §13)의 입고 실적 한 건. "발주"(미입고) 상태는 다루지 않는다 — 이미
- * 입고된 것만 기록한다. 같은 (storeId, variantId, receivedAt)에 여러 건이 있으면 마지막
- * 값으로 덮어써진다(합산 아님 — v0.1 한계, 원본 시트에 이벤트 순번이 없다).
+ * One receipt (inbound) record from the SCM sheet integration (SPEC §13). "Ordered" (not yet
+ * received) status is not handled — only what has already been received is recorded. Multiple
+ * records with the same (storeId, variantId, receivedAt) are overwritten by the last value (not
+ * summed — a v0.1 limitation; the source sheet has no event sequence number).
  */
 export interface PurchaseReceiptRow {
   storeId: string;
   variantId: string;
   receivedAt: Date;
-  /** 입고 수량. 음수 불가(반품입고는 v0.1 스코프 밖). */
+  /** Received qty. Cannot be negative (return-inbound is out of v0.1 scope). */
   receivedQty: Numeric;
   unitCost?: Numeric | null;
   currency?: string | null;
@@ -196,21 +202,21 @@ export interface PurchaseReceiptRow {
 }
 
 /**
- * 기간 내 입고수량 합계 — querySalesAgg/querySalesPeriodAgg가 반환하는 SalesAgg와 같은
- * 모양으로 맞춰, core/metrics.ts의 재고 정합성 계산이 판매·입고 두 집계를 대칭적으로
- * 다룰 수 있게 한다(SPEC §13).
+ * Sum of received qty within a period — shaped like the SalesAgg returned by
+ * querySalesAgg/querySalesPeriodAgg so that the stock reconciliation in core/metrics.ts can treat
+ * the sales and receipt aggregates symmetrically (SPEC §13).
  */
 export interface PurchaseAgg {
   storeId: string;
   variantId: string;
-  /** 기간 내 입고수량 합계(원시값, 음수 없음). */
+  /** Sum of received qty within the period (raw value, never negative). */
   receivedQtyRaw: Numeric;
 }
 
 export interface SalesAggQuery {
   storeId?: string;
   category?: string;
-  /** 반개방 구간 [periodStart, periodEnd) — 사업장 타임존 기준으로 계산된 UTC 경계값. */
+  /** Half-open interval [periodStart, periodEnd) — UTC boundaries computed in the business timezone. */
   periodStart: Date;
   periodEnd: Date;
 }
@@ -220,7 +226,7 @@ export interface SalesAgg {
   variantId: string;
   name: string;
   category: string | null;
-  /** 기간 내 원시 순판매량 합계(환불 포함, 음수 가능). */
+  /** Sum of raw net sold qty within the period (refunds included, may be negative). */
   soldQtyRaw: Numeric;
 }
 
@@ -228,10 +234,10 @@ export interface StockQuery {
   storeId?: string;
   variantIds?: string[];
   /**
-   * 카테고리 필터(T9 추가). sell_through 도구가 category로 필터링할 때, 판매 없이 재고만
-   * 있는 다른 카테고리 품목이 category=null로 결과에 새는 것을 막으려면 queryStock 자체가
-   * 카테고리로 걸러야 한다 — computeSellThrough가 만드는 결합 결과의 category는 salesAgg
-   * 쪽 값만 신뢰할 수 있고 재고 전용 행에는 카테고리가 없기 때문이다.
+   * Category filter (added in T9). When the sell_through tool filters by category, queryStock
+   * itself must filter by category to stop stock-only items of other categories leaking into the
+   * result with category=null — in the joined result built by computeSellThrough only the salesAgg
+   * side's category is trustworthy, and stock-only rows have no category.
    */
   category?: string;
 }
@@ -240,48 +246,53 @@ export interface StockRow {
   storeId: string;
   variantId: string;
   name: string;
-  /** 원시 현재고. 음수 가능 — 데이터 품질 경고 대상(SPEC §9). */
+  /** Raw current stock. May be negative — a data-quality warning (SPEC §9). */
   inStockRaw: Numeric;
   updatedAt: Date;
 }
 
-// ── 에이전트 발송 로그 (DESIGN §11.5) ──────────────────────────────────────
+// ── Agent send log (DESIGN §11.5) ──────────────────────────────────────────
 
 /**
- * `unchanged`(TASKS T31, DATA-003) — CSV/Excel 지점 스캔에서 파일 content hash가 마지막
- * 발송 시점과 같고 하루 다이제스트 상한(24시간)에도 안 걸리면 이 상태로 종료한다(발송·
- * 요약·스냅샷 재작성 없이 조용히). Loyverse 경로(agent/reorder.ts)는 이 상태를 쓰지 않는다.
+ * `unchanged` (TASKS T31, DATA-003) — in a CSV/Excel branch scan, when the file content hash equals
+ * the one at the last send and the daily digest cap (24 hours) is not hit either, the run ends in
+ * this status (quietly, without sending, summarising or rewriting the snapshot). The Loyverse path
+ * (agent/reorder.ts) does not use this status.
  */
 /**
- * `unknown`(007 OPS-004, TASKS T34) — 발송 요청이 HTTP 응답을 받기 전에 실패해(타임아웃,
- * 연결 후 소켓 끊김 등) "이미 발송됐을 수도, 안 됐을 수도" 있는 경우 전용 — `failed`(확실히
- * 실패: HTTP 오류 응답, 또는 DNS 실패/연결 거부처럼 연결이 성립조차 안 된 경우)와 구분한다
- * (SR2-MAIL-002, 2차 적대적 검수 — 예전엔 타임아웃만 unknown이었다). `NotificationProvider`가
- * 이 애매함을 감지하면 `AmbiguousSendError`(`.name`)를 던지고, 에이전트가 그걸 보고
- * `status: "unknown"`으로 기록한다. 사람이 발송처 대시보드로 실제 발송 여부를 확인한 뒤
- * 재시도 여부를 판단해야 한다 — 자동 재시도 로직은 이 프로젝트에 없다(그 자체가 정책).
+ * `unknown` (007 OPS-004, TASKS T34) — reserved for the case where the send request failed before an
+ * HTTP response arrived (timeout, socket dropped after connecting, etc.), so it "may or may not have
+ * been sent" — distinct from `failed` (definitely failed: an HTTP error response, or the connection
+ * never even being established, e.g. DNS failure / connection refused) (SR2-MAIL-002, second
+ * adversarial review — previously only timeouts were unknown). When the `NotificationProvider`
+ * detects this ambiguity it throws an `AmbiguousSendError` (`.name`), and the agent records
+ * `status: "unknown"` on seeing it. A human must check the provider dashboard for whether it was
+ * actually sent before deciding on a retry — this project has no automatic retry logic (that is
+ * itself the policy).
  *
- * 사람이 같은 run_id로 재시도할 때의 규칙(2차 적대적 검수 SR2-MAIL-003, `core/sendRetryPolicy.ts`):
- * provider의 Idempotency-Key 중복 방지 보존 기간(`NotificationProvider.dedupeTtlMs`) **안**에서만
- * 같은 run_id 재시도를 허용한다 — 보존 기간이 지나면 같은 키라도 provider가 새 발송으로 취급해
- * 중복 발송되므로 에이전트가 거부하고, 사람이 대시보드 확인 후 **새 run_id**로 실행해야 한다.
- * `sending`에 멈춘 행(예약 뒤 프로세스 크래시)은 `unknown`과 같은 취급이다 — 그 재시도가
- * 보존 기간 안이면 `unknown`(error_code `stale_sending`)으로 마감한 뒤 새 예약을 허용한다.
+ * Rule for a human retrying with the same run_id (second adversarial review SR2-MAIL-003,
+ * `core/sendRetryPolicy.ts`): a same-run_id retry is allowed **only within** the provider's
+ * Idempotency-Key dedupe retention period (`NotificationProvider.dedupeTtlMs`) — after it, the
+ * provider treats the same key as a new send and would duplicate, so the agent refuses and the
+ * human must run with a **new run_id** after checking the dashboard. A row stuck in `sending`
+ * (process crash after the reservation) is treated like `unknown` — if the retry is within the
+ * retention period it is closed as `unknown` (error_code `stale_sending`) and a new reservation is
+ * allowed.
  */
 export type AgentSendStatus =
   "no_suggestions" | "dry_run" | "sending" | "sent" | "failed" | "unchanged" | "unknown";
 
 export interface AgentSendEntry {
   /**
-   * 멱등 키이자 예약(reservation) 키. `sending`/`sent`는 run_id당 최대 1건만 허용된다
-   * (agent_send_log_run_id_active_idx). T8은 provider.send() 호출 **전에** 반드시
-   * status='sending'으로 이 행을 먼저 커밋해 발송권을 예약해야 한다 — insert가 unique
-   * violation으로 실패하면 이미 발송 중/완료된 것이므로 재발송하지 않는다(DESIGN §11.5).
+   * Idempotency key and reservation key. At most one `sending`/`sent` row is allowed per run_id
+   * (agent_send_log_run_id_active_idx). T8 must commit this row with status='sending' **before**
+   * calling provider.send() to reserve the right to send — if the insert fails with a unique
+   * violation, the send is already in progress/completed, so do not send again (DESIGN §11.5).
    */
   runId: string;
   sentAt: Date;
   status: AgentSendStatus;
-  /** 미발송 상태(no_suggestions 등)에서는 null. */
+  /** null in non-send statuses (no_suggestions, etc.). */
   recipient: string | null;
   subject: string | null;
   suggestionCount: number;
@@ -290,85 +301,89 @@ export interface AgentSendEntry {
   errorCode: string | null;
 }
 
-// ── 동기화 상태 (T9 sync_status 도구용) ──────────────────────────────────
+// ── Sync state (for the T9 sync_status tool) ──────────────────────────────
 
 export interface SyncStateRow {
   resource: string;
-  /** sync_state.cursor(=watermark). receipts는 마지막 영수증 updated_at — 실제 동기화 실행
-   * 시각과 다를 수 있다(DESIGN §11.1). stores/items/inventory는 lastSyncedAt과 같은 값이다. */
+  /** sync_state.cursor (= watermark). For receipts it is the last receipt's updated_at — which may
+   * differ from the actual sync run time (DESIGN §11.1). For stores/items/inventory it equals lastSyncedAt. */
   cursor: string | null;
   lastSyncedAt: Date | null;
 }
 
-// ── 웨어하우스 인터페이스 ───────────────────────────────────────────────
+// ── Warehouse interface ───────────────────────────────────────────────────
 
 export interface Warehouse {
   /**
-   * 한 리소스의 data upsert와 watermark(setCursor) 갱신을 하나의 트랜잭션으로 커밋한다
-   * (DESIGN §11.1). `fn` 내부에서 사용하는 `tx`는 같은 트랜잭션에 묶인 Warehouse이며,
-   * `fn`이 예외를 던지면 그 안에서 호출한 모든 쓰기가 롤백된다 — 데이터는 적재됐는데
-   * watermark만 안 남거나 그 반대인 상태가 구조적으로 나오지 않는다. 구현체(T4)는
-   * 실제 BEGIN/COMMIT/ROLLBACK을 제공해야 한다.
+   * Commits one resource's data upsert and watermark (setCursor) update in a single transaction
+   * (DESIGN §11.1). The `tx` used inside `fn` is a Warehouse bound to the same transaction; if `fn`
+   * throws, every write made through it is rolled back — a state where data was loaded but the
+   * watermark was not (or vice versa) is structurally impossible. The implementation (T4) must
+   * provide real BEGIN/COMMIT/ROLLBACK.
    */
   transaction<T>(fn: (tx: Warehouse) => Promise<T>): Promise<T>;
 
   upsertStores(rows: StoreRow[]): Promise<void>;
   upsertProducts(rows: ProductRow[]): Promise<void>;
-  /** PK(receipt_id, line_no) 충돌 시 갱신 — 멱등. */
+  /** Updates on PK(receipt_id, line_no) conflict — idempotent. */
   upsertSalesLines(rows: SalesLineRow[]): Promise<void>;
   upsertInventory(rows: InventoryRow[]): Promise<void>;
   appendInventorySnapshot(runId: string, at: Date, rows: InventoryRow[]): Promise<void>;
   /**
-   * CSV/Excel 채널의 기간합계 판매 upsert(SPEC §12, TASKS T12) — PK(store_id, variant_id),
-   * 매 스캔마다 최신값으로 교체한다(inventory_levels와 같은 모델, 이력 누적 아님).
-   * sales_lines(영수증 라인 단위)와는 별도 테이블이다.
+   * Period-total sales upsert of the CSV/Excel channel (SPEC §12, TASKS T12) — PK(store_id,
+   * variant_id), replaced with the latest value on every scan (same model as inventory_levels, no
+   * history accumulation). A separate table from sales_lines (receipt-line level).
    */
   upsertSalesPeriodAgg(rows: SalesPeriodAggRow[]): Promise<void>;
   /**
-   * SCM 시트 연동의 입고 실적 upsert(SPEC §13). 같은 (storeId, variantId, receivedAt)는
-   * 마지막 값으로 갱신된다.
+   * Receipt (inbound) upsert of the SCM sheet integration (SPEC §13). The same (storeId, variantId,
+   * receivedAt) is updated to the last value.
    */
   upsertPurchaseReceipts(rows: PurchaseReceiptRow[]): Promise<void>;
   /**
-   * querySalesAgg와 대칭인 입고 집계 조회 — SalesAggQuery를 그대로 재사용한다(같은 반개방
-   * 기간·매장·카테고리 필터 개념).
+   * Receipt aggregate query symmetric to querySalesAgg — reuses SalesAggQuery as is (same notion of
+   * half-open period / store / category filters).
    */
   queryPurchaseAgg(q: SalesAggQuery): Promise<PurchaseAgg[]>;
-  /** sync_state.cursor(=watermark) 조회. API 페이지 토큰이 아니다. */
+  /** Reads sync_state.cursor (= watermark). Not the API page token. */
   getCursor(resource: string): Promise<string | null>;
   setCursor(resource: string, watermark: string, at: Date): Promise<void>;
-  /** 전 리소스의 cursor+last_synced_at 목록(T9 `sync_status` 도구용). resource 오름차순. */
+  /** cursor+last_synced_at of every resource (for the T9 `sync_status` tool). Ordered by resource ascending. */
   getSyncState(): Promise<SyncStateRow[]>;
-  /** 고정 파라미터라이즈드 SQL만 사용한다. */
+  /** Uses fixed parameterised SQL only. */
   querySalesAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
   /**
-   * sales_period_agg를 querySalesAgg와 같은 SalesAgg 반환 형태로 조회한다(TASKS T12) —
-   * core/metrics.ts의 computeSellThrough/computeReorderMetrics는 SalesAgg[]만 받으므로
-   * 소스가 sales_lines 집계든 CSV 기간합계든 core 계층 변경 없이 그대로 재사용된다.
+   * Queries sales_period_agg in the same SalesAgg return shape as querySalesAgg (TASKS T12) —
+   * computeSellThrough/computeReorderMetrics in core/metrics.ts only take SalesAgg[], so whether the
+   * source is a sales_lines aggregate or a CSV period total they are reused without any change to
+   * the core layer.
    */
   querySalesPeriodAgg(q: SalesAggQuery): Promise<SalesAgg[]>;
   queryStock(q: StockQuery): Promise<StockRow[]>;
   /**
-   * 매장 목록/이름 조회(T8에서 추가) — 재주문 리포트의 지점별 표 제목(storeName)과
-   * 존재하지 않는 store_id 필터 검증(T9 MCP 도구 공용)에 쓴다. storeId를 주면 그 매장만.
+   * Store list / name lookup (added in T8) — used for the per-branch table heading (storeName) of
+   * the reorder report and for validating a non-existent store_id filter (shared by the T9 MCP
+   * tools). With storeId, only that store.
    */
   queryStores(storeId?: string): Promise<StoreRow[]>;
   /**
-   * 상품 목록 조회(T25) — `sales_lines`/`inventory_levels` 조인만으로는 노출되지 않는
-   * `ProductRow` 전체 필드(특히 `packSize`, SPEC §14)를 읽어와야 하는 곳(예: 재주문 리포트의
-   * 팩 단위 반올림)에 쓴다. `variantIds`를 생략하면 전체, 빈 배열이면 빈 결과.
+   * Product list query (T25) — used where the full `ProductRow` fields not exposed by the
+   * `sales_lines`/`inventory_levels` joins (notably `packSize`, SPEC §14) must be read (e.g.
+   * pack-multiple rounding in the reorder report). Omitting `variantIds` returns everything; an
+   * empty array returns an empty result.
    */
   queryProducts(variantIds?: string[]): Promise<ProductRow[]>;
   /**
-   * CSV/Excel authoritative 스캔에서 이번 파일에 없는 (매장,SKU) `inventory_levels`/
-   * `sales_period_agg` 행을 비활성화한다(tombstone, DATA-002, TASKS T31) — 물리 삭제 없음,
-   * `active=false`로만 표시하고 이력은 보존한다. `queryStock`/`querySalesPeriodAgg`는
-   * `active=true` 행만 반환한다. 다시 파일에 나타나면 `upsertInventory`/
-   * `upsertSalesPeriodAgg`(항상 `active=true`로 쓴다)가 자동으로 재활성화한다.
-   * `storeIds`는 이번 스캔이 대표하는 매장 범위(tombstone 판정 경계) — 그 밖의 매장 데이터는
-   * 절대 건드리지 않는다(본사 통합 모드의 지점별 독립 트랜잭션 원칙과 일치). `presentInventory`/
-   * `presentSales`는 이번 스캔에서 실제로 파싱된 (매장,SKU) 키 — 재고는 모든 행이, 판매는
-   * 판매이력 있는 행만 해당한다(두 세트가 다를 수 있다).
+   * In a CSV/Excel authoritative scan, deactivates the `inventory_levels`/`sales_period_agg` rows
+   * for (store,SKU) pairs absent from this file (tombstone, DATA-002, TASKS T31) — no physical
+   * deletion, only marks `active=false` and preserves history. `queryStock`/`querySalesPeriodAgg`
+   * return `active=true` rows only. When a pair reappears in a file, `upsertInventory`/
+   * `upsertSalesPeriodAgg` (which always write `active=true`) reactivate it automatically.
+   * `storeIds` is the store scope this scan represents (the tombstone judgement boundary) — data of
+   * other stores is never touched (consistent with the per-branch independent transaction principle
+   * of HQ consolidated mode). `presentInventory`/`presentSales` are the (store,SKU) keys actually
+   * parsed in this scan — every row for inventory, only rows with sales history for sales (the two
+   * sets may differ).
    */
   deactivateMissingCsvRows(params: {
     storeIds: string[];
@@ -377,42 +392,44 @@ export interface Warehouse {
   }): Promise<void>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
   /**
-   * 한 run_id의 발송 로그 행 전부(기록 순서, 오래된 것부터) — 같은 run_id 재시도 정책
-   * (`core/sendRetryPolicy.ts`, SR2-MAIL-003)이 이전 시도의 상태·시각을 보기 위한 읽기 전용
-   * 조회다. 에이전트 감사 로그 테이블이라 가드레일 4의 "비즈니스 데이터"가 아니다.
+   * All send-log rows of one run_id (in record order, oldest first) — a read-only lookup so the
+   * same-run_id retry policy (`core/sendRetryPolicy.ts`, SR2-MAIL-003) can see the status and time
+   * of earlier attempts. This is the agent audit-log table, not "business data" under guardrail 4.
    */
   listAgentSendAttempts(runId: string): Promise<AgentSendEntry[]>;
   /**
-   * 같은 run_id 재시도(사람이 `--run-id`로 명시) 직전에, 프로세스 크래시로 `sending`에 멈춘
-   * 행을 `unknown`(error_code `stale_sending`)으로 마감한다(SR2-MAIL-003). `sent_at`은 건드리지
-   * 않는다 — 그 시각이 provider가 Idempotency-Key를 처음 본 시점의 근사값이라 중복 방지 보존
-   * 기간 계산의 기준이 되기 때문이다. 호출 조건(보존 기간 안인지)은 호출자가 정책으로 먼저
-   * 판정한다 — 이 메서드는 무조건 마감만 한다. 마감한 행 수를 반환한다.
+   * Right before a same-run_id retry (a human passing `--run-id` explicitly), closes rows stuck in
+   * `sending` by a process crash as `unknown` (error_code `stale_sending`) (SR2-MAIL-003). `sent_at`
+   * is left untouched — that time approximates when the provider first saw the Idempotency-Key and
+   * is the basis of the dedupe retention period calculation. The precondition (within the retention
+   * period) is judged by the caller's policy first — this method unconditionally closes. Returns the
+   * number of rows closed.
    */
   markStaleSendingUnknown(runId: string): Promise<number>;
 
   /**
-   * 보존 기간 정책(007 OPS-005, TASKS T34) — `snapped_at`/`sent_at`이 `before`보다 오래된
-   * 행을 지운다(또는 `dryRun`이면 지울 대상 행 수만 센다). `inventory_snapshots`/
-   * `agent_send_log`는 감사·로그 테이블이지 가드레일 4의 "비즈니스 데이터"(stores/products/
-   * sales/inventory)가 아니다 — `scripts/cleanup.ts`(사람 전용 실행) 용도로만 노출한다.
-   * 삭제(또는 셀 대상) 행 수를 반환한다.
+   * Retention period policy (007 OPS-005, TASKS T34) — deletes rows whose `snapped_at`/`sent_at` is
+   * older than `before` (or, with `dryRun`, only counts the rows that would be deleted).
+   * `inventory_snapshots`/`agent_send_log` are audit/log tables, not "business data" under
+   * guardrail 4 (stores/products/sales/inventory) — exposed only for `scripts/cleanup.ts` (run by
+   * humans only). Returns the number of rows deleted (or counted).
    */
   deleteOldInventorySnapshots(before: Date, opts?: { dryRun?: boolean }): Promise<number>;
   deleteOldAgentSendLog(before: Date, opts?: { dryRun?: boolean }): Promise<number>;
 }
 
-// ── explore_sql (v0.2 대기열, 가드레일 4 예외 — DESIGN §6이 이름으로 미리 예고해둔 것) ──────
+// ── explore_sql (v0.2 backlog, guardrail 4 exception — pre-announced by name in DESIGN §6) ──────
 //
-// 나머지 Warehouse 메서드는 전부 파라미터라이즈드 고정 쿼리다. explore_sql은 유일하게 사용자가
-// 임의 SQL 텍스트를 주는 도구라 별도 인터페이스로 분리했다 — Warehouse 계약("고정 쿼리만")을
-// 이 하나 때문에 흐리지 않기 위해서다. 구현은 adapters/exploreSqlExecutor.ts, 진짜 방어선(BEGIN
-// READ ONLY 트랜잭션)은 그 파일의 문서 주석 참고.
+// Every other Warehouse method is a fixed parameterised query. explore_sql is the only tool where the
+// user supplies arbitrary SQL text, so it is split into its own interface — to avoid blurring the
+// Warehouse contract ("fixed queries only") because of this single case. Implementation is in
+// adapters/exploreSqlExecutor.ts; the real line of defence (BEGIN READ ONLY transaction) is
+// documented in that file's doc comment.
 
 export interface ExploreSqlOptions {
-  /** 결과 최대 행 수. 기본 200, 최대 1000(초과 요청은 자동으로 잘린다, 에러 아님). */
+  /** Maximum result rows. Default 200, maximum 1000 (larger requests are truncated automatically, not an error). */
   limit?: number;
-  /** 쿼리 최대 실행 시간(ms). 기본 5000, 최대 30000. */
+  /** Maximum query execution time (ms). Default 5000, maximum 30000. */
   timeoutMs?: number;
 }
 
@@ -420,7 +437,7 @@ export interface ExploreSqlResult {
   columns: string[];
   rows: Record<string, unknown>[];
   rowCount: number;
-  /** limit에 걸려 일부만 반환했으면 true. */
+  /** true when the limit was hit and only part of the result was returned. */
   truncated: boolean;
   timeoutMs: number;
 }
@@ -429,7 +446,7 @@ export interface ExploreSqlExecutor {
   execute(sql: string, opts?: ExploreSqlOptions): Promise<ExploreSqlResult>;
 }
 
-// ── 알림 (sheet_mcp NotificationProvider 이식 대상과 동일 시그니처) ─────────
+// ── Notifications (same signature as the sheet_mcp NotificationProvider being ported) ─────────
 
 export interface OutboundMessage {
   to: string;
@@ -437,11 +454,11 @@ export interface OutboundMessage {
   text: string;
   html?: string;
   /**
-   * 007 OPS-004(TASKS T34) — 이 발송 시도를 식별하는 안정적 키(에이전트가 `runId`를 그대로
-   * 준다). Resend는 `Idempotency-Key` 헤더로 24시간 내 같은 키의 재요청을 중복 발송 없이
-   * dedupe한다(resend.com API 문서 확인, 2026-09-03) — 타임아웃 후 사람이 같은 runId로
-   * 수동 재시도해도 실제로는 한 통만 나간다. Provider가 지원하지 않으면(예: MockNotification
-   * Provider) 그냥 무시해도 된다.
+   * 007 OPS-004 (TASKS T34) — a stable key identifying this send attempt (the agent passes `runId`
+   * as is). Resend dedupes re-requests with the same key within 24 hours via the `Idempotency-Key`
+   * header without sending twice (verified in the resend.com API docs, 2026-09-03) — so even if a
+   * human manually retries with the same runId after a timeout, only one email actually goes out.
+   * Providers that do not support it (e.g. MockNotificationProvider) may simply ignore it.
    */
   idempotencyKey?: string;
 }
@@ -453,35 +470,36 @@ export interface SendResult {
 export interface NotificationProvider {
   readonly channel: "email";
   /**
-   * 2차 적대적 검수 SR2-MAIL-003 — 이 provider가 `OutboundMessage.idempotencyKey`로 중복 발송을
-   * 막아주는 보존 기간(ms). Resend는 24시간. 이 값이 있어야 에이전트가 `unknown`/`sending` 이후
-   * 같은 run_id 재시도를 그 기간 안에서만 허용할 수 있다(`core/sendRetryPolicy.ts`). 없으면
-   * (idempotency를 지원하지 않는 provider) 그런 재시도는 항상 중복 위험이 있으므로 거부된다 —
-   * 사람이 발송 여부를 확인한 뒤 새 run_id로 실행해야 한다.
+   * Second adversarial review SR2-MAIL-003 — the retention period (ms) during which this provider
+   * prevents duplicate sends via `OutboundMessage.idempotencyKey`. 24 hours for Resend. This value
+   * is what lets the agent allow a same-run_id retry after `unknown`/`sending` only within that
+   * period (`core/sendRetryPolicy.ts`). Without it (a provider that does not support idempotency)
+   * such a retry always risks duplication and is refused — a human must confirm whether it was sent
+   * and then run with a new run_id.
    */
   readonly dedupeTtlMs?: number;
   send(msg: OutboundMessage): Promise<SendResult>;
 }
 
-// ── 재주문 리포트 + 요약 (LLM 경계) ─────────────────────────────────────
+// ── Reorder report + summary (LLM boundary) ─────────────────────────────
 
 export interface ReorderLineItem {
   variantId: string;
   name: string;
-  /** 이미 max(0, ·)로 정규화된 표시용 값. */
+  /** Display value already normalised with max(0, ·). */
   inStock: number;
   avgDailySales: number;
-  /** null = 무한(∞) 커버 — 판매 없음. */
+  /** null = infinite (∞) cover — no sales. */
   daysOfCover: number | null;
   reorderQty: number;
   /**
-   * 팩 단위 반올림(SPEC §14, TASKS T24/T25) — `ProductRow.packSize`가 없으면(낱개 매입
-   * 가능) `finalOrderQty === reorderQty`이고 `packSize`/`packCount`는 null.
+   * Pack-multiple rounding (SPEC §14, TASKS T24/T25) — without `ProductRow.packSize` (single units
+   * can be purchased) `finalOrderQty === reorderQty` and `packSize`/`packCount` are null.
    */
   packSize: number | null;
-  /** 실제 발주 가능한 수량(포장수량 배수로 올림). packSize가 없으면 reorderQty와 같다. */
+  /** Qty that can actually be ordered (rounded up to a pack-size multiple). Equals reorderQty when there is no packSize. */
   finalOrderQty: number;
-  /** 발주할 팩(박스) 개수. packSize가 없으면 null. */
+  /** Number of packs (boxes) to order. null when there is no packSize. */
   packCount: number | null;
 }
 
@@ -500,6 +518,6 @@ export interface ReorderReport {
 }
 
 export interface Summarizer {
-  /** 2~3문장 요약 문구만 반환한다. 수치를 새로 만들지 않고 입력 표의 사실만 서술하도록 프롬프트에 명시한다. */
+  /** Returns only a 2-3 sentence summary. The prompt states explicitly that it must describe only the facts in the input table and invent no new numbers. */
   summarize(input: ReorderReport): Promise<string>;
 }

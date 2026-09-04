@@ -1,13 +1,13 @@
-일자,구분,상품코드,상품명,수량,단가,거래처
-2026-07-01,입고,P001,무선 마우스,30,12000,스마트유통
-2026-07-02,입고,P002,저소음 키보드,20,24500,스마트유통
-2026-07-03,입고,P003,USB-C 허브,15,28500,테크상사
-2026-07-04,출고,P001,무선 마우스,8,18900,온라인몰
-2026-07-05,출고,P002,저소음 키보드,5,35900,온라인몰
-2026-07-06,입고,P004,노트북 거치대,12,18000,오피스유통
-2026-07-07,출고,P003,USB-C 허브,10,42900,기업고객
-2026-07-08,입고,P007,HDMI 케이블,25,5500,케이블존
-2026-07-09,출고,P004,노트북 거치대,8,27900,온라인몰
-2026-07-10,출고,P001,무선 마우스,13,18900,기업고객
-2026-07-11,입고,P006,멀티탭 5구,18,13500,오피스유통
-2026-07-12,출고,P007,HDMI 케이블,12,9900,온라인몰
+date,type,sku,product,qty,unit_price,vendor
+2026-07-01,inbound,P001,Wireless Mouse,30,12000,Smart Distribution
+2026-07-02,inbound,P002,Silent Keyboard,20,24500,Smart Distribution
+2026-07-03,inbound,P003,USB-C Hub,15,28500,Tech Trading
+2026-07-04,outbound,P001,Wireless Mouse,8,18900,Online Mall
+2026-07-05,outbound,P002,Silent Keyboard,5,35900,Online Mall
+2026-07-06,inbound,P004,Laptop Stand,12,18000,Office Supply Co
+2026-07-07,outbound,P003,USB-C Hub,10,42900,Corporate Customer
+2026-07-08,inbound,P007,HDMI Cable,25,5500,Cable Zone
+2026-07-09,outbound,P004,Laptop Stand,8,27900,Online Mall
+2026-07-10,outbound,P001,Wireless Mouse,13,18900,Corporate Customer
+2026-07-11,inbound,P006,5-Outlet Power Strip,18,13500,Office Supply Co
+2026-07-12,outbound,P007,HDMI Cable,12,9900,Online Mall

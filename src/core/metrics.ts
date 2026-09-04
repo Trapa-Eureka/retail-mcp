@@ -1,7 +1,7 @@
 /**
- * 지표 코어 — 순수 함수만. 외부 IO 없음, 시각은 전부 Clock을 통해서만 얻는다.
- * 수식의 진실의 원천은 DESIGN.md §3(= SPEC.md §2와 동일해야 한다). 코드·문서가 다르면
- * 문서 기준으로 코드를 고친다(WORKFLOW.md — "테스트를 수식에 맞추는" 방향의 수정 금지).
+ * Metrics core — pure functions only. No external IO; the current time is obtained only through Clock.
+ * The source of truth for the formulas is DESIGN.md §3 (which must equal SPEC.md §2). When code and
+ * docs disagree, fix the code to match the docs (WORKFLOW.md — never "fit the tests to the formula").
  */
 import type {
   Clock,
@@ -14,44 +14,45 @@ import type {
   StockRow,
 } from "./types.js";
 
-// ── 경계: Numeric(문자열) → number 파싱 정책 ────────────────────────────
-// numeric 컬럼은 문자열로 넘어온다(pg/PGlite 공통). 여기서만 명시적으로 number로 바꾸고,
-// 이후 계산은 전부 number로 한다 — 중간 반올림은 하지 않는다(표시 반올림·재주문 ceil 제외).
+// ── Boundary: Numeric (string) → number parsing policy ──────────────────
+// numeric columns arrive as strings (pg and PGlite alike). They are converted to number explicitly
+// here and nowhere else; all subsequent arithmetic is done in number — no intermediate rounding
+// (except display rounding and the reorder ceil).
 
 function parseNumeric(raw: Numeric, fieldName: string): number {
   const n = Number(raw);
   if (!Number.isFinite(n)) {
     throw new Error(
-      `${fieldName} 값이 유효한 숫자가 아닙니다: "${raw}". Warehouse가 반환한 numeric 문자열을 확인하세요.`,
+      `${fieldName} is not a valid number: "${raw}". Check the numeric string returned by the Warehouse.`,
     );
   }
   return n;
 }
 
-// ── 5종 순수 수식 (DESIGN §3) ────────────────────────────────────────────
+// ── The five pure formulas (DESIGN §3) ───────────────────────────────────
 
-/** 근사 셀스루 = soldQty/(soldQty+endStock). 분모 0 → null(신규/무재고 구분 표기). */
+/** Approximate sell-through = soldQty/(soldQty+endStock). Denominator 0 → null (new item / no stock marker). */
 export function sellThroughRatio(soldQty: number, endStock: number): number | null {
   const denom = soldQty + endStock;
   if (denom === 0) return null;
   return soldQty / denom;
 }
 
-/** 일평균판매 = 창(N일) 내 총판매량 / N (달력일, 무판매일 포함). */
+/** Average daily sales = total sold qty within the window (N days) / N (calendar days, including days without sales). */
 export function avgDailySales(totalSoldQty: number, windowDays: number): number {
   if (windowDays <= 0) {
-    throw new Error(`windowDays는 1 이상이어야 합니다. 받은 값: ${windowDays}.`);
+    throw new Error(`windowDays must be at least 1. Received: ${windowDays}.`);
   }
   return totalSoldQty / windowDays;
 }
 
-/** 재고커버일수 = inStock/avgDailySales. avgDailySales=0 → null(∞ 표기). */
+/** Days of cover = inStock/avgDailySales. avgDailySales=0 → null (rendered as ∞). */
 export function daysOfCover(inStock: number, avgDailySalesValue: number): number | null {
   if (avgDailySalesValue === 0) return null;
   return inStock / avgDailySalesValue;
 }
 
-/** 품절위험 = daysOfCover < leadTimeDays+safetyDays. daysOfCover=null(∞)이면 위험 아님. */
+/** Stockout risk = daysOfCover < leadTimeDays+safetyDays. daysOfCover=null (∞) is never at risk. */
 export function isStockoutRisk(
   daysOfCoverValue: number | null,
   leadTimeDays: number,
@@ -61,7 +62,7 @@ export function isStockoutRisk(
   return daysOfCoverValue < leadTimeDays + safetyDays;
 }
 
-/** 재주문 제안량 = max(0, ceil(targetCoverDays*avgDailySales - inStock)). */
+/** Reorder suggestion qty = max(0, ceil(targetCoverDays*avgDailySales - inStock)). */
 export function reorderQty(
   avgDailySalesValue: number,
   inStock: number,
@@ -71,16 +72,17 @@ export function reorderQty(
 }
 
 /**
- * 팩 단위 반올림(SPEC §14) — reorderQty()가 계산한 개수 단위 제안량을 포장수량(팩사이즈)의
- * 배수로 올려 실제 발주 가능한 수량을 만든다. reorderQty() 자체는 건드리지 않는다(순수하게
- * 그 출력을 감싸는 후처리). packSize가 없으면(낱개 매입 가능) 반올림하지 않고 그대로
- * 돌려준다 — packCount는 그 경우 개념 자체가 없어 null(0이 아니다, "팩 단위가 없다"와
- * "팩이 0개 필요하다"를 구분한다).
+ * Pack-multiple rounding (SPEC §14) — rounds the unit-level suggestion computed by reorderQty() up
+ * to a multiple of the pack size so it becomes a quantity that can actually be ordered. reorderQty()
+ * itself is untouched (this is purely a post-processing wrapper around its output). Without a
+ * packSize (single units can be purchased) nothing is rounded and the value is returned as is —
+ * packCount is then null because the concept does not exist (not 0: "there is no pack unit" and
+ * "0 packs are needed" are different things).
  */
 export interface PackRoundedOrder {
-  /** 포장수량 배수로 올린 실제 발주량. packSize가 없으면 reorderQtyValue와 같다. */
+  /** Actual order qty rounded up to a pack-size multiple. Equals reorderQtyValue when there is no packSize. */
   finalOrderQty: number;
-  /** 발주할 팩(박스) 개수. packSize가 없으면 null. */
+  /** Number of packs (boxes) to order. null when there is no packSize. */
   packCount: number | null;
 }
 
@@ -92,16 +94,16 @@ export function roundToPackMultiple(
     return { finalOrderQty: reorderQtyValue, packCount: null };
   }
   if (!Number.isFinite(packSize) || packSize <= 0) {
-    throw new Error(`packSize는 0보다 큰 숫자여야 합니다. 받은 값: ${packSize}.`);
+    throw new Error(`packSize must be a number greater than 0. Received: ${packSize}.`);
   }
   if (reorderQtyValue === 0) return { finalOrderQty: 0, packCount: 0 };
   const packCount = Math.ceil(reorderQtyValue / packSize);
   return { finalOrderQty: packCount * packSize, packCount };
 }
 
-// ── 사업장 타임존 반개방 기간 경계 (DESIGN §11.3, Clock 주입) ───────────────
-// 외부 날짜 라이브러리 없이 Intl.DateTimeFormat만으로 타임존-안전 자정 변환을 한다.
-// 머신 로컬 타임존에 의존하지 않고, DST가 있는 지역에서도 안전하다.
+// ── Half-open period boundaries in the business timezone (DESIGN §11.3, Clock injected) ──
+// Timezone-safe midnight conversion using only Intl.DateTimeFormat, no external date library.
+// Independent of the machine's local timezone and safe in regions with DST.
 
 function offsetMsAt(instant: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -127,11 +129,11 @@ function offsetMsAt(instant: Date, timeZone: string): number {
   return asIfUtc - instant.getTime();
 }
 
-/** timeZone 기준 (year, month, day) 자정에 해당하는 UTC 시각. DST 경계에서도 정확하다. */
+/** The UTC instant of midnight on (year, month, day) in timeZone. Exact even across DST boundaries. */
 function zonedMidnightUtc(year: number, month: number, day: number, timeZone: string): Date {
   let guess = Date.UTC(year, month - 1, day, 0, 0, 0);
-  // 오프셋을 추정→보정하는 고정점 반복. 오프셋이 자정 부근에서 바뀌는 극단적 DST 지역까지
-  // 감안해 2회면 충분히 수렴한다(일반적인 시간대 규칙에서).
+  // Fixed-point iteration: estimate the offset, then correct. Two rounds are enough to converge
+  // (under ordinary timezone rules), even for extreme DST zones whose offset changes near midnight.
   for (let i = 0; i < 2; i++) {
     const offsetMs = offsetMsAt(new Date(guess), timeZone);
     const wanted = Date.UTC(year, month - 1, day, 0, 0, 0) - offsetMs;
@@ -142,20 +144,21 @@ function zonedMidnightUtc(year: number, month: number, day: number, timeZone: st
 }
 
 export interface CalendarWindow {
-  /** 반개방 구간 시작 — timeZone 기준 (오늘-windowDays) 자정. */
+  /** Start of the half-open interval — midnight of (today - windowDays) in timeZone. */
   periodStart: Date;
-  /** 반개방 구간 끝(포함 안 함) — timeZone 기준 오늘 자정. */
+  /** End of the half-open interval (exclusive) — midnight of today in timeZone. */
   periodEnd: Date;
   timeZone: string;
 }
 
 /**
- * `[사업장 현지 오늘-N일 시작, 현지 오늘 시작)` 반개방 구간을 계산한다(DESIGN §11.3).
- * "오늘"은 Clock에서만 얻는다 — 머신 로컬 시각을 직접 쓰지 않는다.
+ * Computes the half-open interval `[start of local today - N days, start of local today)` in the
+ * business timezone (DESIGN §11.3). "Today" comes only from the Clock — the machine's local time is
+ * never used directly.
  */
 export function calendarWindow(clock: Clock, windowDays: number, timeZone: string): CalendarWindow {
   if (windowDays <= 0) {
-    throw new Error(`windowDays는 1 이상이어야 합니다. 받은 값: ${windowDays}.`);
+    throw new Error(`windowDays must be at least 1. Received: ${windowDays}.`);
   }
   const now = clock.now();
   const todayParts = new Intl.DateTimeFormat("en-US", {
@@ -170,8 +173,8 @@ export function calendarWindow(clock: Clock, windowDays: number, timeZone: strin
 
   const periodEnd = zonedMidnightUtc(y, m, d, timeZone);
 
-  // 달력일 뺄셈은 시간대 개념이 아닌 순수 날짜 산술이므로 UTC 기준 Date로 안전하게 수행한 뒤
-  // 그 (year, month, day)를 다시 timeZone 자정으로 변환한다.
+  // Calendar-day subtraction is pure date arithmetic with no timezone notion, so it is done safely
+  // on a UTC-based Date and the resulting (year, month, day) is converted back to timeZone midnight.
   const startDateOnly = new Date(Date.UTC(y, m - 1, d));
   startDateOnly.setUTCDate(startDateOnly.getUTCDate() - windowDays);
   const periodStart = zonedMidnightUtc(
@@ -184,35 +187,36 @@ export function calendarWindow(clock: Clock, windowDays: number, timeZone: strin
   return { periodStart, periodEnd, timeZone };
 }
 
-// ── 배열 파이프라인: (SalesAgg[], StockRow[], opts) → *Row[] ────────────────
-// DESIGN §3: "전부 순수 함수: (rows: SalesAgg[], stock: StockRow[], opts) → MetricRow[]".
-// sell_through와 stockout_risk/reorder_suggestions는 서로 다른 판매 기간(SalesAgg 질의
-// 기간)을 쓰므로 별도 파이프라인 함수로 나눈다 — 호출자가 각자 맞는 기간으로 querySalesAgg한
-// 결과를 넘긴다.
+// ── Array pipelines: (SalesAgg[], StockRow[], opts) → *Row[] ─────────────
+// DESIGN §3: "all pure functions: (rows: SalesAgg[], stock: StockRow[], opts) → MetricRow[]".
+// sell_through and stockout_risk/reorder_suggestions use different sales periods (the SalesAgg query
+// period), so they are split into separate pipeline functions — each caller passes the result of
+// querySalesAgg for the period appropriate to it.
 
 export interface SellThroughRow {
   storeId: string;
   variantId: string;
   name: string;
   category: string | null;
-  /** 기간 내 원시 순판매량(환불 포함, 음수 가능). */
+  /** Raw net sold qty within the period (refunds included, may be negative). */
   soldQtyRaw: number;
-  /** 계산에 사용한 판매량 = max(0, soldQtyRaw). */
+  /** Sold qty used in the calculation = max(0, soldQtyRaw). */
   soldQty: number;
-  /** 원시 기말재고(음수 가능). */
+  /** Raw end-of-period stock (may be negative). */
   endStockRaw: number;
-  /** 계산에 사용한 기말재고 = max(0, endStockRaw). */
+  /** End stock used in the calculation = max(0, endStockRaw). */
   endStock: number;
-  /** null = 신규/무재고(soldQty+endStock=0). */
+  /** null = new item / no stock (soldQty+endStock=0). */
   sellThrough: number | null;
   warnings: string[];
 }
 
 /**
- * sell_through 지표 배열을 계산한다. salesAgg는 호출자가 원하는 기간(period_days)으로
- * querySalesAgg한 결과, stock은 현재고(queryStock) 결과다. (storeId, variantId) 기준으로
- * 두 배열의 키를 합집합해 조인한다 — 기간 내 판매가 0건이라도 현재고가 있는 품목은
- * soldQty=0으로 포함된다(판매0+재고X 같은 골든 케이스가 실제로 나오려면 필요하다).
+ * Computes the sell_through metric rows. salesAgg is the result of querySalesAgg for the period the
+ * caller wants (period_days); stock is the current stock (queryStock) result. The two arrays are
+ * joined on the union of their (storeId, variantId) keys — an item with current stock but zero sales
+ * in the period is still included with soldQty=0 (required for golden cases such as "0 sales + stock X"
+ * to actually appear).
  */
 export function computeSellThrough(salesAgg: SalesAgg[], stock: StockRow[]): SellThroughRow[] {
   const salesByKey = new Map(salesAgg.map((a) => [`${a.storeId}:${a.variantId}`, a]));
@@ -229,17 +233,17 @@ export function computeSellThrough(salesAgg: SalesAgg[], stock: StockRow[]): Sel
     const soldQty = Math.max(0, soldQtyRaw);
     if (soldQtyRaw < 0) {
       warnings.push(
-        `환불이 판매를 초과해 기간 순판매량이 음수(${soldQtyRaw})입니다 — 계산에는 0을 사용했습니다.`,
+        `Refunds exceeded sales, so the period net sold qty is negative (${soldQtyRaw}) — 0 was used in the calculation.`,
       );
     }
 
     const endStockRaw = stockRow ? parseNumeric(stockRow.inStockRaw, "inStockRaw") : 0;
     const endStock = Math.max(0, endStockRaw);
     if (endStockRaw < 0) {
-      warnings.push(`현재고가 음수(${endStockRaw})입니다 — 계산에는 0을 사용했습니다.`);
+      warnings.push(`Current stock is negative (${endStockRaw}) — 0 was used in the calculation.`);
     }
     if (!stockRow) {
-      warnings.push("현재고 데이터가 없어 0으로 처리했습니다.");
+      warnings.push("No current stock data — treated as 0.");
     }
 
     const [storeId, variantId] = key.split(":") as [string, string];
@@ -260,13 +264,13 @@ export function computeSellThrough(salesAgg: SalesAgg[], stock: StockRow[]): Sel
 }
 
 export interface ReorderOptions {
-  /** avgDailySales 창(일). 기본 28. */
+  /** avgDailySales window (days). Default 28. */
   windowDays?: number;
-  /** 리드타임(일). 기본 7. */
+  /** Lead time (days). Default 7. */
   leadTimeDays?: number;
-  /** 안전재고일수. 기본 3. */
+  /** Safety stock days. Default 3. */
   safetyDays?: number;
-  /** 재주문 목표커버일수. 기본 21. */
+  /** Reorder target cover days. Default 21. */
   targetCoverDays?: number;
 }
 
@@ -280,14 +284,14 @@ export interface ReorderMetricRow {
   variantId: string;
   name: string;
   category: string | null;
-  /** windowDays 기간 내 원시 순판매량 합(환불 포함, 음수 가능). */
+  /** Raw net sold qty summed over windowDays (refunds included, may be negative). */
   soldQtyRaw: number;
   soldQty: number;
   inStockRaw: number;
-  /** 계산에 사용한 현재고 = max(0, inStockRaw). */
+  /** Current stock used in the calculation = max(0, inStockRaw). */
   inStock: number;
   avgDailySales: number;
-  /** null = 무한(∞) 커버 — 판매 없음. */
+  /** null = infinite (∞) cover — no sales. */
   daysOfCover: number | null;
   stockoutRisk: boolean;
   reorderQty: number;
@@ -295,9 +299,9 @@ export interface ReorderMetricRow {
 }
 
 /**
- * stockout_risk/reorder_suggestions/재주문 에이전트가 공유하는 지표 배열을 계산한다.
- * salesAgg는 opts.windowDays(기본 28일) 기간으로 querySalesAgg한 결과여야 한다 — 호출자가
- * calendarWindow()로 만든 기간으로 미리 질의한다. (storeId, variantId)로 조인한다.
+ * Computes the metric rows shared by stockout_risk / reorder_suggestions / the reorder agent.
+ * salesAgg must be the result of querySalesAgg over opts.windowDays (default 28) — the caller
+ * queries beforehand using the period produced by calendarWindow(). Joined on (storeId, variantId).
  */
 export function computeReorderMetrics(
   salesAgg: SalesAgg[],
@@ -325,17 +329,17 @@ export function computeReorderMetrics(
     const soldQty = Math.max(0, soldQtyRaw);
     if (soldQtyRaw < 0) {
       warnings.push(
-        `환불이 판매를 초과해 창(${windowDays}일) 순판매량이 음수(${soldQtyRaw})입니다 — 계산에는 0을 사용했습니다.`,
+        `Refunds exceeded sales, so the net sold qty over the ${windowDays}-day window is negative (${soldQtyRaw}) — 0 was used in the calculation.`,
       );
     }
 
     const inStockRaw = stockRow ? parseNumeric(stockRow.inStockRaw, "inStockRaw") : 0;
     const inStock = Math.max(0, inStockRaw);
     if (inStockRaw < 0) {
-      warnings.push(`현재고가 음수(${inStockRaw})입니다 — 계산에는 0을 사용했습니다.`);
+      warnings.push(`Current stock is negative (${inStockRaw}) — 0 was used in the calculation.`);
     }
     if (!stockRow) {
-      warnings.push("현재고 데이터가 없어 0으로 처리했습니다.");
+      warnings.push("No current stock data — treated as 0.");
     }
 
     const avgDaily = avgDailySales(soldQty, windowDays);
@@ -362,10 +366,10 @@ export function computeReorderMetrics(
 }
 
 /**
- * computeReorderMetrics(또는 computeCsvReorderMetrics의 history 행)가 계산한 배열에
- * roundToPackMultiple()을 (storeId,variantId)로 조인한 ProductRow.packSize를 참조해
- * 적용한다 — computeReorderMetrics 자체는 건드리지 않는다(TASKS T17이
- * computeCsvReorderMetrics로 computeReorderMetrics를 감싼 것과 같은 패턴).
+ * Applies roundToPackMultiple() to the rows computed by computeReorderMetrics (or the history rows
+ * of computeCsvReorderMetrics), using ProductRow.packSize joined on (storeId,variantId) —
+ * computeReorderMetrics itself is untouched (the same pattern TASKS T17 used when wrapping
+ * computeReorderMetrics with computeCsvReorderMetrics).
  */
 export type PackRoundedReorderRow = ReorderMetricRow &
   PackRoundedOrder & { packSize: number | null };
@@ -379,42 +383,43 @@ export function applyPackRounding(
     const product = productByVariant.get(row.variantId);
     const packSize =
       product?.packSize !== undefined && product.packSize !== null
-        ? parseNumeric(product.packSize, "포장수량")
+        ? parseNumeric(product.packSize, "pack_size")
         : null;
     return { ...row, packSize, ...roundToPackMultiple(row.reorderQty, packSize) };
   });
 }
 
-// ── CSV/Excel 채널: 셀스루/임계치 분기 (SPEC §12, TASKS T17) ─────────────────
+// ── CSV/Excel channel: sell-through / threshold branch (SPEC §12, TASKS T17) ─────────────
 //
-// Loyverse는 querySalesAgg로 "호출자가 원하는 임의 기간"을 다시 집계할 수 있지만, CSV/Excel
-// 채널은 그렇지 않다 — sales_period_agg 한 행이 "그 스캔이 읽은 파일이 보고한 기간 하나"를
-// 대표할 뿐, 원장(raw transaction)이 없어 다른 기간으로 재집계할 수 없다. 그래서 여기는
-// Warehouse.querySalesPeriodAgg(SalesAgg[] 반환 — 의도적으로 기간 정보가 없다, TASKS T12)가
-// 아니라 T16이 막 파싱한 원본 행(SalesPeriodAggRow — periodStart/periodEnd 보존)을 직접
-// 받는다. 이 함수는 T18(폴더 스캔)이 파싱 직후, 아직 웨어하우스에 쓰기 전에 호출하는 걸
-// 전제한다 — DB 재조회가 필요 없다.
+// Loyverse can re-aggregate "any period the caller wants" via querySalesAgg, but the CSV/Excel
+// channel cannot — one sales_period_agg row only represents "the single period reported by the file
+// that scan read", and with no ledger (raw transactions) it cannot be re-aggregated over another
+// period. So instead of Warehouse.querySalesPeriodAgg (which returns SalesAgg[] — deliberately
+// without period information, TASKS T12), this takes the raw rows T16 just parsed
+// (SalesPeriodAggRow — periodStart/periodEnd preserved) directly. It assumes T18 (folder scan) calls
+// it right after parsing, before writing to the warehouse — no DB re-query is needed.
 //
-// computeReorderMetrics 자체는 건드리지 않는다(이미 소스 중립적) — 대신 판매이력이 있는
-// (매장,SKU)들을 "실제 기간 길이(day)"별로 묶어 그룹마다 한 번씩 그 함수를 그 기간에 맞는
-// windowDays로 호출한다. 한 파일 안에 기간 길이가 다른 행이 섞여 있어도(품목마다 다른
-// 판매기간을 적어도) 각자 맞는 windowDays로 계산된다.
+// computeReorderMetrics itself is untouched (it is already source-neutral) — instead the (store,SKU)
+// pairs with sales history are grouped by their "actual period length (days)" and that function is
+// called once per group with the windowDays matching that period. Even if rows with different period
+// lengths are mixed in one file (each item reporting its own sales period), each is computed with its
+// own correct windowDays.
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface CsvMetricsOptions extends ReorderOptions {
-  /** 품목별 저재고임계치(ProductRow.lowStockThreshold) override가 없을 때 쓰는 전역 기본값. */
+  /** Global default used when an item has no per-item low-stock threshold override (ProductRow.lowStockThreshold). */
   defaultLowStockThreshold: number;
 }
 
-/** 판매이력이 있어 §2 근사식(avgDailySales/daysOfCover/stockoutRisk/reorderQty/셀스루)을 그대로 적용한 행. */
+/** A row with sales history — the §2 approximations (avgDailySales/daysOfCover/stockoutRisk/reorderQty/sell-through) apply as is. */
 export type CsvHistoryMetricRow = ReorderMetricRow & {
   mode: "history";
-  /** 같은 원시 판매량/재고로 계산한 근사 셀스루(§2) — computeSellThrough와 동일한 정의. */
+  /** Approximate sell-through (§2) from the same raw sold qty / stock — same definition as computeSellThrough. */
   sellThrough: number | null;
 };
 
-/** 판매이력이 없어 셀스루/재주문 계산을 건너뛰고 단순 임계치로만 판정한 행(SPEC §12). */
+/** A row without sales history — sell-through/reorder are skipped and only the simple threshold is judged (SPEC §12). */
 export interface CsvThresholdMetricRow {
   mode: "no_history";
   storeId: string;
@@ -423,7 +428,7 @@ export interface CsvThresholdMetricRow {
   category: string | null;
   inStockRaw: number;
   inStock: number;
-  /** 이 품목에 실제로 적용된 임계치(품목별 override 우선, 없으면 defaultLowStockThreshold). */
+  /** The threshold actually applied to this item (per-item override first, else defaultLowStockThreshold). */
   threshold: number;
   belowThreshold: boolean;
   warnings: string[];
@@ -436,9 +441,9 @@ function csvKey(storeId: string, variantId: string): string {
 }
 
 /**
- * CSV/Excel 채널의 재고 스캔 1회 분(T16 `ParsedCsvExcelFile`의 inventory/salesPeriodAgg/
- * products)을 받아, 판매이력 유무로 분기해 지표를 계산한다(SPEC §12 "판매이력 없을 때:
- * 임계치 폴백"). 순수 함수 — 웨어하우스 조회 없음.
+ * Takes one inventory scan of the CSV/Excel channel (inventory/salesPeriodAgg/products of the T16
+ * `ParsedCsvExcelFile`) and computes metrics, branching on whether sales history exists (SPEC §12
+ * "no sales history: threshold fallback"). Pure function — no warehouse lookups.
  */
 export function computeCsvReorderMetrics(
   inventory: InventoryRow[],
@@ -450,7 +455,7 @@ export function computeCsvReorderMetrics(
   const stockByKey = new Map(inventory.map((r) => [csvKey(r.storeId, r.variantId), r]));
   const salesByKey = new Map(salesPeriodAgg.map((s) => [csvKey(s.storeId, s.variantId), s]));
 
-  // 실제 기간 길이(일)별로 묶는다 — 파일 안에 서로 다른 기간 길이가 섞여 있을 수 있다.
+  // Group by the actual period length (days) — a file may mix different period lengths.
   const groupsByWindowDays = new Map<number, SalesPeriodAggRow[]>();
   for (const s of salesPeriodAgg) {
     const windowDays = (s.periodEnd.getTime() - s.periodStart.getTime()) / MS_PER_DAY;
@@ -496,19 +501,19 @@ export function computeCsvReorderMetrics(
 
   const noHistoryRows: CsvThresholdMetricRow[] = [];
   for (const inv of inventory) {
-    if (salesByKey.has(csvKey(inv.storeId, inv.variantId))) continue; // history 쪽에서 처리됨.
+    if (salesByKey.has(csvKey(inv.storeId, inv.variantId))) continue; // handled on the history side.
     const p = productByVariant.get(inv.variantId);
     const warnings: string[] = [];
 
-    const inStockRaw = parseNumeric(inv.inStock, "재고수량");
+    const inStockRaw = parseNumeric(inv.inStock, "stock_qty");
     const inStock = Math.max(0, inStockRaw);
     if (inStockRaw < 0) {
-      warnings.push(`현재고가 음수(${inStockRaw})입니다 — 계산에는 0을 사용했습니다.`);
+      warnings.push(`Current stock is negative (${inStockRaw}) — 0 was used in the calculation.`);
     }
 
     const threshold =
       p?.lowStockThreshold !== undefined && p.lowStockThreshold !== null
-        ? parseNumeric(p.lowStockThreshold, "저재고임계치")
+        ? parseNumeric(p.lowStockThreshold, "low_stock_threshold")
         : opts.defaultLowStockThreshold;
 
     noHistoryRows.push({
@@ -528,34 +533,38 @@ export function computeCsvReorderMetrics(
   return [...historyRows, ...noHistoryRows];
 }
 
-// ── SCM 연동: 재고 정합성 검증 / 정통 셀스루 (SPEC §13) ─────────────────────
+// ── SCM integration: stock reconciliation / traditional sell-through (SPEC §13) ─────────
 //
-// 정통 정의(판매÷(기초재고+입고))는 재고가 보존되는 한(기초재고+입고−판매=기말재고이라는
-// 항등식) §2 근사식(판매÷(판매+기말재고))과 대수적으로 항상 같은 값이다 — 두 식의 분모
-// (기초재고+입고, 기말재고+판매)가 그 항등식으로 서로 같기 때문이다. 그래서 이 함수의 진짜
-// 가치는 "더 정확한 셀스루 숫자"가 아니라, 입고 원장으로 계산한 예상 재고와 POS/CSV가
-// 보고한 실제(실사) 재고를 대사(reconciliation)해 그 항등식이 실제로 깨지는 지점 — 도난·
-// 파손·실사오차 등 원장에 안 잡히는 변동 — 을 찾는 것이다.
+// The traditional definition (sales ÷ (opening stock + receipts)) is algebraically always equal to
+// the §2 approximation (sales ÷ (sales + end stock)) as long as stock is conserved (the identity
+// opening stock + receipts − sales = end stock) — the two denominators (opening+receipts,
+// end stock+sales) are equal by that identity. So the real value of this function is not "a more
+// accurate sell-through number" but reconciling the expected stock computed from the receipt ledger
+// against the actual (counted) stock reported by POS/CSV, to find where that identity actually
+// breaks — theft, damage, count errors and other movements the ledger does not capture.
 
 export interface StockReconciliationOptions {
   /**
-   * 기초재고 — 계산 대상 기간 시작 시점의 실사 재고. 키는 `${storeId}:${variantId}`.
+   * Opening stock — the counted stock at the start of the period being computed. Key is
+   * `${storeId}:${variantId}`.
    *
-   * **006 DATA-006(TASKS T33) 대응**: 키가 없는 항목은 예전엔 조용히 0으로 간주해 계산에
-   * 썼지만(SCM 원장을 그 시점부터 새로 시작한 경우와 정말로 값이 없는 경우를 구분 못 함),
-   * 이제는 "기초재고를 모른다"는 뜻으로 취급해 그 행을 `insufficientData: true`로 표시하고
-   * `discrepancy`를 단정적인 경고로 내보내지 않는다(계산 자체는 여전히 0을 대입해 참고용
-   * 숫자로 남긴다 — 완전히 숨기지는 않는다). 온보딩 시 1회 실사값을 입력받는 흐름은 여전히
-   * 이후 태스크 — 그 전까지는 이 옵션을 실제로 채워 넘기는 호출자가 없으므로 모든 행이
-   * `insufficientData: true`가 되는 게 현재는 정상이다.
+   * **006 DATA-006 (TASKS T33)**: missing keys used to be silently treated as 0 in the calculation
+   * (unable to distinguish "the SCM ledger started fresh at that point" from "the value is really
+   * unknown"). Now a missing key means "opening stock unknown": the row is flagged
+   * `insufficientData: true` and `discrepancy` is not emitted as a definitive warning (the
+   * calculation still substitutes 0 and keeps the number for reference — it is not hidden
+   * completely). The onboarding flow that captures a one-time count is still a later task — until
+   * then no caller actually fills this option, so every row being `insufficientData: true` is
+   * currently normal.
    */
   openingStock?: Record<string, number>;
   /**
-   * SCM 입고 실적 기간과 판매 데이터 기간이 실제로 겹치는지(006 DATA-006, TASKS T33) — 호출자
-   * (예: `agent/folderScan.ts`)가 두 기간을 직접 비교해 넘긴다. `false`면 모든 행이
-   * `insufficientData: true`가 되고 이유에 포함된다. **생략하면(undefined) 이 조건은 검사하지
-   * 않는다** — `core/metrics.ts` 단위 테스트가 매번 기간을 안 넘기고도 계산 로직만 검증할 수
-   * 있게 하기 위한 것으로, 실제 운영 경로는 항상 명시적으로 넘긴다.
+   * Whether the SCM receipt period and the sales data period actually overlap (006 DATA-006,
+   * TASKS T33) — the caller (e.g. `agent/folderScan.ts`) compares the two periods itself and passes
+   * the result. `false` makes every row `insufficientData: true` with this included in the reasons.
+   * **If omitted (undefined) this condition is not checked** — so the `core/metrics.ts` unit tests
+   * can verify the calculation logic without passing periods every time; the real operational path
+   * always passes it explicitly.
    */
   periodsOverlap?: boolean;
 }
@@ -565,39 +574,40 @@ export interface StockReconciliationRow {
   variantId: string;
   name: string;
   openingStock: number;
-  /** 기간 내 입고수량 합계(원시값). */
+  /** Sum of received qty within the period (raw value). */
   receivedQtyRaw: number;
-  /** 기간 내 원시 순판매량(환불 포함, 음수 가능). */
+  /** Raw net sold qty within the period (refunds included, may be negative). */
   soldQtyRaw: number;
-  /** 계산에 사용한 판매량 = max(0, soldQtyRaw). */
+  /** Sold qty used in the calculation = max(0, soldQtyRaw). */
   soldQty: number;
-  /** 정통 셀스루 = soldQty/(openingStock+receivedQtyRaw). 분모 0이면 null. */
+  /** Traditional sell-through = soldQty/(openingStock+receivedQtyRaw). null when the denominator is 0. */
   sellThroughTraditional: number | null;
-  /** 원장 기준 예상 재고 = openingStock + receivedQtyRaw − soldQtyRaw(음수 클램프 없음 —
-   * 음수 자체가 원장 이상 신호다). */
+  /** Expected stock per the ledger = openingStock + receivedQtyRaw − soldQtyRaw (no negative clamp —
+   * a negative value is itself a ledger anomaly signal). */
   expectedStock: number;
-  /** POS/CSV가 보고한 실제 재고. 데이터가 없으면 null(대사 불가). */
+  /** Actual stock reported by POS/CSV. null when there is no data (cannot reconcile). */
   actualStock: number | null;
-  /** actualStock − expectedStock. actualStock이 없으면 null. */
+  /** actualStock − expectedStock. null when actualStock is missing. */
   discrepancy: number | null;
-  /** 수치상 불일치 여부(순수 계산 결과) — `insufficientData`와 무관하게 discrepancy!==0이면
-   * true다. "확정된 문제"로 취급할지는 `insufficientData`를 함께 봐야 한다(006 DATA-006). */
+  /** Whether there is a numeric mismatch (pure calculation result) — true whenever discrepancy!==0,
+   * regardless of `insufficientData`. Whether to treat it as a "confirmed problem" must be judged
+   * together with `insufficientData` (006 DATA-006). */
   hasDiscrepancy: boolean;
   /**
-   * 기초재고를 모르거나(openingStock에 이 키가 없음) SCM/판매 데이터 기간이 서로 겹치지
-   * 않아(periodsOverlap===false) `discrepancy`를 신뢰할 수 없다(006 DATA-006, TASKS T33).
-   * true면 `discrepancy`는 여전히 계산돼 있지만(참고용 숫자), "도난·파손·실사오차"처럼 확정
-   * 원인을 단정하는 경고는 `warnings`에 넣지 않는다 — 호출자는 이 행을 "문제 발견"이 아니라
-   * "대사 불가"로 취급해야 한다.
+   * `discrepancy` cannot be trusted because the opening stock is unknown (no key in openingStock)
+   * or the SCM/sales data periods do not overlap (periodsOverlap===false) (006 DATA-006, TASKS T33).
+   * When true, `discrepancy` is still computed (a reference number), but no warning asserting a
+   * definitive cause such as "theft, damage or count error" is put in `warnings` — the caller must
+   * treat this row as "cannot reconcile", not as "problem found".
    */
   insufficientData: boolean;
-  /** insufficientData가 true인 이유(사람이 읽는 문장, 원인+대응 포함). insufficientData가
-   * false면 항상 빈 배열. */
+  /** Why insufficientData is true (human-readable sentences, cause + what to do). Always an empty
+   * array when insufficientData is false. */
   insufficientDataReasons: string[];
   warnings: string[];
 }
 
-/** 두 날짜 구간이 겹치는지(경계 포함) — SCM 입고 기간 vs 판매 기간 비교에 쓴다(006 DATA-006). */
+/** Whether two date ranges overlap (inclusive boundaries) — used to compare the SCM receipt period with the sales period (006 DATA-006). */
 export function periodsOverlap(
   a: { start: Date; end: Date },
   b: { start: Date; end: Date },
@@ -606,10 +616,11 @@ export function periodsOverlap(
 }
 
 /**
- * 재고 정합성(SCM 입고 원장 vs 실제 재고)과 정통 셀스루를 함께 계산한다. `purchases`는
- * `Warehouse.queryPurchaseAgg`(또는 그 기간에 맞게 미리 집계한) 결과, `sales`는
- * `querySalesAgg`/`querySalesPeriodAgg` 어느 채널이든 같은 `SalesAgg[]` 모양이면 된다.
- * (storeId, variantId) 기준으로 세 입력의 키를 합집합해 조인한다.
+ * Computes stock reconciliation (SCM receipt ledger vs actual stock) together with the traditional
+ * sell-through. `purchases` is the result of `Warehouse.queryPurchaseAgg` (or a pre-aggregation for
+ * that period); `sales` may come from either channel, `querySalesAgg`/`querySalesPeriodAgg`, as long
+ * as it has the same `SalesAgg[]` shape. The three inputs are joined on the union of their
+ * (storeId, variantId) keys.
  */
 export function computeStockReconciliation(
   inventory: InventoryRow[],
@@ -639,12 +650,12 @@ export function computeStockReconciliation(
     const openingStockKnown = key in openingStockByKey;
     if (!openingStockKnown) {
       insufficientDataReasons.push(
-        "기초재고 실사값이 없어 0으로 가정했습니다 — 이 가정이 틀리면 discrepancy가 실제와 다릅니다.",
+        "No opening stock count was provided, so 0 was assumed — if that assumption is wrong, the discrepancy differs from reality.",
       );
     }
     if (opts.periodsOverlap === false) {
       insufficientDataReasons.push(
-        "SCM 입고 실적 기간과 판매 데이터 기간이 겹치지 않아 같은 기간을 비교한 게 아닙니다.",
+        "The SCM receipt period and the sales data period do not overlap, so the comparison is not over the same period.",
       );
     }
     const insufficientData = insufficientDataReasons.length > 0;
@@ -659,7 +670,7 @@ export function computeStockReconciliation(
     const soldQty = Math.max(0, soldQtyRaw);
     if (soldQtyRaw < 0) {
       warnings.push(
-        `환불이 판매를 초과해 기간 순판매량이 음수(${soldQtyRaw})입니다 — 계산에는 0을 사용했습니다.`,
+        `Refunds exceeded sales, so the period net sold qty is negative (${soldQtyRaw}) — 0 was used in the calculation.`,
       );
     }
 
@@ -671,17 +682,18 @@ export function computeStockReconciliation(
     if (stockRow) {
       actualStock = parseNumeric(stockRow.inStock, "inStock");
     } else {
-      warnings.push("현재고 데이터가 없어 실사 재고와 대사할 수 없습니다.");
+      warnings.push("No current stock data — cannot reconcile against the counted stock.");
     }
 
     const discrepancy = actualStock === null ? null : actualStock - expectedStock;
-    // insufficientData면 discrepancy 숫자 자체는 남기되(참고용), "도난·파손·실사오차"처럼
-    // 확정 원인을 단정하는 경고는 내보내지 않는다(006 DATA-006 — "경고 문구도 확정 원인이
-    // 아닌 불일치 사실만 표현한다"). 대신 insufficientDataReasons가 "왜 못 믿는지"를 말한다.
+    // When insufficientData, keep the discrepancy number itself (for reference) but do not emit a
+    // warning asserting a definitive cause such as "theft, damage or count error" (006 DATA-006 —
+    // "warning text states only the mismatch, not a confirmed cause"). insufficientDataReasons says
+    // "why it cannot be trusted" instead.
     if (!insufficientData && discrepancy !== null && discrepancy !== 0) {
       warnings.push(
-        `입고 원장으로 계산한 예상 재고(${expectedStock})와 실제 재고(${actualStock})가 ` +
-          `${discrepancy}만큼 다릅니다 — 도난·파손·실사오차 등 원장에 안 잡히는 변동을 확인하세요.`,
+        `Expected stock computed from the receipt ledger (${expectedStock}) differs from actual stock (${actualStock}) ` +
+          `by ${discrepancy} — check for theft, damage or count error, or other movements not captured in the ledger.`,
       );
     }
 

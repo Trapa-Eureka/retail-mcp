@@ -1,8 +1,8 @@
 /**
- * 성능 가드 (TESTING.md §4 "성능 가드"): 판매 라인 50,000행을 ETL로 적재하고
- * reorder_suggestions(=buildReorderReport())까지 계산한 합계가 BUDGET_MS 미만이어야 한다
- * (PGlite 기준). fixtures/loyverse/*.json은 규모가 작아 이 목적에 맞지 않으므로,
- * 여기서만 쓰는 합성(in-memory) LoyverseClient로 50,000개 영수증 라인을 생성한다.
+ * Performance guard (TESTING.md §4 "performance guard"): loading 50,000 sales lines via ETL
+ * plus computing reorder_suggestions (= buildReorderReport()) must take less than BUDGET_MS in
+ * total (on PGlite). fixtures/loyverse/*.json are too small for this purpose, so a synthetic
+ * (in-memory) LoyverseClient used only here generates 50,000 receipt lines.
  */
 import { describe, expect, it } from "vitest";
 import { createTestWarehouse } from "../src/mocks/pglite.js";
@@ -16,12 +16,13 @@ const STORE_ID = "store_perf";
 const PRODUCT_COUNT = 50;
 
 /**
- * 로컬에서는 항상 ~2초 안팎(느긋하게 잡아도 여유가 크다)이지만, GitHub Actions 공유
- * 러너에서는 노이즈로 5초를 넘기는 게 우연한 플레이크가 아니라 반복 관측된 패턴이었다
- * (2차 적대적 검수 대응 중 실측: 5015/5042/5117/5165/5300/5392/5463/6567/6947ms — 전부
- * `--coverage` 없는 plain `test` job에서도 나왔다, TASKS). 5000ms는 CI 환경 기준으로
- * 너무 빡빡했다 — 관측된 최악값(6947ms)에 확실한 여유를 둔 10초로 올린다. 여전히 로컬
- * 정상 실행(~2초)의 5배라 실제 O(n²)류 회귀가 생기면 충분히 잡아낸다.
+ * Locally this is always around ~2s (with plenty of headroom even generously), but on GitHub
+ * Actions shared runners exceeding 5s due to noise was a repeatedly observed pattern, not an
+ * occasional flake (measured while responding to the second adversarial review:
+ * 5015/5042/5117/5165/5300/5392/5463/6567/6947ms — all of them also appeared in the plain
+ * `test` job without `--coverage`, TASKS). 5000ms was too tight for the CI environment — raised
+ * to 10s, a clear margin above the observed worst case (6947ms). It is still 5x the normal local
+ * run (~2s), so a real O(n²)-type regression is still caught.
  */
 const BUDGET_MS = 10_000;
 
@@ -30,17 +31,17 @@ function makeSyntheticLoyverseClient(
   totalLines: number,
   pageSize: number,
 ): LoyverseClient {
-  const stores: LvStore[] = [{ id: STORE_ID, name: "성능테스트매장" }];
+  const stores: LvStore[] = [{ id: STORE_ID, name: "Perf Test Store" }];
   const items: LvItem[] = Array.from({ length: PRODUCT_COUNT }, (_, i) => ({
     id: `itm_${i}`,
-    item_name: `상품${i}`,
+    item_name: `Product ${i}`,
     category_id: null,
     variants: [{ variant_id: `var_${i}`, sku: `SKU-${i}` }],
   }));
 
   const receipts: LvReceipt[] = [];
   for (let i = 0; i < totalLines; i++) {
-    // 최근 28일 창 안에 고르게 분산 — daysOfCover/avgDailySales 계산이 실제로 값을 갖게 한다.
+    // Spread evenly across the last 28-day window — so daysOfCover/avgDailySales actually get values.
     const dayOffset = i % 28;
     const soldAt = new Date(now.getTime() - dayOffset * 86_400_000 - (i % 3600) * 1000);
     const iso = soldAt.toISOString();
@@ -87,8 +88,8 @@ function makeSyntheticLoyverseClient(
   };
 }
 
-describe("성능 가드 — 판매 라인 50,000행 (TESTING §4)", () => {
-  it("ETL 적재 + reorder_suggestions 계산 합계가 BUDGET_MS 미만이다 (PGlite 기준)", async () => {
+describe("performance guard — 50,000 sales lines (TESTING §4)", () => {
+  it("ETL load + reorder_suggestions computation takes less than BUDGET_MS in total (on PGlite)", async () => {
     const db = await createTestWarehouse();
     const warehouse = createPgWarehouse(createPgliteConnectionProvider(db));
     const clock = createFixedClock("2026-09-01T00:00:00.000Z");
@@ -105,7 +106,7 @@ describe("성능 가드 — 판매 라인 50,000행 (TESTING §4)", () => {
     expect(syncResult.ok).toBe(true);
     expect(elapsedMs).toBeLessThan(BUDGET_MS);
 
-    // 성능 수치가 무의미해지지 않도록 실제로 50,000행이 적재됐는지도 확인한다.
+    // Also verify that 50,000 rows were actually loaded so the performance figure stays meaningful.
     const { rows } = await db.query<{ count: string }>(
       "select count(*)::text as count from sales_lines",
     );

@@ -1,7 +1,7 @@
 /**
- * fixtures/loyverse/*.json을 재생하는 목 LoyverseClient (TESTING.md §2).
- * 실제 API 응답 스키마(zod)로 파싱한 뒤 내부 Lv* 타입으로 좁혀 반환한다.
- * 커서 기반 페이지네이션을 실제로 재현한다 — 네트워크 호출 없음.
+ * Mock LoyverseClient that replays fixtures/loyverse/*.json (TESTING.md §2).
+ * Parses with the real API response schemas (zod) and returns values narrowed to the internal Lv* types.
+ * Cursor-based pagination is actually reproduced — no network calls.
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -33,8 +33,8 @@ export interface FixtureLoyverseClientOptions {
 function assertPositiveInt(name: string, value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(
-      `${name}는 1 이상의 정수여야 합니다. 받은 값: ${value}. ` +
-        `0/음수/소수/NaN을 페이지 크기로 주면 빈 페이지가 무한히 반복될 수 있습니다.`,
+      `${name} must be an integer of 1 or more. Received: ${value}. ` +
+        `A page size of 0/negative/fraction/NaN could repeat empty pages forever.`,
     );
   }
 }
@@ -44,7 +44,7 @@ interface CursorPayload {
   [key: string]: unknown;
 }
 
-/** cursor를 조회 조건(queryTag)과 함께 묶은 불투명(opaque) 토큰으로 인코딩한다. */
+/** Encodes the cursor together with the query condition (queryTag) as an opaque token. */
 function encodeCursor(payload: CursorPayload): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
@@ -62,17 +62,17 @@ function decodeCursor(cursor: string): CursorPayload {
     typeof (parsed as { offset?: unknown }).offset !== "number"
   ) {
     throw new Error(
-      `유효하지 않은 cursor입니다: "${cursor}". FixtureLoyverseClient가 이전 응답으로 발급한 ` +
-        `cursor 문자열만 그대로 전달하세요.`,
+      `Invalid cursor: "${cursor}". Pass only the cursor string exactly as issued by ` +
+        `FixtureLoyverseClient in a previous response.`,
     );
   }
   return parsed as CursorPayload;
 }
 
 /**
- * offset 기반 커서로 배열을 한 페이지씩 잘라낸다. cursor는 발급 당시의 조회 조건(queryTag,
- * 예: listReceipts의 sinceISO)을 함께 인코딩한 불투명 토큰이다 — 재사용 시 queryTag가
- * 다르면(예: sinceISO를 바꿔서 넘기면) 명확한 에러로 거부한다.
+ * Slices an array one page at a time using an offset-based cursor. The cursor is an opaque token
+ * that also encodes the query condition at issue time (queryTag, e.g. listReceipts' sinceISO) —
+ * reusing it with a different queryTag (e.g. passing a changed sinceISO) is rejected with a clear error.
  */
 function paginate<T>(
   all: T[],
@@ -86,8 +86,8 @@ function paginate<T>(
     const { offset: decodedOffset, ...decodedTag } = decoded;
     if (JSON.stringify(decodedTag) !== JSON.stringify(queryTag)) {
       throw new Error(
-        "cursor는 최초 호출과 동일한 조회 조건에서만 사용할 수 있습니다. " +
-          "조건을 바꾸려면 cursor 없이 새로 호출하세요.",
+        "The cursor can only be used with the same query condition as the initial call. " +
+          "To change the condition, call again without a cursor.",
       );
     }
     offset = decodedOffset;
@@ -129,8 +129,8 @@ export async function createFixtureLoyverseClient(
 
   const allReceipts: LvReceipt[] = receiptsRaw.receipts
     .map(toLvReceipt)
-    // 실제 API처럼 watermark 기준(updated_at) 정렬을 보장한다 — receipt_date가 아니다.
-    // 동률은 receipt_number로 안정적으로 재조회할 수 있게 한다(DESIGN §11.1).
+    // Like the real API, guarantee ordering by the watermark basis (updated_at) — not receipt_date.
+    // Ties are made stably re-queryable by receipt_number (DESIGN §11.1).
     .sort(
       (a, b) =>
         a.updated_at.localeCompare(b.updated_at) ||
@@ -145,13 +145,13 @@ export async function createFixtureLoyverseClient(
     },
 
     listItems(cursor?: string) {
-      // paginate()가 던지는 에러(잘못된 cursor)를 동기 throw가 아닌 Promise reject로 전달한다.
+      // Errors thrown by paginate() (invalid cursor) are delivered as a Promise rejection, not a synchronous throw.
       return Promise.resolve().then(() => paginate(items, itemsPageSize, cursor));
     },
 
     listReceipts(sinceISO: string, cursor?: string) {
-      // sinceISO는 실제 API의 updated_at_min에 대응한다 — receipt_date가 아니라
-      // updated_at 기준으로 필터링해야 과거 영수증의 사후 환불·취소·수정도 놓치지 않는다.
+      // sinceISO maps to the real API's updated_at_min — filtering must be by updated_at rather
+      // than receipt_date so that later refunds/cancellations/edits of old receipts are not missed.
       return Promise.resolve().then(() => {
         const filtered = allReceipts.filter((r) => r.updated_at >= sinceISO);
         return paginate(filtered, receiptsPageSize, cursor, { sinceISO });

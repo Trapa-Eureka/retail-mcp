@@ -2,11 +2,11 @@
   "stores": [
     {
       "id": "store_main",
-      "name": "본점"
+      "name": "Main Store"
     },
     {
       "id": "store_makati",
-      "name": "마카티점"
+      "name": "Makati Branch"
     }
   ]
 }
