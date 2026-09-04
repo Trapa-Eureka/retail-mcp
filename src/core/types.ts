@@ -260,6 +260,13 @@ export interface StockRow {
  * 이 애매함을 감지하면 `AmbiguousSendError`(`.name`)를 던지고, 에이전트가 그걸 보고
  * `status: "unknown"`으로 기록한다. 사람이 발송처 대시보드로 실제 발송 여부를 확인한 뒤
  * 재시도 여부를 판단해야 한다 — 자동 재시도 로직은 이 프로젝트에 없다(그 자체가 정책).
+ *
+ * 사람이 같은 run_id로 재시도할 때의 규칙(2차 적대적 검수 SR2-MAIL-003, `core/sendRetryPolicy.ts`):
+ * provider의 Idempotency-Key 중복 방지 보존 기간(`NotificationProvider.dedupeTtlMs`) **안**에서만
+ * 같은 run_id 재시도를 허용한다 — 보존 기간이 지나면 같은 키라도 provider가 새 발송으로 취급해
+ * 중복 발송되므로 에이전트가 거부하고, 사람이 대시보드 확인 후 **새 run_id**로 실행해야 한다.
+ * `sending`에 멈춘 행(예약 뒤 프로세스 크래시)은 `unknown`과 같은 취급이다 — 그 재시도가
+ * 보존 기간 안이면 `unknown`(error_code `stale_sending`)으로 마감한 뒤 새 예약을 허용한다.
  */
 export type AgentSendStatus =
   "no_suggestions" | "dry_run" | "sending" | "sent" | "failed" | "unchanged" | "unknown";
@@ -369,6 +376,20 @@ export interface Warehouse {
     presentSales: { storeId: string; variantId: string }[];
   }): Promise<void>;
   logAgentSend(e: AgentSendEntry): Promise<void>;
+  /**
+   * 한 run_id의 발송 로그 행 전부(기록 순서, 오래된 것부터) — 같은 run_id 재시도 정책
+   * (`core/sendRetryPolicy.ts`, SR2-MAIL-003)이 이전 시도의 상태·시각을 보기 위한 읽기 전용
+   * 조회다. 에이전트 감사 로그 테이블이라 가드레일 4의 "비즈니스 데이터"가 아니다.
+   */
+  listAgentSendAttempts(runId: string): Promise<AgentSendEntry[]>;
+  /**
+   * 같은 run_id 재시도(사람이 `--run-id`로 명시) 직전에, 프로세스 크래시로 `sending`에 멈춘
+   * 행을 `unknown`(error_code `stale_sending`)으로 마감한다(SR2-MAIL-003). `sent_at`은 건드리지
+   * 않는다 — 그 시각이 provider가 Idempotency-Key를 처음 본 시점의 근사값이라 중복 방지 보존
+   * 기간 계산의 기준이 되기 때문이다. 호출 조건(보존 기간 안인지)은 호출자가 정책으로 먼저
+   * 판정한다 — 이 메서드는 무조건 마감만 한다. 마감한 행 수를 반환한다.
+   */
+  markStaleSendingUnknown(runId: string): Promise<number>;
 
   /**
    * 보존 기간 정책(007 OPS-005, TASKS T34) — `snapped_at`/`sent_at`이 `before`보다 오래된
@@ -431,6 +452,14 @@ export interface SendResult {
 
 export interface NotificationProvider {
   readonly channel: "email";
+  /**
+   * 2차 적대적 검수 SR2-MAIL-003 — 이 provider가 `OutboundMessage.idempotencyKey`로 중복 발송을
+   * 막아주는 보존 기간(ms). Resend는 24시간. 이 값이 있어야 에이전트가 `unknown`/`sending` 이후
+   * 같은 run_id 재시도를 그 기간 안에서만 허용할 수 있다(`core/sendRetryPolicy.ts`). 없으면
+   * (idempotency를 지원하지 않는 provider) 그런 재시도는 항상 중복 위험이 있으므로 거부된다 —
+   * 사람이 발송 여부를 확인한 뒤 새 run_id로 실행해야 한다.
+   */
+  readonly dedupeTtlMs?: number;
   send(msg: OutboundMessage): Promise<SendResult>;
 }
 

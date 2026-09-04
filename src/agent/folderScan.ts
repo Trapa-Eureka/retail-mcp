@@ -56,6 +56,7 @@ import {
 } from "../adapters/csvExcelParser.js";
 import { createResendEmailProvider } from "../adapters/resendProvider.js";
 import { logStructured } from "../adapters/structuredLog.js";
+import { enforceSameRunRetryPolicy } from "./sendRetryGate.js";
 import { createSystemClock } from "../adapters/systemClock.js";
 import {
   createWarehouseFromEnv,
@@ -797,6 +798,10 @@ export async function runFolderScan(
     );
   }
   const recipient = opts.recipient;
+
+  // SR2-MAIL-003 — agent/reorder.ts와 동일: 같은 run_id 재시도는 provider dedupe 보존 기간 안에서만
+  // 허용하고, sending에 멈춘 행은 unknown으로 마감한 뒤 예약한다(sendRetryGate.ts 참고).
+  await enforceSameRunRetryPolicy(deps, { runId, now, recipient });
 
   await deps.warehouse.logAgentSend({
     runId,

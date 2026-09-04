@@ -772,6 +772,86 @@ describe("runFolderScan — 일일 다이제스트 (DATA-003, TASKS T31)", () =>
     expect(rows[0]?.status).toBe("unknown");
   });
 
+  describe("같은 run_id 재시도 — provider dedupe TTL(2차 적대적 검수 SR2-MAIL-003, reorder.ts와 동일 게이트)", () => {
+    const ambiguousProvider = {
+      channel: "email" as const,
+      dedupeTtlMs: 24 * 60 * 60 * 1000,
+      send: () => {
+        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        err.name = "AmbiguousSendError";
+        return Promise.reject(err);
+      },
+    };
+    const liveOpts = () => ({
+      watchDir,
+      snapshotDir,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    });
+    // 재시도 시각은 이 파일의 NOW_ISO 기준으로 계산한다(고정 문자열을 쓰면 NOW_ISO가 바뀌었을 때
+    // TTL 안/밖 판정이 조용히 뒤집힌다 — 실제로 착수 중 한 번 그렇게 실패했다).
+    const HOUR = 60 * 60 * 1000;
+    const RETRY_1H_LATER = new Date(new Date(NOW_ISO).getTime() + 1 * HOUR).toISOString();
+    const RETRY_25H_LATER = new Date(new Date(NOW_ISO).getTime() + 25 * HOUR).toISOString();
+
+    it("unknown 뒤 TTL 안(1시간 뒤) 재시도는 발송되고 로그는 unknown → sent 두 행이 된다", async () => {
+      const { db, warehouse } = await makeWarehouse();
+      await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+      const opts = { ...liveOpts(), runId: "run-retry-ok" };
+
+      await expect(
+        runFolderScan(
+          { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider: ambiguousProvider },
+          opts,
+        ),
+      ).rejects.toThrow(/타임아웃/);
+
+      const provider = createMockNotificationProvider();
+      const retried = await runFolderScan(
+        { warehouse, clock: createFixedClock(RETRY_1H_LATER), notificationProvider: provider },
+        opts,
+      );
+      expect(retried.status).toBe("sent");
+      expect(provider.sent).toHaveLength(1);
+      expect(provider.sent[0]?.idempotencyKey).toBe("run-retry-ok");
+
+      const { rows } = await db.query<{ status: string }>(
+        "select status from agent_send_log where run_id = $1 order by id asc",
+        ["run-retry-ok"],
+      );
+      expect(rows.map((r) => r.status)).toEqual(["unknown", "sent"]);
+    });
+
+    it("unknown 뒤 TTL이 지난(25시간 뒤) 재시도는 거부되고 provider는 호출되지 않는다", async () => {
+      const { db, warehouse } = await makeWarehouse();
+      await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");
+      const opts = { ...liveOpts(), runId: "run-retry-late" };
+
+      await expect(
+        runFolderScan(
+          { warehouse, clock: createFixedClock(NOW_ISO), notificationProvider: ambiguousProvider },
+          opts,
+        ),
+      ).rejects.toThrow(/타임아웃/);
+
+      const provider = createMockNotificationProvider();
+      await expect(
+        runFolderScan(
+          { warehouse, clock: createFixedClock(RETRY_25H_LATER), notificationProvider: provider },
+          opts,
+        ),
+      ).rejects.toMatchObject({ name: "SendRetryRefusedError" });
+      expect(provider.sent).toHaveLength(0);
+
+      const { rows } = await db.query<{ status: string }>(
+        "select status from agent_send_log where run_id = $1",
+        ["run-retry-late"],
+      );
+      expect(rows.map((r) => r.status)).toEqual(["unknown"]);
+    });
+  });
+
   it("dry_run 반복 실행은 다이제스트 판정과 무관하다 — 매번 같은 리포트를 그대로 다시 보여준다", async () => {
     const { warehouse } = await makeWarehouse();
     await writeFile(join(watchDir, "inventory.csv"), HAPPY_CSV, "utf8");

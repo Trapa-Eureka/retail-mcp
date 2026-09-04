@@ -122,6 +122,7 @@ npm publish 전 적대적 검수(`docs/004_NPM_RELEASE_PACKAGING_REVIEW.md`~`doc
 - [x] PID 재사용이 stale lock으로 정확히 판별되고, 다른 호스트가 쓴 락은 자동 회수되지 않음(OPS-002) — `tests/fileLock.test.ts`(신규 describe 6 tests)
 - [x] latest file 동률(mtime 동일) 시 결정론적으로 처리됨(OPS-003) — `tests/folderScan.test.ts`(`utimes`로 mtime을 강제로 맞춘 뒤 반복 스캔해도 항상 같은 파일 선택 확인)
 - [x] 이메일 발송 timeout이 `unknown` 상태로 남고 사람 확인 없이 자동 재시도하지 않음, Idempotency-Key 전달(OPS-004) — `tests/resendProvider.test.ts`, `tests/pgWarehouse.test.ts`, `tests/folderScan.test.ts`
+- [x] 같은 run_id 재시도가 provider dedupe 보존 기간(Resend 24h − 안전 여유 1h) 안에서만 허용되고, 밖이면 `SendRetryRefusedError`로 거부돼 provider가 호출되지 않음; `sending`에 멈춘 행은 보존 기간 안 재시도에서 `unknown(stale_sending)`으로 마감(`sent_at` 유지); dedupe 미지원 provider는 항상 거부; `failed` 뒤 재시도는 무제한(2차 적대적 검수 SR2-MAIL-003) — `tests/sendRetryPolicy.test.ts`(순수 판정 11 tests: 경계 같으면 거부/1ms 안이면 허용, anchor=가장 오래된 unknown/sending), `tests/reorderAgent.test.ts`(신규 describe 6 tests), `tests/folderScan.test.ts`(신규 describe 2 tests), `tests/pgWarehouse.test.ts`(`listAgentSendAttempts`/`markStaleSendingUnknown` 2 tests)
 - [x] 구조화 로그가 JSON으로 파싱 가능하고, 보존 기간 지난 `agent_send_log`/`inventory_snapshots` 행이 `npm run cleanup`으로 정리됨(OPS-005) — `tests/structuredLog.test.ts`, `tests/pgWarehouse.test.ts`(신규 describe 4 tests)
 
 **Postgres 계약 게이트 (TASKS T35 — 완료, CI 전용)**

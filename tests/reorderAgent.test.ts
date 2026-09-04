@@ -349,6 +349,199 @@ describe("재주문 에이전트 (agent/reorder.ts)", () => {
     });
   });
 
+  describe("같은 run_id 재시도 — provider dedupe TTL 상태 머신(2차 적대적 검수 SR2-MAIL-003)", () => {
+    // NOW_ISO(2026-09-01T09:00:00Z) 기준으로 계산 — 고정 문자열을 쓰면 NOW_ISO가 바뀔 때 TTL
+    // 안/밖 판정이 조용히 뒤집힌다(folderScan.test.ts와 같은 이유).
+    const HOUR = 60 * 60 * 1000;
+    const RETRY_1H_LATER = new Date(new Date(NOW_ISO).getTime() + 1 * HOUR).toISOString();
+    const RETRY_25H_LATER = new Date(new Date(NOW_ISO).getTime() + 25 * HOUR).toISOString();
+    const liveOpts = {
+      businessTimezone: BUSINESS_TIMEZONE,
+      sendMode: "live" as const,
+      confirm: true,
+      recipient: "owner@example.com",
+    };
+    // 실제 resendProvider.ts가 응답 유실 시 던지는 것과 같은 모양(.name)의 provider. dedupeTtlMs는
+    // 실 Resend와 같이 24시간으로 선언한다(unknown을 남기는 역할만 하고 실제 send는 항상 실패).
+    const ambiguousProvider = {
+      channel: "email" as const,
+      dedupeTtlMs: 24 * 60 * 60 * 1000,
+      send: () => {
+        const err = new Error("Resend 요청이 타임아웃됐습니다(시뮬레이션).");
+        err.name = "AmbiguousSendError";
+        return Promise.reject(err);
+      },
+    };
+
+    async function statusesOf(
+      runId: string,
+    ): Promise<{ status: string; error_code: string | null }[]> {
+      const { rows } = await db.query<{ status: string; error_code: string | null }>(
+        "select status, error_code from agent_send_log where run_id = $1 order by id asc",
+        [runId],
+      );
+      return rows;
+    }
+
+    it("unknown 뒤 TTL 안(1시간 뒤)의 같은 run_id 재시도는 허용되고 실제로 발송된다", async () => {
+      await seedSalesAndStock(warehouse);
+      const opts = { ...liveOpts, runId: "run-retry-ok" };
+
+      await expect(
+        runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
+      ).rejects.toThrow(/타임아웃/);
+      expect(await statusesOf("run-retry-ok")).toEqual([
+        { status: "unknown", error_code: "AmbiguousSendError" },
+      ]);
+
+      const provider = createMockNotificationProvider();
+      const retried = await runReorderAgent(
+        makeDeps({ clock: createFixedClock(RETRY_1H_LATER), notificationProvider: provider }),
+        opts,
+      );
+      expect(retried.status).toBe("sent");
+      expect(provider.sent).toHaveLength(1);
+      expect(provider.sent[0]?.idempotencyKey).toBe("run-retry-ok"); // 같은 키 → provider가 dedupe
+      expect(await statusesOf("run-retry-ok")).toEqual([
+        { status: "unknown", error_code: "AmbiguousSendError" },
+        { status: "sent", error_code: null },
+      ]);
+    });
+
+    it("unknown 뒤 TTL이 지난(25시간 뒤) 같은 run_id 재시도는 SendRetryRefusedError로 거부되고 provider는 호출되지 않는다", async () => {
+      await seedSalesAndStock(warehouse);
+      const opts = { ...liveOpts, runId: "run-retry-late" };
+
+      await expect(
+        runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
+      ).rejects.toThrow(/타임아웃/);
+
+      const provider = createMockNotificationProvider();
+      await expect(
+        runReorderAgent(
+          makeDeps({ clock: createFixedClock(RETRY_25H_LATER), notificationProvider: provider }),
+          opts,
+        ),
+      ).rejects.toMatchObject({
+        name: "SendRetryRefusedError",
+        message: expect.stringMatching(/보존 기간.*지났습니다.*--run-id 없이/s) as unknown,
+      });
+      expect(provider.sent).toHaveLength(0);
+      // 로그는 그대로 — 새 sending 예약이 만들어지지 않았다.
+      expect(await statusesOf("run-retry-late")).toEqual([
+        { status: "unknown", error_code: "AmbiguousSendError" },
+      ]);
+    });
+
+    it("sending에 멈춘 행(크래시 흉내)은 TTL 안 재시도에서 unknown(stale_sending)으로 마감된 뒤 새 예약으로 발송된다", async () => {
+      await seedSalesAndStock(warehouse);
+      // 이전 실행이 예약만 하고 죽은 상황 — sending 행만 남아 있다.
+      await warehouse.logAgentSend({
+        runId: "run-stale",
+        sentAt: new Date(NOW_ISO),
+        status: "sending",
+        recipient: "owner@example.com",
+        subject: "s",
+        suggestionCount: 2,
+        messageId: null,
+        dryRun: false,
+        errorCode: null,
+      });
+
+      const provider = createMockNotificationProvider();
+      const retried = await runReorderAgent(
+        makeDeps({ clock: createFixedClock(RETRY_1H_LATER), notificationProvider: provider }),
+        { ...liveOpts, runId: "run-stale" },
+      );
+      expect(retried.status).toBe("sent");
+      expect(provider.sent).toHaveLength(1);
+      expect(await statusesOf("run-stale")).toEqual([
+        { status: "unknown", error_code: "stale_sending" },
+        { status: "sent", error_code: null },
+      ]);
+      // stale 마감의 sent_at은 원래 예약 시각을 유지한다(TTL 기준 시각 보존).
+      const { rows } = await db.query<{ sent_at: string | Date }>(
+        "select sent_at from agent_send_log where run_id = 'run-stale' and status = 'unknown'",
+      );
+      expect(new Date(rows[0]!.sent_at).toISOString()).toBe(new Date(NOW_ISO).toISOString());
+    });
+
+    it("sending에 멈춘 행이 TTL을 지났으면 마감하지 않고 거부한다 — 행은 sending 그대로 남는다", async () => {
+      await seedSalesAndStock(warehouse);
+      await warehouse.logAgentSend({
+        runId: "run-stale-late",
+        sentAt: new Date(NOW_ISO),
+        status: "sending",
+        recipient: "owner@example.com",
+        subject: "s",
+        suggestionCount: 2,
+        messageId: null,
+        dryRun: false,
+        errorCode: null,
+      });
+
+      const provider = createMockNotificationProvider();
+      await expect(
+        runReorderAgent(
+          makeDeps({ clock: createFixedClock(RETRY_25H_LATER), notificationProvider: provider }),
+          { ...liveOpts, runId: "run-stale-late" },
+        ),
+      ).rejects.toMatchObject({
+        name: "SendRetryRefusedError",
+        message: expect.stringContaining("프로세스가 결과를 기록하지 못했습니다") as unknown,
+      });
+      expect(provider.sent).toHaveLength(0);
+      expect(await statusesOf("run-stale-late")).toEqual([{ status: "sending", error_code: null }]);
+    });
+
+    it("provider가 dedupe를 지원하지 않으면(dedupeTtlMs 없음) unknown 뒤 같은 run_id 재시도는 즉시 거부된다", async () => {
+      await seedSalesAndStock(warehouse);
+      const opts = { ...liveOpts, runId: "run-no-dedupe" };
+      await expect(
+        runReorderAgent(makeDeps({ notificationProvider: ambiguousProvider }), opts),
+      ).rejects.toThrow(/타임아웃/);
+
+      const noDedupeProvider = createMockNotificationProvider({ dedupeTtlMs: null });
+      expect(noDedupeProvider.dedupeTtlMs).toBeUndefined();
+      await expect(
+        runReorderAgent(
+          makeDeps({
+            clock: createFixedClock(RETRY_1H_LATER),
+            notificationProvider: noDedupeProvider,
+          }),
+          opts,
+        ),
+      ).rejects.toThrow(/중복 방지를 지원하지 않아/);
+      expect(noDedupeProvider.sent).toHaveLength(0);
+    });
+
+    it("회귀: failed(확실한 실패) 뒤 같은 run_id 재시도는 TTL과 무관하게 허용된다", async () => {
+      await seedSalesAndStock(warehouse);
+      const opts = { ...liveOpts, runId: "run-after-failed" };
+      await expect(
+        runReorderAgent(
+          makeDeps({
+            notificationProvider: createMockNotificationProvider({
+              failFor: ["owner@example.com"],
+            }),
+          }),
+          opts,
+        ),
+      ).rejects.toThrow(/failFor/);
+      expect(await statusesOf("run-after-failed")).toEqual([
+        { status: "failed", error_code: "Error" },
+      ]);
+
+      const provider = createMockNotificationProvider();
+      const retried = await runReorderAgent(
+        makeDeps({ clock: createFixedClock(RETRY_25H_LATER), notificationProvider: provider }),
+        opts,
+      );
+      expect(retried.status).toBe("sent");
+      expect(provider.sent).toHaveLength(1);
+    });
+  });
+
   it("renderReportText는 매장·품목·경고를 사람이 읽는 형태로 담는다", async () => {
     await seedSalesAndStock(warehouse);
     const report = await buildReorderReport(
