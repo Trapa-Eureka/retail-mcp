@@ -84,8 +84,12 @@ jobs:
         run: |
           name="$(node -p 'require("./package.json").name')"
           version="$(node -p 'require("./package.json").version')"
-          # 레지스트리 전파에 몇 초 걸릴 수 있어 짧게 재시도한다.
-          for i in 1 2 3 4 5 6; do
+          # 레지스트리 전파를 기다리며 재시도한다. 첫 게시(v0.1.0, 2026-09-04) 때 publish는 12:20:56에
+          # 성공했는데 이 확인은 10초×6=60초 안에 404만 받아 거짓 실패로 끝났다(1~2분 뒤엔 정상 조회).
+          # 그래서 창을 3분(10초×18)으로 늘린다 — 이 step은 게시 자체를 되돌리지 못하므로(같은 버전
+          # 재게시는 npm이 거부) 실패해도 "게시 안 됨"이 아니라 "아직 못 읽음"일 수 있다는 걸 메시지에
+          # 그대로 적는다.
+          for i in $(seq 1 18); do
             if npm view "${name}@${version}" version --json >/dev/null 2>&1; then
               echo "레지스트리 확인: ${name}@${version}"
               npm view "${name}@${version}" dist.tarball dist.integrity --json
@@ -93,5 +97,5 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::게시 후 ${name}@${version} 를 레지스트리에서 읽지 못했습니다 — npmjs.com에서 직접 확인하세요."
+          echo "::error::게시 후 3분 안에 ${name}@${version} 를 레지스트리에서 읽지 못했습니다 — 위 publish step에 '+ ${name}@${version}' 가 찍혔다면 게시는 된 것이고 전파만 늦은 것입니다. npmjs.com에서 직접 확인하세요."
           exit 1
