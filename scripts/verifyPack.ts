@@ -113,6 +113,9 @@ async function verifyMcpServerBin(installDir: string): Promise<void> {
   }
 }
 
+/** Store name typed into the onboarding CLI in step 4; must show up in the generated template. */
+const SMOKE_STORE_NAME = "Smoke Test Store";
+
 async function verifyOnboardBin(installDir: string): Promise<void> {
   heading("4) Run retail-mcp-onboard (onboarding CLI) bin — check .env + template creation");
   const binPath = path.join(installDir, "node_modules", ".bin", "retail-mcp-onboard");
@@ -122,9 +125,20 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
   await mkdir(onboardCwd, { recursive: true });
 
   // Same order as the collectOnboardAnswers() questions: mode → DB connection string (empty =
-  // embedded) → watch folder → snapshot folder → threshold (empty = default) → recipient email →
-  // Resend API key (empty = skip send settings, sender address is not asked).
-  const answers = ["branch", "", "./watch", "./snapshot", "", "smoke@example.com", ""].join("\n");
+  // embedded) → store name → watch folder → snapshot folder → threshold (empty = default) →
+  // recipient email → Resend API key (empty = skip send settings, sender address is not asked).
+  // Adding a question to onboarding without extending this list makes this step fail on the
+  // recipient prompt ("No value was received ... after 3 attempts") — that happened once (2026-09-04).
+  const answers = [
+    "branch",
+    "",
+    SMOKE_STORE_NAME,
+    "./watch",
+    "./snapshot",
+    "",
+    "smoke@example.com",
+    "",
+  ].join("\n");
 
   const { spawnSync } = await import("node:child_process");
   const result = spawnSync(binPath, [], {
@@ -147,7 +161,17 @@ async function verifyOnboardBin(installDir: string): Promise<void> {
   await stat(templatePath).catch(() => {
     throw new Error(`Example template CSV was not created: ${templatePath}`);
   });
-  console.log(".env + example template CSV creation confirmed");
+  const template = await readFile(templatePath, "utf8");
+  const [header, firstRow] = template.trim().split("\n");
+  if (!header?.startsWith("store,product,sku,")) {
+    throw new Error(`Example template header is not the English column contract:\n${header ?? ""}`);
+  }
+  if (!firstRow?.startsWith(`${SMOKE_STORE_NAME},`)) {
+    throw new Error(
+      `Example template's store column does not carry the onboarding answer "${SMOKE_STORE_NAME}":\n${firstRow ?? ""}`,
+    );
+  }
+  console.log(".env + example template CSV creation confirmed (store name from onboarding)");
 }
 
 /**
