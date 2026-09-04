@@ -5,6 +5,7 @@
  */
 import type {
   AgentSendEntry,
+  AgentSendStatus,
   InventoryRow,
   ProductRow,
   PurchaseAgg,
@@ -630,6 +631,55 @@ async function logAgentSendOn(session: DbSession, e: AgentSendEntry): Promise<vo
   }
 }
 
+// type alias(인터페이스 아님) — DbSession.query<T extends Record<string, unknown>> 제약을 만족시키기 위해.
+type AgentSendLogRow = {
+  run_id: string;
+  sent_at: string | Date;
+  status: AgentSendStatus;
+  recipient: string | null;
+  subject: string | null;
+  suggestion_count: number;
+  message_id: string | null;
+  dry_run: boolean;
+  error_code: string | null;
+};
+
+/** SR2-MAIL-003 — 같은 run_id 재시도 정책(`core/sendRetryPolicy.ts`)의 읽기 재료. id 오름차순 =
+ * 기록 순서. `sent_at`은 드라이버에 따라 Date 또는 문자열로 오므로 경계에서 Date로 통일한다. */
+async function listAgentSendAttemptsOn(
+  session: DbSession,
+  runId: string,
+): Promise<AgentSendEntry[]> {
+  const { rows } = await session.query<AgentSendLogRow>(
+    `select run_id, sent_at, status, recipient, subject, suggestion_count, message_id, dry_run, error_code
+       from agent_send_log where run_id = $1 order by id asc`,
+    [runId],
+  );
+  return rows.map((r) => ({
+    runId: r.run_id,
+    sentAt: r.sent_at instanceof Date ? r.sent_at : new Date(r.sent_at),
+    status: r.status,
+    recipient: r.recipient,
+    subject: r.subject,
+    suggestionCount: r.suggestion_count,
+    messageId: r.message_id,
+    dryRun: r.dry_run,
+    errorCode: r.error_code,
+  }));
+}
+
+/** SR2-MAIL-003 — `sending`에 멈춘 행을 `unknown`(stale_sending)으로 마감한다. `sent_at`은 의도적으로
+ * 유지한다(중복 방지 보존 기간 계산의 기준 시각, core/types.ts Warehouse 주석 참고). 조건 판정은
+ * 호출자(`agent/sendRetryGate.ts`)가 이미 끝냈다 — 여기서는 무조건 마감만 한다. */
+async function markStaleSendingUnknownOn(session: DbSession, runId: string): Promise<number> {
+  const { rows } = await session.query<{ id: string }>(
+    `update agent_send_log set status = 'unknown', error_code = 'stale_sending'
+       where run_id = $1 and status = 'sending' returning id`,
+    [runId],
+  );
+  return rows.length;
+}
+
 /**
  * 007 OPS-005(TASKS T34) — `scripts/cleanup.ts`(사람 전용) 전용. `dryRun`이면 실제로
  * 지우지 않고 대상 행 수만 센다(삭제는 되돌릴 수 없어 기본은 항상 dry-run이 되도록 스크립트
@@ -699,6 +749,8 @@ function buildWarehouseOnSession(session: DbSession): Warehouse {
     queryProducts: (variantIds) => queryProductsOn(session, variantIds),
     deactivateMissingCsvRows: (params) => deactivateMissingCsvRowsOn(session, params),
     logAgentSend: (e) => logAgentSendOn(session, e),
+    listAgentSendAttempts: (runId) => listAgentSendAttemptsOn(session, runId),
+    markStaleSendingUnknown: (runId) => markStaleSendingUnknownOn(session, runId),
     deleteOldInventorySnapshots: (before, opts) =>
       deleteOldInventorySnapshotsOn(session, before, opts?.dryRun ?? false),
     deleteOldAgentSendLog: (before, opts) =>
@@ -754,6 +806,10 @@ export function createPgWarehouse(provider: DbConnectionProvider): Warehouse {
     deactivateMissingCsvRows: (params) =>
       withSession(provider, (session) => deactivateMissingCsvRowsOn(session, params)),
     logAgentSend: (e) => withSession(provider, (session) => logAgentSendOn(session, e)),
+    listAgentSendAttempts: (runId) =>
+      withSession(provider, (session) => listAgentSendAttemptsOn(session, runId)),
+    markStaleSendingUnknown: (runId) =>
+      withSession(provider, (session) => markStaleSendingUnknownOn(session, runId)),
     deleteOldInventorySnapshots: (before, opts) =>
       withSession(provider, (session) =>
         deleteOldInventorySnapshotsOn(session, before, opts?.dryRun ?? false),

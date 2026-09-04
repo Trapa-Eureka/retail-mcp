@@ -7,9 +7,17 @@
  */
 import type { NotificationProvider, OutboundMessage, SendResult } from "../core/types.js";
 
+/** 기본값은 실 Resend와 같은 24시간 — 에이전트 테스트가 실제 운영 설정과 같은 조건으로 돈다. */
+export const MOCK_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface MockNotificationProviderOptions {
   /** 이 수신자로 보내려 하면 send()가 강제로 reject된다(sheet_mcp의 failFor와 동일 패턴). */
   failFor?: string[];
+  /**
+   * SR2-MAIL-003 — `NotificationProvider.dedupeTtlMs`로 노출할 값. 기본 MOCK_DEDUPE_TTL_MS(24시간).
+   * `null`이면 필드 자체를 생략해 "idempotency dedupe를 지원하지 않는 provider"를 흉내낸다.
+   */
+  dedupeTtlMs?: number | null;
 }
 
 export interface MockNotificationProvider extends NotificationProvider {
@@ -23,9 +31,12 @@ export function createMockNotificationProvider(
   const failFor = new Set(options.failFor ?? []);
   const sent: OutboundMessage[] = [];
   let counter = 0;
+  const dedupeTtlMs = options.dedupeTtlMs === undefined ? MOCK_DEDUPE_TTL_MS : options.dedupeTtlMs;
 
   return {
     channel: "email",
+    // exactOptionalPropertyTypes: null(미지원)이면 `dedupeTtlMs: undefined`를 넣지 않고 필드를 뺀다.
+    ...(dedupeTtlMs !== null ? { dedupeTtlMs } : {}),
     sent,
     send(msg: OutboundMessage): Promise<SendResult> {
       if (failFor.has(msg.to)) {

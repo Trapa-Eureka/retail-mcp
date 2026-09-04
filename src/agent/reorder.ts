@@ -42,6 +42,7 @@ import {
   ensureNetworkMigrationsApplied,
 } from "../adapters/warehouseFactory.js";
 import { syncAll } from "../etl/sync.js";
+import { enforceSameRunRetryPolicy } from "./sendRetryGate.js";
 
 // ── 리포트 조립 (결정론, T9 재사용) ────────────────────────────────────────
 
@@ -368,6 +369,11 @@ export async function runReorderAgent(
     );
   }
   const recipient = opts.recipient;
+
+  // SR2-MAIL-003 — 같은 run_id 재시도(사람이 --run-id로 명시)는 provider의 Idempotency-Key 보존
+  // 기간 안에서만 허용한다. 기간이 지났으면 여기서 거부(중복 발송 위험), 안이면 sending에 멈춘
+  // 행을 unknown으로 마감해 아래 예약이 막히지 않게 한다. 새 run_id면 아무 일도 없다.
+  await enforceSameRunRetryPolicy(deps, { runId, now: deps.clock.now(), recipient });
 
   // 예약: send() 호출 전에 'sending' 행을 먼저 커밋한다. run_id가 이미 sending/sent면 여기서
   // unique violation으로 실패해 재발송을 막는다(DESIGN §11.5, pgWarehouse.logAgentSend).

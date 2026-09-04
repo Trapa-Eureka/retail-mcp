@@ -13,6 +13,13 @@ import type { NotificationProvider, OutboundMessage, SendResult } from "../core/
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_RESEND_TIMEOUT_MS = 30_000;
+/**
+ * 2차 적대적 검수 SR2-MAIL-003 — Resend가 같은 `Idempotency-Key`를 중복 발송 없이 dedupe해
+ * 주는 보존 기간(resend.com API 문서 "Idempotency keys expire after 24 hours", 2026-09-03 확인).
+ * 이 값을 `NotificationProvider.dedupeTtlMs`로 노출해 에이전트가 `unknown`/`sending` 이후 같은
+ * run_id 재시도를 이 기간 안에서만 허용한다(`core/sendRetryPolicy.ts` — 안전 여유는 거기서 뺀다).
+ */
+export const RESEND_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -97,6 +104,7 @@ export function createResendEmailProvider(
 
   return {
     channel: "email",
+    dedupeTtlMs: RESEND_IDEMPOTENCY_TTL_MS,
 
     async send(msg: OutboundMessage): Promise<SendResult> {
       let response: Response;

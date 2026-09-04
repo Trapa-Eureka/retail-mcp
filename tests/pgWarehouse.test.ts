@@ -829,6 +829,89 @@ describe("pgWarehouse (PGlite)", () => {
     });
   });
 
+  describe("listAgentSendAttempts / markStaleSendingUnknown — 같은 run_id 재시도 정책 재료(SR2-MAIL-003)", () => {
+    const base = {
+      runId: "run-attempts",
+      recipient: "owner@example.com",
+      subject: "s",
+      suggestionCount: 1,
+      messageId: null,
+      dryRun: false,
+      errorCode: null,
+    };
+
+    it("listAgentSendAttempts는 그 run_id의 행만 기록 순서로 돌려주고 sent_at을 Date로 준다", async () => {
+      await warehouse.logAgentSend({
+        ...base,
+        sentAt: new Date("2026-09-01T07:00:00Z"),
+        status: "sending",
+      });
+      await warehouse.logAgentSend({
+        ...base,
+        sentAt: new Date("2026-09-01T07:00:30Z"),
+        status: "unknown",
+        errorCode: "AmbiguousSendError",
+      });
+      await warehouse.logAgentSend({
+        ...base,
+        runId: "run-other",
+        sentAt: new Date("2026-09-01T08:00:00Z"),
+        status: "dry_run",
+      });
+
+      const attempts = await warehouse.listAgentSendAttempts("run-attempts");
+      expect(attempts).toHaveLength(1); // sending 예약 행이 unknown으로 갱신됐으므로 한 행
+      expect(attempts[0]).toMatchObject({
+        runId: "run-attempts",
+        status: "unknown",
+        errorCode: "AmbiguousSendError",
+        recipient: "owner@example.com",
+        suggestionCount: 1,
+        dryRun: false,
+      });
+      expect(attempts[0]?.sentAt).toBeInstanceOf(Date);
+      expect(attempts[0]?.sentAt.toISOString()).toBe("2026-09-01T07:00:30.000Z");
+      expect(await warehouse.listAgentSendAttempts("run-none")).toEqual([]);
+    });
+
+    it("markStaleSendingUnknown은 sending 행만 unknown(stale_sending)으로 바꾸고 sent_at은 유지한다", async () => {
+      await warehouse.logAgentSend({
+        ...base,
+        runId: "run-stale",
+        sentAt: new Date("2026-09-01T07:00:00Z"),
+        status: "sending",
+      });
+      await warehouse.logAgentSend({
+        ...base,
+        runId: "run-stale",
+        sentAt: new Date("2026-09-01T06:00:00Z"),
+        status: "dry_run",
+      });
+
+      expect(await warehouse.markStaleSendingUnknown("run-stale")).toBe(1);
+      expect(await warehouse.markStaleSendingUnknown("run-stale")).toBe(0); // 두 번째는 대상 없음
+
+      const attempts = await warehouse.listAgentSendAttempts("run-stale");
+      expect(attempts.map((a) => [a.status, a.errorCode, a.sentAt.toISOString()])).toEqual([
+        ["unknown", "stale_sending", "2026-09-01T07:00:00.000Z"],
+        ["dry_run", null, "2026-09-01T06:00:00.000Z"],
+      ]);
+
+      // 마감 뒤에는 같은 run_id로 새 sending 예약이 가능하다(부분 unique 인덱스 대상에서 빠짐).
+      await warehouse.logAgentSend({
+        ...base,
+        runId: "run-stale",
+        sentAt: new Date("2026-09-01T08:00:00Z"),
+        status: "sending",
+      });
+      expect((await warehouse.listAgentSendAttempts("run-stale")).map((a) => a.status)).toEqual([
+        "unknown",
+        "dry_run",
+        "sending",
+      ]);
+    });
+  });
+
   describe("deleteOldInventorySnapshots / deleteOldAgentSendLog — 보존 정책(007 OPS-005, TASKS T34)", () => {
     it("agent_send_log — before보다 오래된 행만 지우고 최근 행은 남긴다", async () => {
       await warehouse.logAgentSend({
