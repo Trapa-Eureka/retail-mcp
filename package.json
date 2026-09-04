@@ -1,6 +1,6 @@
 {
   "name": "@shiz_son/retail-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sell-through and inventory BI MCP server for multi-store retail, with a reorder-suggestion agent (CSV/Excel folder watch, embedded PGlite, Claude/MCP tools)",
   "license": "MIT",
   "author": "Trapa Eureka",

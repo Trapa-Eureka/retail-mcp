@@ -6,6 +6,17 @@ For the implementation/test evidence behind each entry, see the corresponding ta
 
 ## [Unreleased]
 
+(Changes for the next release accumulate here.)
+
+## [0.2.0] - 2026-09-04
+
+English-only release. The package, its README on npmjs.com and every message the tools print are now English. The input file format changed (see **Breaking** below), hence the minor bump.
+
+### Added
+
+- `retail-mcp-onboard` asks for the store/branch name (question 3, default `Main Store`) and writes it into the `store` column of the generated example template. Store and product names are row data in your inventory file, never fixed in the tool.
+- Migration runner reports `rebaselined` ids (see Changed) so operators can tell a one-time checksum rewrite from a real content change.
+
 ### Changed
 
 - All documentation, code comments, log/error messages, CLI prompts, email templates and test data are now English.

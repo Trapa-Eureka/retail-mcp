@@ -252,6 +252,7 @@ With macOS `launchd`, put the same command in `ProgramArguments` of `~/Library/L
 - 2026-09-02: v0.1 (Loyverse path) implementation complete — production deployment on hold until the pilot is confirmed.
 - 2026-09-03: v0.2 (CSV/Excel channel) implementation complete — branch and HQ modes, onboarding CLI, SCM reconciliation, pack-size rounding.
 - 2026-09-04: **v0.1.0 first npm publish** — all findings from two pre-release adversarial reviews (59) handled, 8-step release gate passed, published from GitHub Actions with provenance.
+- 2026-09-04: **v0.2.0** — the whole project (docs, messages, prompts, test data) is English; the CSV/SCM column names are English (breaking — regenerate the template with `retail-mcp-onboard`); onboarding asks for the store name; publishing switched to npm trusted publishing (OIDC, no long-lived token).
 
 ## Things to Know
 
