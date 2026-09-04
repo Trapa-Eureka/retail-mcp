@@ -40,6 +40,13 @@ jobs:
   # 러너(ubuntu-latest)에서 도는 것 자체로 "Linux 미검증"이 자동으로 해소된다.
   test:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    # SR2-CI-003(2차 적대적 검수) — job 전체 상한. Vitest의 testTimeout/hookTimeout은 개별
+    # 테스트만 제한하고 `npm ci`·verify:pack의 tarball 설치·npm audit 네트워크 hang은 제한하지
+    # 않으므로, 교착된 PR(악성이든 사고든)이 러너를 6시간(GitHub 기본) 점유하지 못하게 한다.
+    # 값 = 관측 최대치의 약 2배: PR #63~#68(2026-09-04) 최대 24m28s(macOS, node 20). macOS
+    # 러너 편차가 크고(같은 job이 5m~24m) 테스트 수가 계속 늘어 여유를 넉넉히 둔다. 재조정
+    # 기준은 TESTING.md §8 "공급망 게이트".
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +72,8 @@ jobs:
   coverage:
     name: coverage thresholds (QA-002/QA-003)
     runs-on: ubuntu-latest
+    # SR2-CI-003 — 관측 최대 10m17s(PR #68, 2026-09-04)의 약 2배.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -80,6 +89,9 @@ jobs:
   postgres-component:
     name: postgres component tests (QA-004)
     runs-on: ubuntu-latest
+    # SR2-CI-003 — 관측 최대 4m24s(PR #65, 2026-09-04)의 약 3배(서비스 컨테이너 pull·health
+    # check 대기가 포함돼 편차가 큼).
+    timeout-minutes: 15
     services:
       postgres:
         # SR2-CI-002 — 이동 가능한 `postgres:16` 태그 대신 manifest digest로 고정(Docker Hub
@@ -117,6 +129,10 @@ jobs:
   audit:
     name: dependency audit + secret scan (QA-006)
     runs-on: ubuntu-latest
+    # SR2-CI-003 — 관측 최대 15m0s(PR #66, 2026-09-04 — npm audit 레지스트리 재시도 포함)의
+    # 2배. audit 재시도(src/adapters/npmAudit.ts)는 최대 3회·지수 백오프라 그 자체로는 수 분
+    # 안에 끝나므로 30분을 넘기면 진짜 hang이다.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
