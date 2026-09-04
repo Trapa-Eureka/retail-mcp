@@ -1,6 +1,6 @@
 # CLAUDE.md — retail-mcp 스티어링
 
-리테일 다지점용 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트. v0.1 데이터 소스는 Loyverse 단일(구현 완료, 실배포는 파일럿 확정 전까지 보류) — 다음 실제 출시 대상은 **v0.2 CSV/Excel 업로드 채널**(폴더 감시, 임베디드 PGlite 기본값)이다. 배경·지표 정의는 `docs/SPEC.md`, 구현 설계는 `docs/DESIGN.md`. npm 공개 배포 대상은 `@trapa-eureka/retail-mcp`(MIT) — 출시 전 검수·정책은 `docs/SPEC.md` §18, `docs/004~009`.
+리테일 다지점용 셀스루·재고 BI MCP 서버 + 재주문 제안 에이전트. v0.1 데이터 소스는 Loyverse 단일(구현 완료, 실배포는 파일럿 확정 전까지 보류) — 다음 실제 출시 대상은 **v0.2 CSV/Excel 업로드 채널**(폴더 감시, 임베디드 PGlite 기본값)이다. 배경·지표 정의는 `docs/SPEC.md`, 구현 설계는 `docs/DESIGN.md`. npm 공개 배포 대상은 `@shiz_son/retail-mcp`(MIT) — 출시 전 검수·정책은 `docs/SPEC.md` §18, `docs/004~009`.
 
 ## 스택
 
@@ -96,6 +96,6 @@ tests/  fixtures/loyverse/  fixtures/csvExcel/  fixtures/scm/  component/(실 Po
 - npm publish 준비 전 적대적 검수(`docs/004~009`, finding 33건 + 문서 정합성 5건)를 실행했고 판정은 **출시 차단**이었다. T29~T35(패키징/보안/데이터/운영/테스트 게이트) 전부 완료 — finding별 해결 근거는 `docs/010_FINDING_TEST_CROSSREF.md`. 남은 건 T36(이 절 — 운영 문서 동기화)과 T37(`docs/008` 8단계 release gate 최종 통과 + 사람 확인)뿐이다. `npm publish`는 T37 통과 후 **사용자에게 별도로 확인받기 전까지** 실행하지 않는다.
 - 파일 기반 authoritative 스캔(CSV/Excel 폴더 채널)에서 사라진 SKU/매장은 **자동 tombstone**(비활성 상태, 물리 삭제 금지, 이력 보존) — `docs/SPEC.md` §18, `docs/DESIGN.md` §12.2.
 - 지점 폴더 스캔의 저재고 알림은 **하루 최대 1회 다이제스트를 보장**한다 — 파일이 안 바뀌어도 완전 무음은 아니다(SCM 실패 등 "조용한 실패"를 놓치지 않기 위해). `docs/SPEC.md` §18, `docs/DESIGN.md` §12.3.
-- npm 공개 배포 대상은 `@trapa-eureka/retail-mcp`(scoped, `publishConfig.access=public`, MIT) — unscoped `retail-mcp`는 이름 재사용 불확실성(2026-01-12 unpublish 이력)이 있어 채택하지 않는다.
+- npm 공개 배포 대상은 `@shiz_son/retail-mcp`(scoped, `publishConfig.access=public`, MIT) — unscoped `retail-mcp`는 이름 재사용 불확실성(2026-01-12 unpublish 이력)이 있어 채택하지 않는다. 처음 정한 `@trapa-eureka` scope는 T37에서 그 이름의 npm 조직이 없음이 확인돼(게시 계정 `shiz_son`) 2026-09-04 사용자 결정으로 계정 scope `@shiz_son`으로 바꿨다 — GitHub 저장소(`Trapa-Eureka/retail-mcp`)와 `author`는 그대로다.
 - **CI가 이 저장소에 존재한다**(`.github/workflows/ci.yml`, T35) — 매 push/PR에서 지원 OS/Node matrix, coverage threshold, 실 Postgres 컴포넌트 테스트, dependency audit/secret scan/SBOM을 돈다. 새 코드가 이 게이트를 깨면 머지하지 않는다.
 - **외부 `DATABASE_URL`(Neon 등) 사용자를 위한 마이그레이션 CLI**: `retail-mcp-migrate` bin(SR2-REL-001, 2차 적대적 검수, `docs/010_SECOND_ADVERSARIAL_REVIEW_T29_T36.md`)이 이 간극을 해소했다 — 기본 dry-run(대상 host/db명·대기 중인 마이그레이션만 표시, 자격증명은 안 보임), 실제 적용은 `--confirm`. `scripts/migrate.ts`(저장소 전용, `files`/빌드 산출물 미포함)는 여전히 개발자 전용으로 남아 있고, 실제 적용 로직은 `src/adapters/migratePg.ts`를 함께 쓴다. `server.ts`/`agent/reorder.ts`/`agent/folderScan.ts`는 `DATABASE_URL` 경로 기동 시 `ensureNetworkMigrationsApplied()`로 스키마 누락을 raw Postgres 에러 대신 이 명령을 안내하는 에러로 즉시 알린다(`docs/004` REL-006 완전 해소).

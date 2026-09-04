@@ -34,10 +34,10 @@
 
 > 아직 `npm publish`가 나가지 않았다(위 배너 참고) — 이 절은 게시 이후의 설치 계약을 미리 확정해둔 것이다. 지금 이 저장소로 실행하려면 아래 "퀵스타트"(저장소 clone 기준)를 따른다.
 
-게시되면 패키지명은 scoped `@trapa-eureka/retail-mcp`(MIT, `publishConfig.access=public`)다.
+게시되면 패키지명은 scoped `@shiz_son/retail-mcp`(MIT, `publishConfig.access=public`)다.
 
 ```bash
-npm install -g @trapa-eureka/retail-mcp   # 전역 설치 — 또는 프로젝트별로 npm install --save-dev
+npm install -g @shiz_son/retail-mcp   # 전역 설치 — 또는 프로젝트별로 npm install --save-dev
 retail-mcp-onboard                         # 대화형 설정 — .env + 예시 템플릿 CSV 생성(위 "CSV/Excel 채널 퀵스타트"와 같은 대화)
 retail-mcp                                 # MCP 서버 stdio 실행 — claude mcp add에 이 명령을 그대로 연결
 ```
@@ -53,9 +53,9 @@ retail-mcp-migrate --confirm  # 실제로 적용한다
 
 `DATABASE_URL`을 설정한 채로 `retail-mcp`/`retail-mcp-onboard`의 에이전트 명령을 실행했는데 스키마가 없거나 일부만 적용돼 있으면, raw Postgres 에러 대신 위 명령을 안내하는 에러로 즉시 멈춘다. `scripts/migrate.ts`(저장소 전용, `npm run migrate`)는 여전히 존재하지만 이 저장소를 clone한 개발자 전용이다 — 게시된 패키지에는 포함되지 않는다.
 
-**업그레이드**: `npm install -g @trapa-eureka/retail-mcp@latest`로 새 버전을 받는다. 마이그레이션 파일은 순번이 매겨져 있고 이미 적용된 건 건너뛰므로(체크섬까지 같으면) 버전을 올려도 임베디드 PGlite 데이터는 안전하다 — 외부 DB는 새 버전이 마이그레이션을 추가했다면 위와 같이 `retail-mcp-migrate --confirm`을 한 번 실행하면 된다.
+**업그레이드**: `npm install -g @shiz_son/retail-mcp@latest`로 새 버전을 받는다. 마이그레이션 파일은 순번이 매겨져 있고 이미 적용된 건 건너뛰므로(체크섬까지 같으면) 버전을 올려도 임베디드 PGlite 데이터는 안전하다 — 외부 DB는 새 버전이 마이그레이션을 추가했다면 위와 같이 `retail-mcp-migrate --confirm`을 한 번 실행하면 된다.
 
-**제거**: `npm uninstall -g @trapa-eureka/retail-mcp`는 패키지 코드만 지운다 — 데이터(`.retail-mcp/data/`)와 `.env`는 그대로 남는다(재설치 시 데이터 보존을 위한 의도된 동작). 데이터까지 지우려면 그 디렉터리를 직접 삭제한다.
+**제거**: `npm uninstall -g @shiz_son/retail-mcp`는 패키지 코드만 지운다 — 데이터(`.retail-mcp/data/`)와 `.env`는 그대로 남는다(재설치 시 데이터 보존을 위한 의도된 동작). 데이터까지 지우려면 그 디렉터리를 직접 삭제한다.
 
 ## 개발 방식
 

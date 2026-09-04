@@ -3,7 +3,7 @@
 - 검수일: 2026-09-03
 - 대상: `package.json`, npm tarball, 설치·실행 계약
 - 판정: **출시 차단 — 현재 패키지는 publish 불가이며 설치 후 실행할 공개 진입점도 없음**
-- 상태: **부분 RESOLVED(T29, PR #40, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36에서 README에 문서화(마이그레이션 CLI 미포함 간극은 명시적으로 남겨두고 T37로 이관). REL-007(전체 release gate)은 T37에서 `prepublishOnly` 연결로 RESOLVED(2026-09-04). REL-008은 T37에서 `npm view` 404(이름 사용 가능, 사용자 결정: 재사용 무관)까지 확인했고 **scope `@trapa-eureka`의 npm 조직 소유권은 사람 확인 대기**(`npm org ls trapa-eureka` 403 — `docs/TASKS.md` T37 체크리스트). 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
+- 상태: **부분 RESOLVED(T29, PR #40, 2026-09-03)** — REL-001~005는 해결. REL-006(설치/업그레이드 문서)은 T36에서 README에 문서화(마이그레이션 CLI 미포함 간극은 명시적으로 남겨두고 T37로 이관). REL-007(전체 release gate)은 T37에서 `prepublishOnly` 연결로 RESOLVED(2026-09-04). REL-008은 T37에서 `npm view` 404(이름 사용 가능, 사용자 결정: 재사용 무관)까지 확인했고, scope `@trapa-eureka`의 npm 조직이 존재하지 않아(`npm org ls` 403, 게시 계정 `shiz_son`) **2026-09-04 사용자 결정으로 패키지명을 `@shiz_son/retail-mcp`로 변경해 RESOLVED**(SPEC §18 갱신 — 아래 REL-001/REL-008의 T29 기록은 당시 이름 그대로 두고 이 줄로 정정한다). 정책 확정(scope/license)은 `docs/SPEC.md` §18에 반영됨.
 - 검수 명령: `npm pack --dry-run --json --cache /tmp/retail-mcp-npm-cache`
 
 ## REL-001 — `private: true`로 npm publish가 명시적으로 차단됨
@@ -73,7 +73,7 @@
 - 근거: 현재 이름은 unscoped `retail-mcp`이며 저장소에는 npm owner/scope 결정 기록이 없다. `npm view retail-mcp name version owners --json`의 2026-09-03 응답은 단순 신규 이름이 아니라 **2026-01-12에 unpublished된 패키지**라는 E404를 반환했다. 이 응답만으로 현재 계정이 이름을 다시 사용할 수 있다는 뜻은 아니다. unscoped 이름은 사용자 계정 소유의 공개 패키지가 된다.
 - 영향: 이름이 이미 점유됐거나 조직 소유로 게시해야 하는 경우 마지막 단계에서 실패하거나 잘못된 namespace로 공개될 수 있다.
 - 수정 기준: `npm whoami`, npm 웹 UI/owner 정책, unpublished 이름 재사용 가능 여부, scope 및 공개/제한 배포를 사람이 확인한다. 조직 제품이면 `@org/retail-mcp`를 우선 검토한다.
-- 완화(T29): scoped 이름 `@trapa-eureka/retail-mcp` 채택으로 unscoped `retail-mcp` 재사용 불확실성 자체를 회피(SPEC §18). 다만 `npm whoami`/조직 계정 접근권한 확인은 여전히 사람이 해야 하는 항목 — T37에서 진행.
+- 완화(T29): scoped 이름 `@trapa-eureka/retail-mcp` 채택으로 unscoped `retail-mcp` 재사용 불확실성 자체를 회피(SPEC §18). 다만 `npm whoami`/조직 계정 접근권한 확인은 여전히 사람이 해야 하는 항목 — T37에서 진행. **T37 결과(2026-09-04)**: `npm whoami`=`shiz_son`, `@trapa-eureka` 조직은 없음 → 패키지명을 계정 scope `@shiz_son/retail-mcp`로 변경(사용자 결정). scoped 채택의 목적(이름 재사용 불확실성 회피)은 그대로 달성된다.
 
 ## 출시 재검수 기준
 
