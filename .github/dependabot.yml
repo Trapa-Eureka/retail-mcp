@@ -1,0 +1,26 @@
+# 2차 적대적 검수 SR2-CI-002 — `.github/workflows/ci.yml`의 Action들은 full commit SHA로
+# 고정돼 있다(이동 가능한 `@v4` 태그 금지). SHA 고정은 갱신 수단이 없으면 "태그가 옮겨지는
+# 위험"을 "영구히 낡은 코드를 도는 위험"으로 바꿀 뿐이므로, Dependabot이 월 1회 새 릴리스가
+# 있을 때 SHA와 `# vX.Y.Z` 주석을 함께 갱신하는 PR을 연다. 이 PR은 다른 PR과 똑같이 CI 게이트
+# 전체를 통과해야 하고 **머지는 사람이 한다**(자동 머지 설정 없음). Dependabot은 시크릿에 접근
+# 하지 않고, 이 저장소의 워크플로는 `permissions: contents: read`라 PR에서 아무것도 쓰지 않는다.
+#
+# 범위는 의도적으로 github-actions만이다 — npm 의존성 자동 갱신은 별도 결정 사항(lockfile
+# audit는 CI의 `audit` job이 매 PR에서 이미 fail-closed로 집행한다, docs/005 SEC-006).
+# 워크플로 `services.image`(postgres digest)는 Dependabot이 갱신하지 않으므로 TESTING.md §8의
+# 수동 절차를 따른다.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      # 한 달에 PR 하나로 묶는다 — Action 셋(checkout/setup-node/upload-artifact)이 각각 PR을
+      # 열어 CI 매트릭스를 세 번 돌리는 것보다 한 번에 검토하는 쪽이 부담이 적다.
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci(deps)"
