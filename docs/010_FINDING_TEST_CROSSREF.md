@@ -126,7 +126,7 @@
 | SR2-LOCK-002 | P1 | hostname 없는 구버전 lock을 same-host로 회수 | 자동화됨 | `tests/fileLock.test.ts`("hostname 없는 구버전 락은 소유 호스트 불명 → busy" describe 5 tests) | #65 |
 | SR2-MAIL-003 | P1 | dedupe 보존시간 이후 재시도 정책 없음 | 자동화됨 | `tests/sendRetryPolicy.test.ts`(순수 판정 11), `tests/reorderAgent.test.ts`(6), `tests/folderScan.test.ts`(2), `tests/pgWarehouse.test.ts`(`listAgentSendAttempts`/`markStaleSendingUnknown` 2) | #66 |
 | SR2-CI-004 | P1 | branch protection/required checks 미검증 | **수동/사람**(저장소 설정) | GitHub ruleset `22244613`(main, PR 필수·required checks 7·bypass 0) — 저장소 밖 설정이라 테스트 불가. `docs/TASKS.md` T37 사람 확인 항목 + 확인 명령(`gh api repos/…/rules/branches/main`). 매 PR 머지가 ruleset을 통과하는 것이 상시 검증(#67이 첫 사례) | #67 |
-| SR2-CI-003 | P2 | job `timeout-minutes` 없음 | **예정** | `ci.yml` job별 timeout — 구성 항목 | — |
+| SR2-CI-003 | P2 | job `timeout-minutes` 없음 | CI 전용(구성) | `ci.yml` 네 job의 `timeout-minutes`(test 50 / audit 30 / coverage 25 / postgres-component 15, 관측 최대치 약 2배 — 근거 주석 포함). 재조정 규칙은 TESTING.md §8. 검증은 매 PR의 CI가 상한 안에서 통과하는 것 | #69 |
 | SR2-LOCK-003 | P2 | release의 확인 후 삭제가 비원자적 | **예정** | `src/adapters/fileLock.ts` release 경로 — 착수 시 `tests/fileLock.test.ts`에 경합 케이스 추가 예정 | — |
 | SR2-SEC-005 | P2 | 실제 사용 credential 종류 커버 부족(npm/GitHub token, `LOYVERSE_API_TOKEN` 값 등) | **예정** | `src/core/secretScan.ts` 패턴 확장 — 착수 시 `tests/secretScan.test.ts`에 종류별 케이스 추가 + `SECURITY.md`에 경량 스캐너 한계 명시 예정 | — |
 
