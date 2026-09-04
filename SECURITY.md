@@ -4,12 +4,13 @@ This is the vulnerability reporting procedure for `@shiz_son/retail-mcp` (a sell
 
 ## Supported Versions
 
-The first public version is `0.1.0` (2026-09-04). During the 0.x stage, only the **most recent minor line** (currently `0.1.x`) and the latest commit on the `main` branch receive security patches. After `1.0.0`, this section will be updated to be based on the latest major.
+The first public version was `0.1.0` (2026-09-04); the current line is `0.2.x`. During the 0.x stage, only the **most recent minor line** (currently `0.2.x`) and the latest commit on the `main` branch receive security patches. After `1.0.0`, this section will be updated to be based on the latest major.
 
 | Version | Supported |
 |---|---|
 | `main` (latest unpublished) | ✅ |
-| `0.1.x` (latest published line) | ✅ |
+| `0.2.x` (latest published line) | ✅ |
+| `0.1.x` (superseded — Korean column headers) | ❌ — upgrade to `0.2.x` and regenerate the CSV template |
 | Earlier 0.x lines | ❌ — upgrade to the latest line |
 
 ## How to Report a Vulnerability
